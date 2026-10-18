@@ -114,6 +114,23 @@ athena-api
 # Secrets never belong in this file (ATH-CFG-005): API tokens and provider keys
 # come from environment variables or a secret manager. Configuration is applied
 # at startup — restart athena-api after editing (R-CFG-09).
+#
+# Example core.agent values (an EXAMPLE only — nothing is pre-configured; pick your own
+# provider, model, and ceiling):
+
+```yaml
+core:
+  agent:
+    provider: "ollama"                                # example: the runtime's provider decision
+    model: "glm-5.3-flash:cloud"                      # example: the provider's model
+    allowed_tools: ["fs_read", "fs_write", "send_to"] # minimal by default (ATH-SEC-025)
+    delegable_tools:
+      - "fs_read"
+      - "fs_write"
+      - "shell"     # medium-risk band — the rm -rf line still asks for approval
+      - "git"
+      - "send_to"
+```
 ```
 
 Then send work in natural language:

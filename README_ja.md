@@ -114,6 +114,23 @@ athena-api
 # シークレットを設定ファイルに書いてはならない(ATH-CFG-005)。API トークンと
 # プロバイダキーは環境変数またはシークレットマネージャから供給する。
 # 設定は起動時に適用されるため、編集後は athena-api を再起動する(R-CFG-09)。
+#
+# core.agent.* の記載例(あくまで EXAMPLE — 既定値は存在しない):
+#   プロバイダ・モデル・上限は自分で選ぶこと。
+
+```yaml
+core:
+  agent:
+    provider: "ollama"                                # 例: ランタイムのプロバイダ決定
+    model: "glm-5.3-flash:cloud"                      # 例: プロバイダのモデル
+    allowed_tools: ["fs_read", "fs_write", "send_to"] # 既定は最小構成 (ATH-SEC-025)
+    delegable_tools:
+      - "fs_read"
+      - "fs_write"
+      - "shell"     # 中リスク帯 — rm -rf の承認行は依然として有効
+      - "git"
+      - "send_to"
+```
 ```
 
 仕事は自然言語で依頼します:
