@@ -1,0 +1,59 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/athena-types",
+    "crates/athena-config",
+    "crates/athena-events",
+    "crates/athena-state",
+    "crates/athena-persistence",
+    "crates/athena-runtime",
+    "crates/athena-messaging",
+    "crates/athena-memory",
+    "crates/athena-tools",
+    "crates/athena-skills",
+    "crates/athena-agent",
+    "crates/athena-core",
+    "crates/athena-api",
+    "crates/athena-cli",
+    "crates/athena-studio",
+    "runtimes/athena-runtime-agent-cli",
+    "tests",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT"
+repository = "https://github.com/aquaxis/athena"
+
+[workspace.dependencies]
+athena-types = { path = "crates/athena-types" }
+athena-config = { path = "crates/athena-config" }
+athena-events = { path = "crates/athena-events" }
+athena-state = { path = "crates/athena-state" }
+athena-persistence = { path = "crates/athena-persistence" }
+athena-runtime = { path = "crates/athena-runtime" }
+athena-messaging = { path = "crates/athena-messaging" }
+athena-memory = { path = "crates/athena-memory" }
+athena-tools = { path = "crates/athena-tools" }
+athena-skills = { path = "crates/athena-skills" }
+athena-agent = { path = "crates/athena-agent" }
+athena-core = { path = "crates/athena-core" }
+
+async-trait = "0.1"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { version = "0.8", default-features = false, features = ["derive"] }
+jsonschema = { version = "0.58", default-features = false }
+serde_yaml = "0.9"
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+thiserror = "2"
+ulid = "1"
+sha2 = "0.10"
+humantime-serde = "1"
+regex = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+toml = { version = "0.8", default-features = false, features = ["parse", "display"] }

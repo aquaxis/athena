@@ -1,0 +1,56 @@
+# aiprj project configuration for agent-cli.
+#
+# This file is the project-local overlay (`./.agent-cli/config.toml`). It is
+# merged over `~/.config/agent-cli/config.toml` key by key, so only what aiprj
+# actually needs is set here -- your provider, UI and history settings are kept.
+#
+# Confirm the resolved chain with: agent-cli config path
+
+[runtime]
+# Where the aiprj slash commands (/setup_ai /ai /update_ai /next_ai /close_ai)
+# are read from. Relative to the current working directory.
+commands_dir       = ".agent-cli/commands"
+# Every tool call still passes the approval gate; [permissions] below is what
+# narrows that down, not a blanket auto-approve.
+auto_approve_tools = false
+
+[tools]
+enabled = [
+  "bash",
+  "read",
+  "write",
+  "edit",
+  "glob",
+  "grep",
+  "websearch",
+  "webfetch",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Permissions. A guardrail against mistakes, not a sandbox: only the leading
+# words of a command are inspected, so a deny does not stop `sh -c ...`.
+# Precedence: deny > allow > default_mode.
+# ─────────────────────────────────────────────────────────────────────────────
+[permissions]
+deny = [
+  "bash(rm -rf ~/**)",         # unrecoverable
+  "bash(rm -rf /**)",
+  "bash(git remote add:*)",    # quietly repointing a remote is hard to notice
+  "bash(git remote set-url:*)",
+  "bash(npm publish:*)",       # a mistaken publish cannot be taken back
+  "bash(pnpm publish:*)",
+  "read(.env*)",               # secrets would land in the conversation log
+  "read(**/*.log)",            # noise
+  "read(tmp/**/*)",
+  "read(**/node_modules/**)",
+]
+allow = [
+  "bash",
+  "read",                      # every call; the deny rules above still win
+  "edit",
+  "write",
+  "glob",
+  "grep",
+  "webfetch(domain:*)",
+]
+default_mode = "ask"

@@ -1,0 +1,39 @@
+<mxfile host="app.diagrams.net">
+  <diagram id="chain" name="Delegation Chain">
+    <mxGraphModel dx="1000" dy="500" grid="0" page="1" pageScale="1" pageWidth="1200" pageHeight="300">
+      <root>
+        <mxCell id="0"/><mxCell id="1" parent="0"/>
+        <mxCell id="c0" value="Human&#10;(natural language)" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="20" y="100" width="150" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="c1" value="ATHENA Core Agent&#10;(Producer level · instance #0)" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="210" y="100" width="180" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="c2" value="Director&#10;(a SubTask group)" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="430" y="100" width="150" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="c3" value="Lead&#10;(one SubTask)" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="620" y="100" width="140" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="c4" value="Worker&#10;(one PlanStep)" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="800" y="100" width="140" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="c5" value="Runtime&#10;(agent-cli process)" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="980" y="100" width="160" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="c6" value="Tool /&#10;External System" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="980" y="220" width="160" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="k1" value="" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="c0" target="c1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="k2" value="immediate child only&#10;(ATH-HIER-004)" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="c1" target="c2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="k3" value="" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="c2" target="c3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="k4" value="" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="c3" target="c4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="k5" value="" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="c4" target="c5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="k6" value="through the Tool&#10;Manager's grant" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="c5" target="c6"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="note" value="Logical hierarchy — expressed by message routing + permission containment, never process parentage (ATH-HIER-010). All Instances sit in parallel under the Runtime." style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="210" y="220" width="730" height="60" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,767 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CoreRequest",
+  "description": "The twelve privileged request kinds (spec §7.5.5). Exhaustive on purpose: a kind outside this set is a specification revision first (ATH-CORE-033).",
+  "oneOf": [
+    {
+      "description": "Understand: the agent's interpretation of the Task (ATH-CORE-014).",
+      "type": "object",
+      "required": [
+        "kind",
+        "task_id",
+        "understanding"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "submit_understanding"
+          ]
+        },
+        "task_id": {
+          "description": "The Task the understanding applies to.",
+          "type": "string"
+        },
+        "understanding": {
+          "description": "Goal, constraints, completion criteria, unknowns, assessed risk.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Understanding"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Plan: a full replacement plan at a revision (ATH-CORE-042).",
+      "type": "object",
+      "required": [
+        "base_revision",
+        "kind",
+        "steps",
+        "task_id"
+      ],
+      "properties": {
+        "base_revision": {
+          "description": "The revision this plan edits; must match Core's current revision.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "submit_plan"
+          ]
+        },
+        "steps": {
+          "description": "Draft steps — identifiers are issued by Core Host (ATH-CORE-041).",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PlanStepDraft"
+          }
+        },
+        "task_id": {
+          "description": "The Task.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Decide: the hierarchy the agent judged the Task needs (ATH-HIER-009).",
+      "type": "object",
+      "required": [
+        "kind",
+        "nodes",
+        "task_id"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "compose_hierarchy"
+          ]
+        },
+        "nodes": {
+          "description": "Draft nodes without identifiers (D-5).",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HierarchyNodeDraft"
+          }
+        },
+        "task_id": {
+          "description": "The Task.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Act: delegate a PlanStep to an agent (ATH-CORE-035).",
+      "type": "object",
+      "required": [
+        "agent_id",
+        "idempotency_key",
+        "instruction",
+        "kind",
+        "plan_step_id",
+        "skill_set",
+        "task_id"
+      ],
+      "properties": {
+        "agent_id": {
+          "description": "The agent selected.",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "`plan_step_id + \":\" + attempt`; Core Host executes a key once (ATH-CORE-035).",
+          "type": "string"
+        },
+        "instruction": {
+          "description": "The delegation instruction — the agent's procedure reference.",
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "delegate"
+          ]
+        },
+        "plan_step_id": {
+          "description": "The step to run.",
+          "type": "string"
+        },
+        "skill_set": {
+          "description": "The resolved Skill Set for the step.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SkillRef"
+          }
+        },
+        "task_id": {
+          "description": "The Task.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Act: run a tool under the agent's grant (ATH-TOOL-002).",
+      "type": "object",
+      "required": [
+        "args",
+        "idempotency_key",
+        "kind",
+        "task_id",
+        "tool"
+      ],
+      "properties": {
+        "args": {
+          "description": "The arguments; risk comes from `policy.rules`, never from the agent's prose (ATH-CORE-038)."
+        },
+        "idempotency_key": {
+          "description": "`plan_step_id + \":\" + attempt` style key (ATH-CORE-035).",
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "execute_tool"
+          ]
+        },
+        "task_id": {
+          "description": "The Task.",
+          "type": "string"
+        },
+        "tool": {
+          "description": "The ATHENA tool.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ToolName"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Request a human approval (ATH-HITL-001) — `reason` / `impact` are agent prose, shown as untrusted context only (ATH-HITL-011).",
+      "type": "object",
+      "required": [
+        "impact",
+        "kind",
+        "operation_ref",
+        "reason",
+        "task_id"
+      ],
+      "properties": {
+        "impact": {
+          "description": "The agent's prose impact statement. Never a risk input (ATH-CORE-038).",
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "request_approval"
+          ]
+        },
+        "operation_ref": {
+          "description": "The canonical operation reference Core Host will reclassify independently.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "The agent's prose case.",
+          "type": "string"
+        },
+        "task_id": {
+          "description": "The Task.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Ask Core Host to consume an approval for an operation (ATH-STATE-013).",
+      "type": "object",
+      "required": [
+        "approval_id",
+        "kind",
+        "operation_ref"
+      ],
+      "properties": {
+        "approval_id": {
+          "description": "The approval to consume.",
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "consume_approval"
+          ]
+        },
+        "operation_ref": {
+          "description": "The operation the consumption applies to; Core Host reclassifies risk at consumption (ATH-HITL-014).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Clarify with the human (ATH-HITL-018): the Task waits for an answer.",
+      "type": "object",
+      "required": [
+        "kind",
+        "question",
+        "task_id"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "ask_human"
+          ]
+        },
+        "options": {
+          "description": "Options, when the question is a multiple choice.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "question": {
+          "description": "The question. Its digest is what travels through Events (ATH-EVENT-007).",
+          "type": "string"
+        },
+        "task_id": {
+          "description": "The Task.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Evaluate a Result against the completion criteria (ATH-EVAL-001).",
+      "type": "object",
+      "required": [
+        "kind",
+        "rationale",
+        "result_id",
+        "task_id",
+        "verdict"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "submit_evaluation"
+          ]
+        },
+        "rationale": {
+          "description": "Rationale (ATH-CORE-016).",
+          "type": "string"
+        },
+        "result_id": {
+          "description": "The Result under evaluation.",
+          "type": "string"
+        },
+        "task_id": {
+          "description": "The Task.",
+          "type": "string"
+        },
+        "verdict": {
+          "description": "Exactly one of the five verdicts (ATH-EVAL-004).",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Verdict"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Progress: a Task state change the agent asks for, optimistic on `expected_state` (ATH-STATE-014).",
+      "type": "object",
+      "required": [
+        "expected_state",
+        "kind",
+        "task_id",
+        "to"
+      ],
+      "properties": {
+        "expected_state": {
+          "description": "The state the agent believes holds (ATH-CORE-036).",
+          "allOf": [
+            {
+              "$ref": "#/definitions/TaskState"
+            }
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "transition_task"
+          ]
+        },
+        "task_id": {
+          "description": "The Task.",
+          "type": "string"
+        },
+        "to": {
+          "description": "The requested state.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/TaskState"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Record a memory record (ATH-MEM-003) — Working Memory throughout, Long Term only under an explicit judgement.",
+      "type": "object",
+      "required": [
+        "content",
+        "kind",
+        "tier"
+      ],
+      "properties": {
+        "content": {
+          "description": "The content; Core Host masks secrets before persistence (R-POL-13).",
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "write_memory"
+          ]
+        },
+        "tier": {
+          "description": "Which tier the agent asks to write.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/WritableMemoryTier"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Complete: the Task's final summary and its Results (ATH-EVAL-002).",
+      "type": "object",
+      "required": [
+        "kind",
+        "result_ids",
+        "summary",
+        "task_id"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "complete_task"
+          ]
+        },
+        "result_ids": {
+          "description": "The Results that make up the completion; verifiable deliverables must already have passed Verification.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "summary": {
+          "description": "The closing summary.",
+          "type": "string"
+        },
+        "task_id": {
+          "description": "The Task.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  ],
+  "definitions": {
+    "AgentLevel": {
+      "description": "Hierarchy levels (spec section 8.2).",
+      "type": "string",
+      "enum": [
+        "producer",
+        "director",
+        "lead",
+        "worker"
+      ]
+    },
+    "HierarchyNodeDraft": {
+      "description": "A draft hierarchy node as submitted by Core Agent (identifiers remain Core Host's).",
+      "type": "object",
+      "required": [
+        "agent_id",
+        "level"
+      ],
+      "properties": {
+        "agent_id": {
+          "description": "The agent at this node.",
+          "type": "string"
+        },
+        "level": {
+          "description": "Level.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/AgentLevel"
+            }
+          ]
+        },
+        "scope_ref": {
+          "description": "Responsibility.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScopeRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sibling_acl": {
+          "description": "Requested sibling permissions.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "superior_agent_id": {
+          "description": "Superior agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PlanStepDraft": {
+      "description": "A draft step as submitted by Core Agent.\n\nCarries no identifier: identifiers are Core Host's to issue (ATH-CORE-041), and omitting the field makes an agent-minted identifier structurally impossible rather than merely rejected.",
+      "type": "object",
+      "required": [
+        "intent",
+        "order"
+      ],
+      "properties": {
+        "assigned_agent": {
+          "description": "Proposed agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "depends_on_orders": {
+          "description": "Prerequisites, referenced by `order` within the same submission.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          }
+        },
+        "intent": {
+          "description": "What this step achieves.",
+          "type": "string"
+        },
+        "order": {
+          "description": "Ordering hint.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "skill_set": {
+          "description": "Proposed skills.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SkillRef"
+          }
+        }
+      }
+    },
+    "RiskLevel": {
+      "description": "Risk classification. Decided by Core Host from configuration, never from agent prose (ATH-HITL-002, ATH-CORE-038).",
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "ScopeRef": {
+      "description": "What a hierarchy node is responsible for (spec section 26.6).\n\nDirector covers a group of SubTasks, Lead one SubTask, Worker one PlanStep (ATH-HIER-012).",
+      "oneOf": [
+        {
+          "description": "A group of SubTasks.",
+          "type": "object",
+          "required": [
+            "kind",
+            "task_ids"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "sub_tasks"
+              ]
+            },
+            "task_ids": {
+              "description": "The SubTasks.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "description": "A single SubTask.",
+          "type": "object",
+          "required": [
+            "kind",
+            "task_id"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "sub_task"
+              ]
+            },
+            "task_id": {
+              "description": "The SubTask.",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "description": "A single PlanStep.",
+          "type": "object",
+          "required": [
+            "kind",
+            "plan_step_id"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "plan_step"
+              ]
+            },
+            "plan_step_id": {
+              "description": "The step.",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "description": "The root Task, held by the Producer.",
+          "type": "object",
+          "required": [
+            "kind",
+            "task_id"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "root_task"
+              ]
+            },
+            "task_id": {
+              "description": "The root Task.",
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "SkillRef": {
+      "description": "A pinned skill reference (spec section 26.3).",
+      "type": "object",
+      "required": [
+        "id",
+        "version"
+      ],
+      "properties": {
+        "checksum": {
+          "description": "Content checksum, recorded in execution history (ATH-SKILL-021).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Skill slug.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Semantic version, pinned at agent start (ATH-SKILL-020).",
+          "type": "string"
+        }
+      }
+    },
+    "TaskState": {
+      "description": "Task states (spec section 17.1).",
+      "type": "string",
+      "enum": [
+        "CREATED",
+        "QUEUED",
+        "RUNNING",
+        "WAITING_APPROVAL",
+        "WAITING_INPUT",
+        "EVALUATING",
+        "REPLANNING",
+        "RETRYING",
+        "CANCELLING",
+        "SUCCESS",
+        "FAILED",
+        "CANCELLED"
+      ]
+    },
+    "ToolName": {
+      "description": "ATHENA's tool vocabulary (spec section 11.1).\n\nThese are ATHENA's names. `agent-cli` uses a different vocabulary, so the Adapter owns an explicit projection (design section 5.3.1); this enum must not drift toward the substrate's names.",
+      "type": "string",
+      "enum": [
+        "fs_read",
+        "fs_write",
+        "shell",
+        "git",
+        "search",
+        "send_to",
+        "process",
+        "terminal",
+        "network"
+      ]
+    },
+    "Understanding": {
+      "description": "Interpretation of a human instruction, produced by Understand (spec section 7.3).",
+      "type": "object",
+      "required": [
+        "completion_criteria",
+        "constraints",
+        "goal",
+        "risk_level",
+        "unknowns"
+      ],
+      "properties": {
+        "completion_criteria": {
+          "description": "Completion criteria.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "constraints": {
+          "description": "Constraints.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "goal": {
+          "description": "The objective.",
+          "type": "string"
+        },
+        "risk_level": {
+          "description": "Assessed risk.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/RiskLevel"
+            }
+          ]
+        },
+        "unknowns": {
+          "description": "Missing information. A non-empty list should produce an investigation step (ATH-CORE-015).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "Verdict": {
+      "description": "Evaluation verdicts (spec section 19.2, ATH-EVAL-004).",
+      "type": "string",
+      "enum": [
+        "accept",
+        "retry",
+        "replan",
+        "fail",
+        "escalate"
+      ]
+    },
+    "WritableMemoryTier": {
+      "description": "The tiers an agent may explicitly write (ATH-MEM-003).",
+      "oneOf": [
+        {
+          "description": "Working Memory: scope and lifetime of the Task.",
+          "type": "string",
+          "enum": [
+            "working"
+          ]
+        },
+        {
+          "description": "Long Term: requires an explicit Core Agent judgement or human instruction.",
+          "type": "string",
+          "enum": [
+            "long"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,3 @@
+# Spec section 1.5 wraps prose at roughly 100 columns; code follows the same width.
+max_width = 100
+edition = "2024"

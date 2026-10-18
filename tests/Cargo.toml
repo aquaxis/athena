@@ -1,0 +1,89 @@
+# Workspace-level conformance tests. The package root is `tests/` so that the repository keeps
+# the top-level `tests/` directory required by spec section 32.1, while still being an ordinary
+# Cargo member that `cargo test --workspace` runs.
+[package]
+name = "athena-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# Declared explicitly: test sources sit directly in this package root, not in a nested `tests/`.
+[[test]]
+name = "dependency_boundaries"
+path = "dependency_boundaries.rs"
+
+[[test]]
+name = "runtime_contract"
+path = "runtime_contract.rs"
+
+[[test]]
+name = "core_loop"
+path = "core_loop.rs"
+
+[[test]]
+name = "init_defaults"
+path = "init_defaults.rs"
+
+[[test]]
+name = "live_agent_e2e"
+path = "live_agent_e2e.rs"
+
+[[test]]
+name = "runtime_failure_bridge"
+path = "runtime_failure_bridge.rs"
+
+[[test]]
+name = "core_agent_boot"
+path = "core_agent_boot.rs"
+
+[[test]]
+name = "phase3_agent_tasks"
+path = "phase3_agent_tasks.rs"
+
+[[test]]
+name = "phase4_fault_injection"
+path = "phase4_fault_injection.rs"
+
+[[test]]
+name = "phase4_acceptance"
+path = "phase4_acceptance.rs"
+
+[[test]]
+name = "phase5_skills"
+path = "phase5_skills.rs"
+
+[[test]]
+name = "phase6_cli"
+path = "phase6_cli.rs"
+
+[[test]]
+name = "phase7_pipeline_check"
+path = "phase7_pipeline_check.rs"
+
+[[test]]
+name = "phase7_studio"
+path = "phase7_studio.rs"
+
+[lib]
+name = "athena_conformance"
+path = "lib.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+athena-core = { path = "../crates/athena-core" }
+athena-runtime = { path = "../crates/athena-runtime" }
+athena-types = { path = "../crates/athena-types" }
+athena-skills = { path = "../crates/athena-skills" }
+athena-studio = { path = "../crates/athena-studio" }
+athena-events = { path = "../crates/athena-events" }
+athena-persistence = { path = "../crates/athena-persistence" }
+athena-state = { path = "../crates/athena-state" }
+athena-config = { path = "../crates/athena-config" }
+athena-runtime-agent-cli = { path = "../runtimes/athena-runtime-agent-cli" }
+athena-cli = { path = "../crates/athena-cli" }
+futures = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+serde_yaml = { workspace = true }
+tempfile = "3"

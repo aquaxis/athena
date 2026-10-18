@@ -1,0 +1,45 @@
+<mxfile host="app.diagrams.net">
+  <diagram id="arch" name="System Architecture">
+    <mxGraphModel dx="1000" dy="700" grid="0" page="1" pageScale="1" pageWidth="1200" pageHeight="700">
+      <root>
+        <mxCell id="0"/><mxCell id="1" parent="0"/>
+        <mxCell id="human" value="Human" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="40" y="280" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="cli" value="athena (CLI)&#10;athena chat" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="240" y="200" width="170" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="studio" value="athena-studio&#10;(Rust → WebAssembly)" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="240" y="360" width="170" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="api" value="athena-api (:8080)&#10;Core API: HTTP + SSE" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="480" y="280" width="200" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="core" value="athena-core (Core Host)&#10;supervision · state · events · policy&#10;(never decides)" style="rounded=0;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="740" y="260" width="220" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="store" value="athena.db (SQLite WAL)&#10;the authoritative store" style="rounded=0;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="740" y="420" width="220" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="rt0" value="agent-cli #0&#10;Core Agent (Producer)&#10;cwd: var/core-agent/" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="180" width="170" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="rtn" value="agent-cli #1..N&#10;Director / Lead / Worker&#10;1 process per Instance" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="320" width="170" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="tool" value="Tool / External System" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="460" width="170" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="e1" value="" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="human" target="cli"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" value="" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="human" target="studio"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" value="Core API only" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="cli" target="api"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" value="Core API + SSE" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="studio" target="api"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" value="" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="api" target="core"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" value="" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="core" target="store"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" value="Runtime Interface" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="core" target="rt0"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" value="one delegation = one thread" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="core" target="rtn"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e9" value=" inspected request " style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="rtn" target="tool"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

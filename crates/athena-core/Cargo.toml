@@ -1,0 +1,31 @@
+[package]
+name = "athena-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+athena-types = { workspace = true }
+schemars = { workspace = true }
+athena-agent = { workspace = true }
+athena-messaging = { workspace = true }
+athena-memory = { workspace = true }
+athena-tools = { workspace = true }
+athena-skills = { workspace = true }
+athena-state = { workspace = true }
+athena-events = { workspace = true }
+athena-persistence = { workspace = true }
+athena-config = { workspace = true }
+athena-runtime = { workspace = true }
+futures = { workspace = true }
+serde_yaml = { workspace = true }
+serde = { workspace = true }
+jsonschema = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

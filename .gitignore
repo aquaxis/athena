@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+.claude
+.aeng-cli
+.aiprj
+AI_LOG/
+AI_PRJ_REQUIREMENTS.md
+AI_PRJ_DESIGN.md
+AI_PRJ_TASKS.md
+
+# runtime and user-local state (publication set — design §2.6)
+api.pid
+.agent-cli/

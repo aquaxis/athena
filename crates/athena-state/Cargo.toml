@@ -1,0 +1,10 @@
+[package]
+name = "athena-state"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+athena-types = { workspace = true }
+thiserror = { workspace = true }

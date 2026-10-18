@@ -1,0 +1,90 @@
+name: CI
+
+# ATH-DEV-004 / ATH-DEV-011 require the module-boundary check to run in CI.
+# ATH-TEST-022 forbids CI pass/fail from depending on external LLM non-determinism, so no job
+# here contacts a provider; agent behaviour is exercised only through the stub Runtime.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  boundaries:
+    # Runs first and alone: a boundary violation invalidates the build's architecture, so there
+    # is no point spending time on the rest until it passes.
+    name: Module boundaries (spec 32.2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Enforce dependency direction
+        run: cargo test -p athena-conformance --test dependency_boundaries
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --all-targets
+
+  test:
+    name: Test
+    needs: boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-targets
+
+  coverage:
+    # ATH-TEST-023 (SHOULD): library crates at 80% or above. Reported, not gated, until the
+    # library crates carry their Phase 1 implementations.
+    name: Coverage
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Report library-crate coverage
+        run: |
+          cargo llvm-cov --workspace --lcov --output-path lcov.info
+          cargo llvm-cov report --summary-only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: lcov.info

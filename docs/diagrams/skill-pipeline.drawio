@@ -1,0 +1,36 @@
+<mxfile host="app.diagrams.net">
+  <diagram id="skill" name="Skill Pipeline">
+    <mxGraphModel dx="1000" dy="500" grid="0" page="1" pageScale="1" pageWidth="1200" pageHeight="300">
+      <root>
+        <mxCell id="0"/><mxCell id="1" parent="0"/>
+        <mxCell id="s0" value="Skill Package source&#10;(SKILL.md + manifest.yaml)&#10;skills.local_dir / external" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="20" y="90" width="190" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="s1" value="Validator&#10;schema · checksum ·&#10;publisher/source allow-list" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="260" y="90" width="190" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="s2" value="Registry&#10;registered copy in skills.dir&#10;state per (id, version)" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="500" y="90" width="190" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="s3" value="Catalog&#10;only ENABLED is&#10;a selection candidate" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="740" y="90" width="170" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="s4" value="Resolver&#10;closure · SemVer · union&#10;permissions · tool axes" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="960" y="90" width="190" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="s5" value="Loader&#10;copy only selected skills to&#10;var/instances/&lt;id&gt;/skills/" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="300" y="240" width="250" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="s6" value="Delivery&#10;agent-cli/commands/athena-skill-&lt;id&gt;.md&#10;cites the SKILL.md by absolute path" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="600" y="240" width="290" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="n1" value="" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="s0" target="s1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="n2" value="fail ⇒ FAILED" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="s1" target="s2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="n3" value="" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="s2" target="s3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="n4" value="" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="s3" target="s4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="n5" value="" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="s4" target="s5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="n6" value="never .agent-cli/skills/" style="endArrow=block;html=1;fontSize=14;" edge="1" parent="1" source="s5" target="s6"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
