@@ -8,6 +8,10 @@ ATHENA は、自然言語で依頼された仕事を複数の AI Agent で組織
 Director / Lead / Worker の階層へ委任し(Delegate)、戻ってきた結果を評価し(Evaluate)、
 必要ならば再計画します(Re-plan)。
 
+> 名称の由来は頭字語です — **ATHENA = Autonomous Task Hierarchy & Execution Network
+> Architecture**。仕様書(§1.1)では製品名ではなく、複数の AI Agent を組織化してタスクを
+> 遂行するための **システムアーキテクチャ名称** とされています。
+
 構成は次の 5 つの実行ユニットと、永続状態を一手に担う単一の権威ある SQLite ストア
 (`athena.db`)です。
 

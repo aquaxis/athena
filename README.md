@@ -8,6 +8,10 @@ is an AI agent itself** — not a workflow engine — that understands the instr
 delegates down a hierarchy of Director / Lead / Worker agents, evaluates what comes back, and
 re-plans when needed.
 
+> The name is an acronym — **ATHENA = Autonomous Task Hierarchy & Execution Network
+> Architecture** — and, per the specification (§1.1), it is not a product name but the name of a
+> **system architecture** for organizing multiple AI agents to carry out tasks.
+
 The system consists of five execution units plus a single authoritative SQLite store (`athena.db`)
 that holds all persisted state:
 
