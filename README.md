@@ -75,35 +75,60 @@ Module boundaries (dependency directions) are enforced mechanically by a static 
 
 ## Quick start
 
+### 1. Install (builds the tool and puts it on PATH)
+
 ```sh
-# One-liner install (after this repository is published; from a clone: ./install.sh)
 curl -fsSL https://raw.githubusercontent.com/aquaxis/athena/main/install.sh | sh
-
-# Or build from source
-cargo build --release
-
-# 2. Introduce a project (generates .athena/ and expands aiprj)
-./target/release/athena init
-
-# 3. Edit .athena/config.yaml and set the three operator-supplied values:
-#    - core.agent.provider        (no default — ATH-AGENT-008)
-#    - core.agent.model           (no default — ATH-AGENT-008)
-#    - core.agent.delegable_tools (the permission ceiling must be explicit — ATH-SEC-024)
-#    Secrets never belong in this file (ATH-CFG-005): API tokens and provider keys
-#    come from environment variables or a secret manager.
-
-# 4. Start the resident Core API (the composition root: store integrity, instance #0
-#    residency, supervision, safe shutdown)
-./target/release/athena-api
-
-# 5. Use the Core API (/api/v1, 127.0.0.1:8080). The CLI verbs issue the requests:
-./target/release/athena run "implement the TODO API"
-./target/release/athena status
-./target/release/athena task list
-
-#    `athena chat` is the natural-language entry point (inline approvals and
-#    clarification answers in conversation). See crates/athena-cli/src/chat.rs.
 ```
+
+The one-liner checks the prerequisites, clones this repository, builds it in release mode with
+`cargo build --release`, and installs the two binaries onto PATH: `athena` (the CLI) and
+`athena-api` (the resident Core API). It is idempotent and tool-only — it never touches a
+project's configuration or data. From an existing clone, run `./install.sh`; or build from
+source with `cargo build --release` (the binaries then live at `./target/release/` — prefix
+every command below with that path instead).
+
+### 2. Use it
+
+ATHENA is built per project: its files live inside the project directory you want it to work on.
+
+```sh
+cd ~/projects/my-project
+
+# Generates .athena/ (config.yaml, agents/, personas/, skills/, var/)
+# and expands aiprj (.aiprj/, .agent-cli/); initialize the project once
+athena init
+
+# Start the resident Core API (listens on 127.0.0.1:8080) — the composition
+# root: store integrity, Core Agent residency, supervision, safe shutdown
+athena-api
+
+# Edit .athena/config.yaml and set the three operator-supplied values:
+#   - core.agent.provider        (no default — ATH-AGENT-008)
+#   - core.agent.model           (no default — ATH-AGENT-008)
+#   - core.agent.delegable_tools (the permission ceiling must be explicit — ATH-SEC-024)
+# Secrets never belong in this file (ATH-CFG-005): API tokens and provider keys
+# come from environment variables or a secret manager. Configuration is applied
+# at startup — restart athena-api after editing (R-CFG-09).
+```
+
+Then send work in natural language:
+
+```sh
+athena run "implement the TODO API"   # create + queue a Task
+athena status                          # overall system status
+athena task list                       # the Task list
+```
+
+Or use the conversational entry point — `athena chat` is a first-class natural-language
+interface: it shows Task progress, surfaces approval requests inline, and accepts answers
+to clarifying questions in the conversation.
+
+Further commands: `athena task show/cancel`, `athena plan show`, `athena agent list/show`,
+`athena instance list/stop` (admin), `athena runtime list`, `athena event tail`,
+`athena approval list/approve/reject`, `athena skill list/show/search/register/enable/disable`.
+Every command accepts `--json` for scripting. The CLI talks to the Core API only (`/api/v1`);
+it never launches `agent-cli` directly (`ATH-CLI-001`/`002`).
 
 Implementation-status note: the CLI verbs currently compose and print the request they would
 send to the Core API (method / path / body). Tokens are recorded only as SHA-256 hashes under

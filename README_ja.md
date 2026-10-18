@@ -74,35 +74,62 @@ athena/
 
 ## クイックスタート
 
+### 1. インストール(ツールをビルドして PATH に配置)
+
 ```sh
-# ワンライナー(リポジトリ公開後。クローン済みなら ./install.sh)
 curl -fsSL https://raw.githubusercontent.com/aquaxis/athena/main/install.sh | sh
-
-# またはソースからビルド
-cargo build --release
-
-# 2. プロジェクトへ導入(.athena/ と aiprj 展開を生成)
-./target/release/athena init
-
-# 3. .athena/config.yaml を編集し、運用者が供給する 3 つの値を設定する
-#    - core.agent.provider        (既定値なし — ATH-AGENT-008)
-#    - core.agent.model           (既定値なし — ATH-AGENT-008)
-#    - core.agent.delegable_tools (権限上限は明示が必須 — ATH-SEC-024)
-#    シークレットを設定ファイルに書いてはならない(ATH-CFG-005)。
-#    API トークンとプロバイダキーは環境変数またはシークレットマネージャから供給する。
-
-# 4. 常駐 Core API を起動する(Store の整合、instance #0 の常駐化、監督、
-#    安全な shutdown を行う構成ルート)
-./target/release/athena-api
-
-# 5. Core API (/api/v1, 127.0.0.1:8080) を利用する。CLI の各動詞が要求を発行する:
-./target/release/athena run "TODO API を実装して"
-./target/release/athena status
-./target/release/athena task list
-
-#    自然言語対話の入口は athena chat(承認依頼と質問への回答を会話内で
-#    受けられる)。実装は crates/athena-cli/src/chat.rs を参照。
 ```
+
+ワンライナーは前提を確認し、このリポジトリをクローンして `cargo build --release` で
+リリースビルドを行い、2 つのバイナリを PATH にインストールします:`athena`(CLI)と
+`athena-api`(常駐 Core API)。冪等でツールのみを対象とし、プロジェクトの設定やデータは
+一切触りません。クローン済みなら `./install.sh` を実行、またはソースから
+`cargo build --release` でビルドしても構いません(この場合バイナリは
+`./target/release/` 配下に置かれるため、以下のコマンドにそのパスを付けてください)。
+
+### 2. 使い方
+
+ATHENA はプロジェクトごとに構成されます。対象としたい作業ディレクトリの中に
+ファイルが置かれます。
+
+```sh
+cd ~/projects/my-project
+
+# .athena/ (config.yaml, agents/, personas/, skills/, var/) を生成し、
+# aiprj (.aiprj/, .agent-cli/) を展開する — プロジェクトに一度だけ実行
+athena init
+
+# 常駐 Core API を起動する(127.0.0.1:8080 で待ち受け)— 構成ルート:
+# Store の整合、Core Agent の常駐化、監督、安全な shutdown
+athena-api
+
+# .athena/config.yaml を編集し、運用者が供給する 3 つの値を設定する:
+#   - core.agent.provider        (既定値なし — ATH-AGENT-008)
+#   - core.agent.model           (既定値なし — ATH-AGENT-008)
+#   - core.agent.delegable_tools (権限上限は明示が必須 — ATH-SEC-024)
+# シークレットを設定ファイルに書いてはならない(ATH-CFG-005)。API トークンと
+# プロバイダキーは環境変数またはシークレットマネージャから供給する。
+# 設定は起動時に適用されるため、編集後は athena-api を再起動する(R-CFG-09)。
+```
+
+仕事は自然言語で依頼します:
+
+```sh
+athena run "TODO API を実装して"   # Task を作成してキューへ
+athena status                       # システム全体の状態
+athena task list                    # Task の一覧
+```
+
+または会話型の入口を使います。`athena chat` は第一級の自然言語インタフェースで、
+Task の進行状況を表示し、承認依頼を会話内に表示して回答を受け付け、
+質問(確認対象)への回答もその場で行えます。
+
+その他のコマンド:`athena task show/cancel`、`athena plan show`、
+`athena agent list/show`、`athena instance list/stop`(admin)、`athena runtime list`、
+`athena event tail`、`athena approval list/approve/reject`、
+`athena skill list/show/search/register/enable/disable`。
+どのコマンドも `--json` を受け付けます。CLI は Core API(`/api/v1`)のみを経由し、
+`agent-cli` を直接起動することはありません(`ATH-CLI-001`/`002`)。
 
 実装状況の注記: CLI の各動詞は現在、Core API へ発行する要求(method / path / body)を
 決定論的に組んで出力する。トークンは `<ATHENA_HOME>/var/api-tokens.json` に SHA-256
