@@ -12,8 +12,8 @@ Director / Lead / Worker の階層へ委任し(Delegate)、戻ってきた結果
 > Architecture**。仕様書(§1.1)では製品名ではなく、複数の AI Agent を組織化してタスクを
 > 遂行するための **システムアーキテクチャ名称** とされています。
 
-構成は次の 5 つの実行ユニットと、永続状態を一手に担う単一の権威ある SQLite ストア
-(`athena.db`)です。
+構成は次の 5 つの実行ユニットと、永続状態を一手に担う単一の権威あるストア
+(`athena.db`、`redb` エンジン — 純 Rust 埋め込み型・ACID・ファイルバック)です。
 
 | ユニット | 種別 | 役割 |
 |---|---|---|
@@ -46,7 +46,7 @@ athena/
 |   +-- athena-skills/                lib   Skill Manager / Registry / Catalog / Resolver
 |   +-- athena-state/                 lib   State Manager と遷移表
 |   +-- athena-events/                lib   Event 定義 / Store
-|   +-- athena-persistence/           lib   Repository 実装(SQLite)
+|   +-- athena-persistence/           lib   Repository 実装(`redb` ストア)
 |   +-- athena-config/                lib   設定スキーマと解決
 |   +-- athena-types/                 lib   共有型(仕様 §26)
 +-- runtimes/

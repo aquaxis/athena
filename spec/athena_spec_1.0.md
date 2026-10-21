@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 |---|---|
-| Version | 1.0（rev. 2026-10-18） |
+| Version | 1.0（rev. 2026-10-22） |
 | Status | System Architecture Specification |
 | Owner | ATHENA Architecture |
 | 実装言語 | Rust |
@@ -18,6 +18,7 @@ Scheduler ではなく、人間の自然言語指示を理解し、計画し、A
 
 | 日付 | 改訂内容 | 根拠 |
 |---|---|---|
+| 2026-10-22 | 永続化エンジンの確定（open item O-6 の決着）。第 27.2 節を改訂（`ATH-PERS-004` に SQLite 使用禁止、v1 エンジンを純 Rust の埋め込み型トランザクションストア `redb` と明記。`ATH-PERS-005` をエンジン中立の耐久性条項へ改訂）。第 4.3.1 / 4.3.2 / 4.3.4 / 5 / 23.1 / 32.1 節の SQLite 表記をエンジン中立または `redb` へ整合。SQLite 使用禁止の指示（2026-10-18 指示ソース 最優先事項）に基づく。エンジン固有の NFR 計測（NFR-02/03/04/13）は新エンジンで再記録 | `ATH-PERS-004`、`ATH-PERS-005`、`ATH-GEN-006` |
 | 2026-10-18 | Open item O-3 を確定: 第 18.3 節の既定値を v1 の確定値として確定し、`ATH-SCHED-015` を確定後の文言に改訂。根拠は Phase-1 飽和計測(AI_LOG 017)と本改訂セッションの実ランナー計測(NFR-02/03/11/13/14/16)。全項目の設定変更可能性は維持 | ATH-SCHED-015 |
 | 2026-10-18 | 第 32.2 節の依存許可表へ `athena-api → runtimes/*`(構成ルート)を追加。常駐プロセス(athena-api)が Core Host と Adapter 実装を同一プロセスで結線し registry へ登録する役割を明示した(ATH-DEV-023 の不明依存を許可として明記)。`athena-core → runtimes/*` の禁止は不変 | ATH-DEV-023、ATH-RT-008 |
 | 2026-10-18 | `agent-cli` の検証基盤を 0.29.0 へ更新(open item O-1 の再検証)。0.28.0 で観測された `serve` 起時 panic と `spawn` の登録不全は 0.29.0 で解消を確認。第 2.2 節に検証基準の注記を追記し、第 2.2.4 節を新設して設定キーの正準綴りを必須化(`ATH-ACLI-018`)— legacy 綴りのキーは読み込み時に正準化して書き戻されるため、Adapter は正準綴りのみを出力しなければならない(制御表面のバイト安定性、`ATH-CORE-044`) | `ATH-DEV-022`、`ATH-ACLI-002` |
@@ -590,7 +591,7 @@ Interface                  athena-api       (Rust HTTP サーバ, http://127.0.0
 Orchestration              athena-core      (同一プロセス内の crate)
                                             Core Host: 監督 / 状態 / Event / Queue / 権限強制
                                             ※判断は行わない（第 7.5 節）
-                           athena.db        (SQLite: Task / Plan / Event / Result)
+                           athena.db        (`redb`: Task / Plan / Event / Result)
    |
 Execution abstraction      athena-runtime-agent-cli  (Runtime Adapter)
                            （プロセス / IPC 管理は athena-runtime-agent-cli 内の
@@ -612,7 +613,7 @@ Intelligence               agent-cli #0     Core Agent（Producer persona・常�
 | `athena-runtime-agent-cli` | crate | Rust | agent-cli Adapter と Process Manager（第 14 章） | — |
 | `agent-cli` #0 | 外部プロセス | 外部依存 | Core Agent の実行（常駐、Producer persona、専用 Workspace） | — |
 | `agent-cli` #1..N | 外部プロセス | 外部依存 | 下位 Agent（Director / Lead / Worker）の実行。#0 とは分離 | — |
-| `athena.db` | ファイル | SQLite | 実行状態の永続化（第 27 章） | — |
+| `athena.db` | ファイル | `redb` | 実行状態の永続化（第 27 章。SQLite は使用しない — ATH-PERS-004） | — |
 
 **実装の配置。** 上表の実行単位は `.athena/` の**外**に置く。`.athena/` には実行可能コードを
 含めない（第 4.3.4 節は設定・定義・実行時データのみで構成される）。
@@ -696,7 +697,7 @@ ATHENA が使用するファイルはその直下の `.athena/` に収める。`
 |     |
 |     +-- var/                           実行時データ。ATHENA のみが書き込む
 |           |
-|           +-- athena.db                SQLite: Task / Plan / Event / Result（第 27 章）
+|           +-- athena.db                `redb`: Task / Plan / Event / Result（第 27 章）
 |           +-- skills/                  登録済み Skill（`skills.dir`、第 12.4 節）
 |           +-- artifacts/               Result Store。成果物の実体（ATH-RESULT-002）
 |                 +-- <result_id>/
@@ -947,7 +948,7 @@ ATHENA != Agent Marketplace
 | ATHENA Core Agent | Rust |
 | Agent Manager / Message / Event | Rust |
 | Runtime / Process / IPC | Rust |
-| 永続化 | Rust（SQLite） |
+| 永続化 | Rust（`redb`） |
 | Agent Execution | agent-cli（Rust 実装の外部プロセス） |
 | LLM Provider | Claude / Codex / Ollama その他 |
 
@@ -2340,7 +2341,8 @@ SUSPENDED Instance のスナップショット参照
   Working Memory へ保存する（ATH-STATE-019）。
 - **ATH-MEM-011** (MUST) Memory の参照・削除のため `GET /api/v1/memory` と
   `DELETE /api/v1/memory/{id}` を提供しなければならない（ATH-MEM-006）。
-- **ATH-MEM-012** (MUST) v1 の Long Term Memory の保存先は、第 27 章の **SQLite 同一 DB** とする。
+- **ATH-MEM-012** (MUST) v1 の Long Term Memory の保存先は、第 27 章の永続ストア（`redb`）の
+  **同一 DB** とする。
   別ファイルおよび外部ベクタストアを v1 の要件としてはならない。Memory へのアクセスは
   Repository インターフェース（ATH-PERS-007）経由に限り、保存先の実装詳細を Core の他モジュールへ
   露出させてはならない。類似検索の要求が発生した時点で、このインターフェースを保ったまま外部
@@ -4358,9 +4360,16 @@ Log 参照
 
 #### 27.2 初期実装のストア
 
-- **ATH-PERS-004** (MUST) 初期実装は SQLite を使用しなければならない。
-- **ATH-PERS-005** (MUST) SQLite は WAL モードで運用し、`synchronous=FULL` を既定としなければ
-  ならない。
+- **ATH-PERS-004** (MUST) 永続化エンジンは**SQLite を使用してはならない**。v1 のエンジンは
+  純 Rust の埋め込み型トランザクションストア（`redb`）とし、ファイルは
+  `<ATHENA_HOME>/var/` 配下に配置しなければならない。
+  （改訂 2026-10-22: 初版の「初期実装は SQLite を使用しなければならない」（`ATH-PERS-004` /
+  `ATH-PERS-005`）は、SQLite 使用禁止の指摘（2026-10-18 指示ソース 最優先事項、O-6 で
+  エンジン確定）により置き換えた。ID は空位にしない（`ATH-GEN-006`）— `ATH-PERS-005` は
+  下記のとおり耐久性条項として残る。）
+- **ATH-PERS-005** (MUST) エンジンは ACID トランザクションと障害時の耐久性（コミット済み
+  書込みの喪失なし）を保証しなければならない。状態遷移と Event の記録は 1 つの書込み
+  トランザクションで原子的に確定しなければならない（ATH-PERS-003）。
 - **ATH-PERS-006** (MAY) 将来 PostgreSQL 等へ移行する。移行のため、永続化層はインターフェース
   として分離しなければならない（ATH-PERS-007）。
 - **ATH-PERS-007** (MUST) 永続化実装は Repository インターフェース背後に隠蔽し、Core が SQL へ
@@ -4906,7 +4915,7 @@ athena/
 |   +-- athena-skills/     Skill Manager / Registry / Catalog / Resolver
 |   +-- athena-state/      State Manager / 遷移表
 |   +-- athena-events/     Event 定義 / Store
-|   +-- athena-persistence/ Repository 実装（SQLite）
+|   +-- athena-persistence/ Repository 実装（`redb`）
 |   +-- athena-config/     設定スキーマと解決
 |   +-- athena-types/      共通型（第 26 章）
 |

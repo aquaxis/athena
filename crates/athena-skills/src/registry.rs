@@ -6,7 +6,7 @@
 //! is the fact the wiring records).
 //!
 //! The store lives behind a minimal local seam ([`SkillStore`]) — `athena-skills`
-//! depends on `athena-types` only (§32.2), so the SQLite implementation belongs to
+//! depends on `athena-types` only (§32.2), so the store implementation belongs to
 //! `athena-persistence` and the wiring to `athena-core`, both free to see it.
 //!
 //! Source separation (P5-04, `ATH-SKILL-037/038`): registration's *input* is a source
@@ -69,7 +69,7 @@ impl RegistryFault {
     }
 }
 
-/// The Registry's store seam: the `(id, version)`-keyed skill rows. The SQLite
+/// The Registry's store seam: the `(id, version)`-keyed skill rows. The store
 /// implementation lives in `athena-persistence` (its §27.3 `skills` table exists).
 pub trait SkillStore {
     /// Insert (or replace) a row keyed `(id, version)` with the given state.

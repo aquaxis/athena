@@ -19,7 +19,7 @@ ATHENA は、自然言語で依頼された仕事を複数の AI Agent で組織
 委任し、戻ってきた結果を評価し、必要ならば再計画する。構成は5つの実行ユニット —
 `athena-api`(常駐の Core API)、`athena-core`(Core Host ライブラリ)、
 `athena-runtime-agent-cli`(Runtime Adapter)、`athena` CLI、`athena-studio`(Rust →
-WebAssembly)— と、永続状態を一手に担う単一の権威ある SQLite ストア(`athena.db`)である。
+WebAssembly)— と、永続状態を一手に担う単一の権威あるストア(`athena.db`、純 Rust 埋め込み型エンジン `redb`)である。
 
 ## 2. 解決する問題
 
@@ -111,7 +111,7 @@ Long Term(Project スコープ、明示的な書込みのみ — Core Agent の�
 出典を保持し、削除は Event で記録、上限到達時は沈黙の消化ではなく拒否・エスカレーション)。
 退避時の要約は `memory.summarizer` が指定する Agent への委任(LLM 処理)であり、利用不能
 な場合は参照(Event ID / Result ID)のみを保持する。v1 の全階層は Repository interface を
-介した同一 SQLite データベースに置く。
+介した同一の永続ストア(第 27 章。エンジンは `redb`)に置く。
 
 ## 11. Skill
 

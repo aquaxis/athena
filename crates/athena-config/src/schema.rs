@@ -136,7 +136,7 @@ pub struct DataSection {
     /// Runtime data directory. Must stay under `var/` so the version-control boundary is one
     /// path (ATH-OPS-006).
     pub dir: String,
-    /// SQLite database location (ATH-PERS-011).
+    /// Store file location (ATH-PERS-011; the v1 engine is `redb`, X-14).
     pub database: String,
 }
 

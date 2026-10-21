@@ -18,7 +18,7 @@
         <mxCell id="core" value="athena-core (Core Host)&#10;supervision · state · events · policy&#10;(never decides)" style="rounded=0;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
           <mxGeometry x="740" y="260" width="220" height="90" as="geometry"/>
         </mxCell>
-        <mxCell id="store" value="athena.db (SQLite WAL)&#10;the authoritative store" style="rounded=0;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+        <mxCell id="store" value="athena.db (redb)&#10;the authoritative store&#10;pure-Rust embedded, ACID" style="rounded=0;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
           <mxGeometry x="740" y="420" width="220" height="70" as="geometry"/>
         </mxCell>
         <mxCell id="rt0" value="agent-cli #0&#10;Core Agent (Producer)&#10;cwd: var/core-agent/" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">

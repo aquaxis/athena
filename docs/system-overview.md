@@ -20,7 +20,7 @@ a hierarchy of Director / Lead / Worker agents, evaluates what comes back, and r
 when needed. Five execution units make this up: `athena-api` (the Core API resident
 process), `athena-core` (the Core Host library), `athena-runtime-agent-cli` (the Runtime
 Adapter), the `athena` CLI, and `athena-studio` (Rust → WebAssembly). All persisted state
-lives in one authoritative SQLite store (`athena.db`).
+lives in one authoritative store (`athena.db`, the pure-Rust embedded engine `redb`).
 
 ## 2. The problem it solves
 
@@ -120,7 +120,7 @@ restart-context set), Long Term (per Project, explicit writes only — Core Agen
 or human instruction, provenance carried, deletion Event-recorded, ceiling pressure
 escalates rather than digesting). Eviction summarization is delegated to the agent named
 by `memory.summarizer`; if unavailable, only references are kept. v1 keeps all tiers in
-the same SQLite database behind the Repository interface.
+the same persistent store behind the Repository interface.
 
 ## 11. Skill
 

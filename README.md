@@ -12,7 +12,8 @@ re-plans when needed.
 > Architecture** — and, per the specification (§1.1), it is not a product name but the name of a
 > **system architecture** for organizing multiple AI agents to carry out tasks.
 
-The system consists of five execution units plus a single authoritative SQLite store (`athena.db`)
+The system consists of five execution units plus a single authoritative store (`athena.db`, the `redb` engine — pure-Rust embedded,
+ACID, file-backed)
 that holds all persisted state:
 
 | Unit | Kind | Role |
@@ -47,7 +48,7 @@ athena/
 |   +-- athena-skills/                lib   Skill Manager / Registry / Catalog / Resolver
 |   +-- athena-state/                 lib   State Manager and transition tables
 |   +-- athena-events/                lib   Event definitions / Store
-|   +-- athena-persistence/           lib   Repository implementations (SQLite)
+|   +-- athena-persistence/           lib   Repository implementations (the `redb` store)
 |   +-- athena-config/                lib   configuration schema and resolution
 |   +-- athena-types/                 lib   shared types (spec §26)
 +-- runtimes/

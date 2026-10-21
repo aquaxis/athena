@@ -262,7 +262,7 @@ mod eviction_tests {
 
 pub mod long_term {
     //! Long Term (`ATH-MEM-003`/`005`/`006`/`012`): explicit writes only, provenance
-    //! carried, deletion recorded. The storage is the **same SQLite database** behind
+    //! carried, deletion recorded. The storage is the **same persistent store** behind
     //! the `MemoryRepository` (`ATH-MEM-012`) — enforced by construction here: every
     //! staged write goes through the repository's `insert` with
     //! `tier: Long`, `scope_id: ProjectId`, never a separate file or vector store.

@@ -55,5 +55,4 @@ ulid = "1"
 sha2 = "0.10"
 humantime-serde = "1"
 regex = "1"
-rusqlite = { version = "0.37", features = ["bundled"] }
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }

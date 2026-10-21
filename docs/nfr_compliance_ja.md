@@ -1,62 +1,86 @@
-# NFR 適合記録(X-01)
+# NFR 遵守記録(X-01)
 
 | 項目 | 内容 |
 |---|---|
-| 方法 | 各 NFR 行は、**実行可能な検査による計測**(CI。LLM の非決定性を含まない、`ATH-TEST-022`)または出荷クレート内の**指名スイートによる検証**のいずれかで裏付ける |
-| 計測ソース | `tests/tests/nfr_stub_measurements.rs`(athena-conformance)および各行に引用したクレートスイート |
-| 状態表記 | ✅ 計測/検証済み · ◐ 部分検証(擬似レベル。実ランナー行は未完) · ⬜ 未完(阻害理由を明記) |
+| 方法 | 各 NFR 行は、実行可能な検査による**計測**(CI。LLM 非決定性なし、`ATH-TEST-022`)か、出荷クレート内の**指名スイートによる検証**のいずれか |
+| 計測ソース | `tests/tests/nfr_stub_measurements.rs`、**`tests/tests/nfr_redb_measurements.rs`**(ストアエンジン別の再記録、X-14 (d))、および各行が引用するクレートスイート |
+| 状態表記 | ✅ 計測/検証済み · ◐ 部分検証(stub 段階、実ランナー行は別記) · ⬜ 未着手(阻止理由を明記) |
 | 英語版 | `docs/nfr_compliance.md`(同一内容) |
 
-## 1. 行単位の記録
+## 1. 行別記録
 
-| NFR | 要件 | 状態 | 根拠 / 結果 |
+| NFR | 要件 | 状態 | 内容 / 結果 |
 |---|---|---|---|
-| NFR-01 | 16 同時 Instance、Instance 間の状態混入なし | ✅ | `nfr01_sixteen_concurrent_instances…`: 擬似 Runtime の 16 Instance が同時生存し、Runtime Instance id は一意、Workspace も Instance 毎。capability 宣言は 16 以上を検証(`ATH-RT-005`/`012`) |
-| NFR-02 | API 読み取り p95 < 200 ms @10,000 Task | ✅ | **2026-10-18 に計測**。常駐 API + 10k Task のストアで合算 p95 **7.2 ms**(一覧 p95 9.7 ms / by-id 読み取り p95 1.1 ms。本書 §3) |
-| NFR-03 | `kill -9` + 再起動: 非終端 Task を 10 秒以内に復元 | ✅ | Store/Context-document の行(`tests/core_loop.rs`、`reconcile_boot_states`)+ 実ランナーでの**タイム計測 0.12 秒**(§3) |
-| NFR-04 | 200 event/s を損失なしで永続 | ✅ | `nfr04_event_write_throughput…`: 800 件の追記、Core 毎の単調 sequence、再生長と順序が一致(200/s 以上を計測、メモリ内ストア) |
-| NFR-05 | Task 履歴の完全再構成 | ✅ | `tests/core_loop.rs`(Event 再生による再構成)、P4-27 の受入行 010–012 |
-| NFR-06 | 新 Adapter 追加時に Core 変更不要 | ✅ | 共有契約スイート(`tests/runtime_contract.rs`)+ registry 経由のみの登録(`athena-runtime::registry` テスト)。`agent-cli` Adapter が第 2 ケースとして通過 |
-| NFR-07 | 稼働中に追加した Skill が次 Task から使用可能 | ✅ | `tests/phase5_skills.rs` のエンドツーエンド walk(register → enable → 次の解決) |
-| NFR-08 | Core テストは実 `agent-cli` を要求しない | ✅ | Phase 1–2 の全スイートが擬似 Runtime 上で動作(`ATH-TEST-021`) |
-| NFR-09 | CLI と Studio が同一 API で機能差なし | ✅ | `tests/phase7_studio.rs` 第 3 行: 7 つの共有制御フローで要求計画が同一であることを検証(`ATH-NFR-009`) |
-| NFR-10 | 全遷移を Event から再構成可能 | ✅ | Store スイートの Event 連続性の行 + core_loop 再生(`ATH-EVENT-012`) |
-| NFR-11 | `athena-api` 起動 ≤ 3 秒 | ✅ | 実ランナーでのコールド **0.08 秒**(§3) |
-| NFR-12 | ログ量 < 1 MB/Task | ✅ | `nfr12_a_normal_task_logs_under_one_megabyte`: 200 反復の通常 Task を `Logger`+`LogSink` の封筒規律で捕集し 1 MB 線を十分下回ること、全行が `correlation_id` を持つ JSON 封筒であること(`ATH-OBS-005`)を確認 — 計測値は JSON 面の率直な数値 |
-| NFR-13 | 安全な停止 ≤ 30 秒 | ✅ | SIGTERM → exit を **0.06 秒**で計測。生存中の全 Instance を Runtime Interface 経由で停止(§3) |
-| NFR-14 | Core Agent 再起動 ≤ 30 秒 + 文脈再投入 | ✅ | 擬似レベルの行(`core_loop.rs`、P1-32)+ 実ランナーで**約 7 秒**。窓枯渇時は escalate(`ATH-CORE-030`)(§3) |
-| NFR-15 | クラッシュ非伝播(双方向) | ✅ | `tests/core_agent_boot.rs` + Adapter の下位クラッシュ行(P3-15/P3-18) |
-| NFR-16 | 1 Core Agent で 8 Task 同時(per-`thread_id`) | ✅ | per-thread の計上(scheduler スイート、P1-27/28)+ **実サンプル: 8 並行往復が全て順序通り応答**(§3) |
-| NFR-17 | 再起動後の二重委任なし | ✅ | `tests/core_loop.rs` 第 4 行(idempotency claim の再生、記録成果は 1 件、`ATH-CORE-035`)+ P4-27 第 012 行 |
-| NFR-18 | タイムアウト前の stall 検出 | ✅ | `observability::silence` が `iteration_timeout × factor` の線で発火し 30 分の実行タイムアウトより厳密に手前(P4-26 の行)、待機グラフ閉路検出(`ATH-OBS-013`) |
+| NFR-01 | 16 並行 Instance、インスタンス間状態汚染なし | ✅ | `nfr01_sixteen_concurrent_instances…`: 16 の stub-Runtime Instance を起動し、一意な Runtime Instance id と Instance ごとの Workspace を持って同時生存を確認。capability 宣言は ≥ 16 を表明(`ATH-RT-005/012`) |
+| NFR-02 | API 読取り p95 < 200 ms(10,000 Task) | ✅ | **再計測 2026-10-22(`redb`)**: ファイルバックエンドストア 10k Task 上、500 混合サンプルの p95 **24.62 ms**(§4)。**初計測 2026-10-18(SQLite)**: 常駐 API 経由で p95 **7.2 ms** — いずれも 200 ms を満たす。エンジン入れ替えに伴い再記録済み |
+| NFR-03 | `kill -9` + 再起動: 非終端 Task の復元 ≤ 10 秒 | ✅ | **再計測 2026-10-22(`redb`)**: 10k シード → ハンドル解放(クラッシュ相当)→ コールド再 open + `list_non_terminal` 復元が **0.103 s**(§4)。ストア/Context-document 行(`tests/core_loop.rs`、`reconcile_boot_states`)と実ランナー timed 0.12 s(§3)は不変 |
+| NFR-04 | 200 events/s を損失なしで永続化 | ✅ | **再計測 2026-10-22(`redb`)**: ファイルバックエンド上で **3,307 events/s**(400 Event、1 Event ごとに 1 エンジンコミットの耐久性正直最悪ケース)、per-Core 単調 sequence、リプレイ長と順序一致(§4)。初計測(2026-10-18)はメモリ内ストアで 800 append の ≥ 200/s |
+| NFR-05 | Task 履歴の完全再構成 | ✅ | `tests/core_loop.rs`(Event リプレイ再構成)、P4-27 の受入れ行 010–012 |
+| NFR-06 | 新 Adapter ⇒ Core 変更不要 | ✅ | 共有コントラクトスイート(`tests/runtime_contract.rs`)+ registry による実行時登録のみ(`athena-runtime::registry` テスト)。`agent-cli` Adapter が第二のケースとして通過 |
+| NFR-07 | 実行中に追加した Skill が次 Task から使用可能 | ✅ | `tests/phase5_skills.rs` のエンドツーエンドウォーク(register → enable → 次の resolve) |
+| NFR-08 | Core テストに実 `agent-cli` 不要 | ✅ | Phase 1–2 の全スイートが stub Runtime 上で走行(`ATH-TEST-021`) |
+| NFR-09 | CLI と Studio が同一 API、機能差なし | ✅ | `tests/phase7_studio.rs` 行 3: 7 つの共有制御フローが計画レベルで一致(`ATH-NFR-009`) |
+| NFR-10 | 全状態遷移を Event から再構成可能 | ✅ | ストアスイートの Event 連続性行 + core_loop リプレイ(`ATH-EVENT-012`) |
+| NFR-11 | `athena-api` 起動 ready ≤ 3 秒 | ✅ | **実測 0.08 s** コールド(実ランナー、§3)。ストア engine swap は起動計測に触れない(常駐プロセスの ready はストア open を含むが、`redb` open は軽量 — X-14 (d) の再記録対象外、下記 §4 の注記) |
+| NFR-12 | Task あたりログ体積 < 1 MB | ✅ | `nfr12_a_normal_task_logs_under_one_megabyte`: 200 反復の通常 Task を `Logger`+`LogSink` のエンベロープ規律で捕捉して 1 MB 線を大きく下回り、全行が `correlation_id` を持つ JSON エンベロープ(`ATH-OBS-005`)— 体積計数は JSON 面の正直な値 |
+| NFR-13 | 安全な停止 ≤ 30 秒 | ✅ | **再記録 2026-10-22(`redb`)**: コミット済み書込みがクリーン close → 再 open で全行無傷(§4 — ≤ 30 秒予算の前提となる耐久性面)。実測 0.06 s の SIGTERM → プロセス終了(§3)の停止時間面は不変 |
+| NFR-14 | Core Agent 再起動 ≤ 30 秒 + 再注入 | ✅ | stub 段階の行(`core_loop.rs`、P1-32)+ **実測 ≈7 秒**(実ランナー、§3)。窗口消耗時はエスカレーション(`ATH-CORE-030`)。エンジン入れ替えと独立(プロセス監督面) |
+| NFR-15 | クラッシュ非伝播(双方向) | ✅ | `tests/core_agent_boot.rs` + 下位クラッシュ行(Adapter、P3-15/P3-18) |
+| NFR-16 | 1 Core Agent で 8 Task 並行(per-`thread_id`) | ✅ | per-thread 会計(scheduler スイート、P1-27/28)+ **実生サンプル: 8 並行 round trip がすべて順序どおり回答**(§3) |
+| NFR-17 | 再起動後の二重委任なし | ✅ | `tests/core_loop.rs` 行 4(idempotency クレームのリプレイ、記録 outcome は 1 件、`ATH-CORE-035`)+ P4-27 行 012 |
+| NFR-18 | タイムアウト前の stall 検出 | ✅ | `observability::silence` が `iteration_timeout × factor` 線で発火し 30 分の execution timeout より厳しく下(P4-26 の行)、wait-graph 循環検出(`ATH-OBS-013`) |
 
-## 2. 実ランナー レーン — 解決(2026-10-18、Option B)
+## 2. 実ランナー区分 — 解決済み(2026-10-18、Option B)
 
-実ランナーの行と live-Agent E2E はインストール済み `agent-cli` 上で実施した。インストール
-バイナリは **0.29.0** であり、本セッションで経験的に再検証の上、Option B の基盤として確定
-した(人間の判断: 0.23.0 に固定せず、動作する新しいリリースに据える):
+実ランナー行と実 Agent E2E は導入済み `agent-cli` に乗った。導入バイナリは **0.29.0** となり、
+本セッションで経験的に再検証済み(人間の決定: 0.23.0 に固定せず、動作する新リリースに確定):
 
-- 以前観測された 0.28.0 の 2 つの欠陥 — persona 設定後の `agent-cli serve` の panic と、
-  `spawn` が繰り返し報告していた `detached agent did not register within 5s` — は
+- 先に観測された 0.28.0 の 2 つの欠陥 — persona 設定後の `agent-cli serve` panic と
+  `spawn` が繰り返し報告する `detached agent did not register within 5s` — は
   **いずれも 0.29.0 で解消**;
-- 負荷を担う挙動はすべて再確認(設定チェーン、IPC 往復、文脈保持、絶対パスの手順ファイル
-  読み取り、IPC 経路での `/<name>` のリテラル扱い);
-- 新たなキー正準化の挙動は仕様 §2.2.4 / `ATH-ACLI-018` として規範化(Adapter は正準綴りと
-  `agent-cli` 側の Tool 名のみを出力 — 再起動時チェックサムのため制御表面はバイト安定を保つ)。
+- 全ての基幹挙動が維持(config chain、IPC round trip、コンテキスト保持、絶対パスの手順
+  ファイル読取り、IPC 経路での `/<name>` のリテラル扱い);
+- 新しいキー正準化挙動は spec §2.2.4 / `ATH-ACLI-018` として規範
+  (Adapter は正準綴りと `agent-cli` 側のツール名のみを出力 — 制御表面は再起動 checksum のため
+  バイト安定を維持)。
 
-検証表の全体とフォローアップ項目: `docs/agent_cli_0290_findings_ja.md`。
+検証表 + 追跡項目の詳細: `docs/agent_cli_0290_findings.md`。
 
-## 3. 実ランナー計測(2026-10-18、0.29.0 基盤で実施)
+## 3. 実ランナー計測(2026-10-18、0.29.0 基盤で取得 — SQLite engine 時点)
 
-| 行 | 目標 | 計測値 | 判定 |
+| 行 | 目標 | 実測 | 判定 |
 |---|---|---|---|
-| NFR-11 | `athena-api` 準備 ≤ 3 秒 | コールド boot-to-ready **0.081–0.082 秒**(3 回のクリーン実行。`/healthz` をプロセス起動からポーリング)、instance #0 常駐 | ✅ |
-| NFR-02 | 読み取り p95 < 200 ms @10,000 Task | **合算 p95 7.2 ms**(一覧 p95 9.7 ms、by-id p95 1.1 ms。ストア側 `list_page` 修正後の 600 混合サンプル — 修正前のメモリ内スライスは一覧あたり約 140 ms を歩行) | ✅ |
-| NFR-03(計時) | kill -9 + 再起動、非終端 Task の復元 ≤ 10 秒 | **0.12 秒**(kill -9 → 新規 boot → Task 一覧が復元行を返す) | ✅ |
-| NFR-13 | 安全な停止 ≤ 30 秒 | **0.06 秒**。SIGTERM → プロセス終了、生存中の全 Instance を Runtime Interface 経由で停止 | ✅ |
-| NFR-14(計時) | instance #0 の kill -9 → Core Host 再起動 + 再投入 ≤ 30 秒 | **約 7 秒**(poll 間隔 5 秒 + spawn)を 2 回検証。再起動窓の 4 回目の算入失敗はループせず escalate(`ATH-CORE-030`) | ✅ |
-| NFR-16(生サンプル) | 1 Core Agent Instance、8 Task 同時(per-`thread_id`) | 常駐 1 インスタンスへの peer agent-id による **8 並行 `agent-cli ask` 往復**: 8 件すべてが順序通り応答、壁時間 4.5 秒、輸送障害ゼロ(scheduler スイートが計上検証を担うことで、本行の実運用の面を閉じる) | ✅ |
-| Live-Agent E2E | 実 Agent による Task 完遂 | `tests/live_agent_e2e.rs`(`--ignored` 手動レーン): 非同期の 0.29.0 インスタンスが実 registry IPC 経由で封筒化された委任を受領、**実ファイル作業**を実行(Workspace 内の bash + write)、応答が結果取込として現れ、teardown で記録を解放 — 合計 14.2 秒 | ✅ |
+| NFR-11 | `athena-api` 起動 ready ≤ 3 秒 | **0.081–0.082 s** コールド boot-to-ready(3 回のクリーン実行。プロセス起動から `/healthz` をポーリング)。instance #0 常駐 | ✅ |
+| NFR-02 | 読取り p95 < 200 ms @10,000 Task | **combined p95 7.2 ms**(list p95 9.7 ms、id 読み p95 1.1 ms。ストア側 `list_page` 修正後の 600 混合サンプル — 修正前のメモリ内ウォークは list 当たり約 140 ms) | ✅ |
+| NFR-03 (timed) | kill -9 + 再起動、非終端 Task の復元 ≤ 10 秒 | **0.12 s**(kill -9 → 新規 boot → 復元行を Task list が提供) | ✅ |
+| NFR-13 | 安全な停止 ≤ 30 秒 | **0.06 s** SIGTERM → プロセス終了。全生存 Instance を Runtime Interface 経由で停止 | ✅ |
+| NFR-14 (timed) | instance #0 kill -9 → Core Host 再起動 + 再注入 ≤ 30 秒 | **約 7 秒**(poll 5 秒 + spawn)、2 回検証。再起動窗口の 4 回目の計上失敗がループではなくエスカレーション(`ATH-CORE-030`) | ✅ |
+| NFR-16 (raw sample) | 1 Core Agent Instance、8 Task 並行(per-`thread_id`) | 1 常駐 Instance 上で peer agent-id による **8 並行 `agent-cli ask` round trip**: 全 8 件が順序どおり回答、4.5 s 壁時計、伝送障害ゼロ(scheduler スイートが会計検証を担い、この行の実生面は完結) | ✅ |
+| 実 Agent E2E | 実 Agent が Task を完遂 | `tests/live_agent_e2e.rs`(`--ignored` 手動区分): デタッチ済み 0.29.0 Instance が実 registry IPC で envelope 化委任を受領し、**実ファイル作業**(Workspace 内 bash + write)を実行、応答が result intake として実体化、teardown でレコード解放 — 合計 14.2 s | ✅ |
 
-これらの点を超える**計時劣化**の面(持続負荷の soak、コンテナ境界)は、v1 の単一ホストの
-対象外である(`ATH-OPS-006`)。
+これらの点を超える *timed-degradation* 面(継続負荷 soak、コンテナ境界)は、v1 の
+シングルホストスコープ(`ATH-OPS-006`)には含まれない。
+
+## 4. ストアエンジン別再記録 — `redb`(X-14 (d)、2026-10-22)
+
+`docs/nfr_compliance.md` §3 の記録は SQLite engine 時点で取得された。コンプライアンス記録は
+エンジン固有であるため、SQLite 使用禁止(指示ソース 最優先事項、2026-10-18)で O-6 の
+engine 確定が `redb` に落ち着いたことに伴い、**エンジン固有の 4 行(NFR-02/03/04/13)を
+ファイルバックエンドの新しい engine 上で再計測**した(`<ATHENA_HOME>/var/athena.db` —
+配置プロジェクトが実際に走行する耐久性基盤)。計測は
+`tests/tests/nfr_redb_measurements.rs`(athena-conformance、CI 実行可能、LLM 非決定性なし
+`ATH-TEST-022`)。
+
+| 行 | 目標 | `redb` 実測(2026-10-22、ファイルバックエンド) | 判定 |
+|---|---|---|---|
+| NFR-02 | 読取り p95 < 200 ms @10,000 Task | **p95 24.62 ms**(500 混合サンプル: 300 の list page[浅い/深い offset を分散、ページ 20 行] + 200 の id 読み。読み取り面は store 直 — 常駐 API の HTTP 面を含まない。SQLite 時点の 7.2 ms の実測は同面) | ✅ |
+| NFR-03 | `kill -9` + 再起動、非終端 Task の復元 ≤ 10 秒 | **0.103 s**(10k Task シード → エンジンハンドル解放 = 埋め込み engine におけるプロセス死亡相当 → コールド再 open + `list_non_terminal` が 5,000 非終端行を復元) | ✅ |
+| NFR-04 | 200 events/s を損失なしで永続化 | **3,307 events/s**(400 Event、**1 Event ごとに 1 エンジンコミット** = 状態遷移 + Event の原子的単位 `ATH-PERS-003` の耐久性正直な最悪ケース。per-Core 単調 sequence、リプレイ長 = 追加数、順序 = 追加順) | ✅ |
+| NFR-13 | 安全な停止 ≤ 30 秒 | **コミット済み書込みの全行生存**(40 行シード → クリーン close [ハンドル drop] → 再 open → 全行存在と全 id 解決。≤ 30 秒予算が仮定する耐久性面)。停止時間面そのもの(§3 の 0.06 s)はエンジン非依存 | ✅ |
+
+**再記録のスコープ注記。** X-14 (d) の対象は「SQLite 上で計測された記録ベースの NFR」—
+NFR-02/03/04/13 — であり、すべてここで新 engine 上の値に置き換わった。その他の行
+(NFR-11 の起動 ready、NFR-14 の Core Agent 再起動)の計測は主にプロセス監督・常駐の面であり、
+store engine の入れ替えによる有意な変化はなく、§3 の記録が現行の証拠として残る。論理データ
+モデルと Repository trait 境界は `ATH-PERS-002/003/006` の耐久性条項を含めエンジン交換で
+不変である(`X-14` (c)、design §16.4 を参照)。
