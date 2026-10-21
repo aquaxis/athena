@@ -183,6 +183,43 @@ pub fn run_init(project_root: &Path) -> Result<InitReport, InitFault> {
         &mut report,
     )?;
 
+    // The provenance manifest for `athena update` (R-CLI-08, design §2.9/D-21): the shipped
+    // forms of the definitions this run wrote — so a later `athena update` can prove a
+    // project file unmodified and refresh only those. The manifest lives under `var/`
+    // (ATH-OPS-002's write boundary; ignored with it) and is written only when absent:
+    // init adds only missing elements, and a re-run must not regenerate a manifest a newer
+    // `athena update` run has since built. Only files this run itself wrote are recorded —
+    // an existing file could be an operator modification, and the never-overwrite
+    // discipline does not let init legitimize it.
+    let shipped: &[(&str, &str)] = &[
+        ("personas/producer.md", template::PERSONA_PRODUCER),
+        ("personas/director.md", template::PERSONA_DIRECTOR),
+        ("personas/lead.md", template::PERSONA_LEAD),
+        ("personas/worker.md", template::PERSONA_WORKER),
+    ];
+    let mut manifest = crate::update::read_manifest(&home).map_err(|fault| InitFault::Io {
+        path: fault.to_string(),
+        detail: "the update manifest read failed".to_string(),
+    })?;
+    for (key, content) in shipped {
+        let target = home.join(key);
+        if !target.exists() {
+            manifest
+                .files
+                .insert((*key).to_string(), (*content).to_string());
+        }
+    }
+    let manifest_path = home.join("var").join(crate::update::MANIFEST_NAME);
+    if manifest_path.exists() {
+        report.kept.push(manifest_path);
+    } else {
+        crate::update::write_manifest(&home, &manifest).map_err(|fault| InitFault::Io {
+            path: fault.to_string(),
+            detail: "the update manifest write failed".to_string(),
+        })?;
+        report.created.push(manifest_path);
+    }
+
     // --- The two `aiprj` expansions (ATH-AIPRJ-005) ---
     expand_aiprj(
         project_root,

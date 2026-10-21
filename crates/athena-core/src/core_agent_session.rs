@@ -24,7 +24,7 @@ use athena_events::events::{
     CoreAgentEscalated, CoreAgentHeartbeat, CoreAgentRestarted, CoreAgentStarted,
 };
 use athena_events::{EventContext, EventError, TypedEvent};
-use athena_persistence::SqliteStore;
+use athena_persistence::AthenaStore;
 use athena_persistence::error::PersistenceError;
 use athena_persistence::repository::{
     AgentRepository, ApprovalRepository, EventRepository, MemoryRepository, PlanRepository,
@@ -449,7 +449,7 @@ pub enum Reconciliation {
 /// # Errors
 /// Store failures, surfaced whole.
 pub fn reconcile_boot_states(
-    store: &mut SqliteStore,
+    store: &mut AthenaStore,
     task: &TaskId,
     alive: impl Fn(&AgentInstance) -> bool,
     now: &str,
@@ -619,7 +619,7 @@ impl ContextDocument {
     ///
     /// # Errors
     /// Store read failures, surfaced whole for the caller to classify.
-    pub fn rebuild(store: &mut SqliteStore, task: &TaskId) -> Result<Self, PersistenceError> {
+    pub fn rebuild(store: &mut AthenaStore, task: &TaskId) -> Result<Self, PersistenceError> {
         let mut document = Self::default();
 
         // The Plan and its incomplete steps (ATH-MEM-007's first two rows).

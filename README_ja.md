@@ -152,6 +152,24 @@ Task の進行状況を表示し、承認依頼を会話内に表示して回答
 どのコマンドも `--json` を受け付けます。CLI は Core API(`/api/v1`)のみを経由し、
 `agent-cli` を直接起動することはありません(`ATH-CLI-001`/`002`)。
 
+## 更新
+
+ツールとプロジェクトの定義を最新に保ちます:
+
+```sh
+athena update
+```
+
+`athena update` を実行すると、ワンラインインストーラ
+(`curl -fsSL https://raw.githubusercontent.com/aquaxis/athena/main/install.sh | sh`)
+と同等の作業を行います: 公開リポジトリを取得し、release モードでビルドし、
+`athena` と `athena-api` のバイナリを PATH へ再インストールします。
+実行ディレクトリから `.athena/` プロジェクトが解決できる場合は、さらに
+プロジェクトの `personas/` と `skills/` **のみ**をリポジトリの同梱既定値から
+更新します — 追加は積み上げ式で、ユーザーが改変した定義を上書きすることは
+ありません(`config.yaml`、`agents/`、`var/` には一切触れません)。
+`.athena/` のないディレクトリではツール更新のみが実行されます。
+
 実装状況の注記: CLI の各動詞は現在、Core API へ発行する要求(method / path / body)を
 決定論的に組んで出力する。トークンは `<ATHENA_HOME>/var/api-tokens.json` に SHA-256
 ハッシュのみ記録される(`ATH-SEC-005`)。Studio は `scripts/build-studio.sh` で

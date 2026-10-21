@@ -77,7 +77,7 @@ fn render_labels(family: &MetricFamily, labels: &LabelSet) -> String {
 /// # Errors
 /// Store read failures surface whole; the caller answers 500.
 pub fn render_from(
-    store: &athena_core::SqliteStore,
+    store: &athena_core::AthenaStore,
 ) -> Result<String, athena_core::PersistenceError> {
     let mut registry = Metrics::new();
     let tasks = athena_core::TaskRepository::list_all(store)?;

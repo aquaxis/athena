@@ -207,7 +207,7 @@ pub mod staging {
     //! risk (an operation exceeding the shown class demands a fresh approval,
     //! `ATH-HITL-014/015`) and demands uses remain.
 
-    use athena_persistence::SqliteStore;
+    use athena_persistence::AthenaStore;
     use athena_persistence::repository::ApprovalRepository;
     use athena_types::{
         AgentId, Approval, ApprovalId, ApprovalScope, ApprovalState, InstanceId, RiskLevel, TaskId,
@@ -223,7 +223,7 @@ pub mod staging {
     /// Store faults surface whole.
     #[allow(clippy::too_many_arguments)]
     pub fn create(
-        store: &mut SqliteStore,
+        store: &mut AthenaStore,
         id: &ApprovalId,
         task: &TaskId,
         requester: &AgentId,
@@ -487,7 +487,7 @@ mod hitl_tests {
 
     #[test]
     fn the_staged_row_carries_the_descriptor_deadline_and_scope() {
-        let mut store = athena_persistence::SqliteStore::in_memory().expect("store");
+        let mut store = athena_persistence::AthenaStore::in_memory().expect("store");
         let task = task_row();
         TaskRepository::insert(&mut store, &task).expect("task seeds");
         let scope = ApprovalScope::OperationOnly {

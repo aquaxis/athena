@@ -13,7 +13,7 @@ use athena_core::core_agent_session::{ContextDocument, reconcile_boot_states};
 use athena_core::orphan::{OrphanRoute, SideEffectVerification, authorize_orphan_retry};
 use athena_core::result_manager;
 use athena_core::runtime_manager::suspension::{FrozenSnapshot, resume_with};
-use athena_persistence::SqliteStore;
+use athena_persistence::AthenaStore;
 use athena_persistence::db::now_rfc3339;
 use athena_persistence::repository::MessageRow;
 use athena_persistence::repository::NewEvent;
@@ -22,9 +22,10 @@ use athena_persistence::repository::{
     ResultRepository, TaskRepository, ToolExecutionRepository,
 };
 use athena_types::{
-    AgentId, AgentInstanceState, AgentLevel, EvaluationId, EventId, InstanceId, MessageId,
-    MessageType, Plan, PlanId, PlanStep, PlanStepId, PlanStepState, Priority, ResultId, RiskLevel,
-    SkillRef, Task, TaskId, TaskState, ToolExecutionId, Verdict,
+    AgentDefinition, AgentId, AgentInstanceState, AgentLevel, EvaluationId, EventId, InstanceId,
+    MessageId, MessageType, ModelRef, Plan, PlanId, PlanStep, PlanStepId, PlanStepState, Priority,
+    ResultId, RiskLevel, RuntimeType, SkillRef, Task, TaskId, TaskState, ToolExecutionId, ToolName,
+    Verdict,
 };
 
 // --- Fixtures ---------------------------------------------------------------------------
@@ -119,6 +120,27 @@ fn result_row(task: &TaskId, step: &PlanStepId) -> athena_types::ExecutionResult
         metadata: "{}".into(),
     }
 }
+fn definition_row(slug: &str) -> AgentDefinition {
+    AgentDefinition {
+        id: AgentId::new(slug),
+        name: format!("{slug} (test definition)"),
+        level: AgentLevel::Worker,
+        description: "the worker the acceptance seed's instances reference".into(),
+        capabilities: vec!["summarize".into()],
+        persona_ref: "worker.md".into(),
+        persona_version: "1.0.0".into(),
+        allowed_tools: vec![ToolName::FsRead, ToolName::FsWrite],
+        delegable_tools: vec![],
+        default_skills: vec![],
+        runtime: RuntimeType::AgentCli,
+        model: ModelRef {
+            provider: "stub".into(),
+            name: "stub-model".into(),
+        },
+        max_delegation_depth: 4,
+        dynamic: false,
+    }
+}
 
 fn instance_row(
     state: AgentInstanceState,
@@ -149,7 +171,12 @@ fn new_instance_of(task: &TaskId, slug: &str) -> InstanceId {
     InstanceId::new()
 }
 
-fn seed_running(store: &mut SqliteStore, task: &TaskId) -> Plan {
+fn seed_running(store: &mut AthenaStore, task: &TaskId) -> Plan {
+    // The instance rows this seed's callers insert demand their parent record
+    // (ATH-AGENT-002's FK semantics over §27.3).
+    store
+        .upsert_definition(&definition_row("sum-worker"))
+        .expect("definition row");
     let now = now_rfc3339();
     store
         .create_task_with_event(
@@ -184,7 +211,7 @@ fn seed_running(store: &mut SqliteStore, task: &TaskId) -> Plan {
 
 #[test]
 fn ath_test_001_002_natural_language_in_queued_task_extracted_fields_out() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = TaskId::new();
     let now = now_rfc3339();
 
@@ -238,7 +265,7 @@ fn ath_test_001_002_natural_language_in_queued_task_extracted_fields_out() {
 
 #[test]
 fn ath_test_003_a_plan_with_steps_and_a_plancreated_event() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = TaskId::new();
     let plan = seed_running(&mut store, &task);
     let now = now_rfc3339();
@@ -268,7 +295,7 @@ fn ath_test_003_a_plan_with_steps_and_a_plancreated_event() {
     );
 }
 
-fn spawn_step_ready_event(store: &mut SqliteStore, plan: &Plan, now: &str) {
+fn spawn_step_ready_event(store: &mut AthenaStore, plan: &Plan, now: &str) {
     for order in 0..plan.steps.len() {
         let step_id = plan.steps[order].id.clone();
         PlanRepository::update_step_state(store, &step_id, PlanStepState::Ready)
@@ -288,7 +315,7 @@ fn spawn_step_ready_event(store: &mut SqliteStore, plan: &Plan, now: &str) {
 
 #[test]
 fn ath_test_004_005_006_selection_started_and_instruction_sent() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = TaskId::new();
     let plan = seed_running(&mut store, &task);
     let now = now_rfc3339();
@@ -356,7 +383,7 @@ fn ath_test_004_005_006_selection_started_and_instruction_sent() {
 
 #[test]
 fn ath_test_007_008_result_persisted_and_evaluation_gate_passed() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = TaskId::new();
     let plan = seed_running(&mut store, &task);
     let now = now_rfc3339();
@@ -430,7 +457,7 @@ fn ath_test_007_008_result_persisted_and_evaluation_gate_passed() {
 
 #[test]
 fn ath_test_009_insufficiency_replans_with_a_new_revision() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = TaskId::new();
     let first = seed_running(&mut store, &task);
     drop(first);
@@ -476,7 +503,7 @@ fn ath_test_009_insufficiency_replans_with_a_new_revision() {
 
 #[test]
 fn ath_test_010_the_task_reaches_its_end_with_a_terminal_event() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = TaskId::new();
     let now = now_rfc3339();
     store
@@ -526,7 +553,7 @@ fn ath_test_010_the_task_reaches_its_end_with_a_terminal_event() {
 
 #[test]
 fn ath_test_011_refused_high_risk_leaves_no_tool_execution() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = TaskId::new();
     let plan = seed_running(&mut store, &task);
     let instance = instance_row(AgentInstanceState::Busy, &task, Some(&plan.steps[0].id));
@@ -557,7 +584,7 @@ fn ath_test_011_refused_high_risk_leaves_no_tool_execution() {
 
 #[test]
 fn ath_test_012_a_restart_reconciles_and_the_task_restores() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
 
     let task = TaskId::new();
     let plan = seed_running(&mut store, &task);

@@ -8,14 +8,14 @@ use athena_types::{PlanStepDraft, Task, TaskId};
 /// A fresh backing store per test case, opened in memory, with one seeded `Task` row —
 /// the `plans` table references `tasks`, so issuance needs the owning Task to exist.
 struct BackedStore {
-    store: athena_persistence::SqliteStore,
+    store: athena_persistence::AthenaStore,
     task_id: TaskId,
 }
 
 impl BackedStore {
     fn new() -> Self {
         let mut store =
-            athena_persistence::SqliteStore::in_memory().expect("in-memory store opens");
+            athena_persistence::AthenaStore::in_memory().expect("in-memory store opens");
         let task = Task {
             id: TaskId::new(),
             parent_id: None,

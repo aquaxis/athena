@@ -42,7 +42,7 @@ fn the_observed_rows_carry_their_labels() {
 fn the_api_render_includes_a_task_count_from_the_store() {
     // R-OBS-01: the *store* is the observation source, not vibes; a store with two Tasks
     // in different states renders distinct `athena_tasks_total{state=…}` rows.
-    let mut store = athena_core::SqliteStore::in_memory().expect("store");
+    let mut store = athena_core::AthenaStore::in_memory().expect("store");
     for (id_suffix, state) in [
         ("t1", athena_types::TaskState::Created),
         ("t2", athena_types::TaskState::Failed),

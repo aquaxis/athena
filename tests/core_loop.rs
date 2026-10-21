@@ -21,7 +21,7 @@ use athena_events::EventContext;
 use athena_events::envelope::Actor;
 use athena_persistence::db::now_rfc3339;
 use athena_persistence::repository::{EventRepository, IdempotencyRepository, TaskRepository};
-use athena_persistence::{NewEvent, SqliteStore};
+use athena_persistence::{AthenaStore, NewEvent};
 use athena_runtime::{Runtime as _, StubRuntime, StubScript};
 use athena_types::{
     AgentDefinition, AgentId, Deadlines, EventId, InstanceId, ModelRef, PlanStepId, Priority,
@@ -106,7 +106,7 @@ fn task_row(id: &TaskId, state: TaskState, now: &str) -> Task {
 
 /// Seed the persisted state of one Task: task row, plan+steps, an instance row, and a
 /// claimed delegation key (the no-double-delegation fixture).
-fn seed_work(store: &mut SqliteStore) -> [TaskId; 2] {
+fn seed_work(store: &mut AthenaStore) -> [TaskId; 2] {
     let pre = TaskId::new();
     let held = TaskId::new();
     let now = now_rfc3339();
@@ -207,7 +207,7 @@ fn the_loop_completes_on_the_stub_runtime() {
 #[test]
 fn a_task_is_reconstructed_from_its_events_in_order() {
     // ATH-EVENT-012 / P1-13's store row: the persisted Events replay the run.
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = TaskId::new();
     let now = now_rfc3339();
     store
@@ -263,7 +263,7 @@ fn a_task_is_reconstructed_from_its_events_in_order() {
 #[test]
 fn a_core_agent_restart_reinjects_the_context_and_honors_the_window() {
     // ATH-CORE-029 / ATH-CORE-045 / R-CORE-31: the deterministic procedure.
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let [_, held] = seed_work(&mut store);
     let now = now_rfc3339();
 
@@ -318,7 +318,7 @@ fn a_core_agent_restart_reinjects_the_context_and_honors_the_window() {
 fn the_replayed_delegation_key_runs_once() {
     // ATH-CORE-035 / ATH-NFR-17: after the Core restart, the idempotency store's claim
     // replays rather than re-runs.
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let [_, held] = seed_work(&mut store);
     let step = PlanStepId::new();
     let key = key_of(&step, 0);
@@ -349,7 +349,7 @@ fn the_replayed_delegation_key_runs_once() {
 fn the_phase_1_measurements_render_for_the_limits_settling() {
     // ATH-SCHED-015: block/instance/age readings off one seeded tick — the observed
     // values are the record the §18.3 settling cites.
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     seed_work(&mut store);
 
     // Forty queued steps of one Task running against a 16-instance ceiling: the

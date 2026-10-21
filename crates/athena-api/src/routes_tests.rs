@@ -182,7 +182,7 @@ async fn task_api_router() -> (axum::Router, String) {
     use std::sync::Mutex;
     let mut registry = TokenRegistry::default();
     let operator = registry.issue("operator-test", Role::Operator);
-    let store = athena_core::SqliteStore::in_memory().expect("store");
+    let store = athena_core::AthenaStore::in_memory().expect("store");
     let router = crate::build_router(crate::AppState {
         registry: Arc::new(registry),
         mode: AuthMode::Token,
@@ -418,12 +418,12 @@ async fn shape_violations_answer_with_their_codes() {
 async fn memory_api_router() -> (
     axum::Router,
     String,
-    std::sync::Arc<std::sync::Mutex<athena_core::SqliteStore>>,
+    std::sync::Arc<std::sync::Mutex<athena_core::AthenaStore>>,
 ) {
     let mut registry = TokenRegistry::default();
     let operator = registry.issue("operator-test", Role::Operator);
     let store = std::sync::Arc::new(std::sync::Mutex::new(
-        athena_core::SqliteStore::in_memory().expect("store"),
+        athena_core::AthenaStore::in_memory().expect("store"),
     ));
     let router = crate::build_router(crate::AppState {
         registry: std::sync::Arc::new(registry),
@@ -435,7 +435,7 @@ async fn memory_api_router() -> (
 }
 
 async fn seed_one_long_record(
-    store: &std::sync::Arc<std::sync::Mutex<athena_core::SqliteStore>>,
+    store: &std::sync::Arc<std::sync::Mutex<athena_core::AthenaStore>>,
 ) -> String {
     use athena_core::MemoryRepository;
     let scope = athena_types::ProjectId::derive("/repo/p4-09");
@@ -564,12 +564,12 @@ use athena_types::{Priority, Task, TaskId, TaskState};
 async fn clarify_router() -> (
     axum::Router,
     String,
-    std::sync::Arc<std::sync::Mutex<athena_core::SqliteStore>>,
+    std::sync::Arc<std::sync::Mutex<athena_core::AthenaStore>>,
 ) {
     let mut registry = TokenRegistry::default();
     let operator = registry.issue("operator-test", Role::Operator);
     let store = std::sync::Arc::new(std::sync::Mutex::new(
-        athena_core::SqliteStore::in_memory().expect("store"),
+        athena_core::AthenaStore::in_memory().expect("store"),
     ));
     let router = crate::build_router(crate::AppState {
         registry: std::sync::Arc::new(registry),
@@ -582,7 +582,7 @@ async fn clarify_router() -> (
 
 /// Seed a RUNNING task row plus an open clarification (the ask-side store face).
 async fn seed_running_task_with_clarification(
-    store: &std::sync::Arc<std::sync::Mutex<athena_core::SqliteStore>>,
+    store: &std::sync::Arc<std::sync::Mutex<athena_core::AthenaStore>>,
 ) -> String {
     use athena_core::{ClarificationRepository, TaskRepository};
     let mut guard = store.lock().expect("store");
@@ -720,12 +720,12 @@ async fn answering_a_task_without_an_open_clarification_refuses() {
 async fn approvals_router() -> (
     axum::Router,
     String,
-    std::sync::Arc<std::sync::Mutex<athena_core::SqliteStore>>,
+    std::sync::Arc<std::sync::Mutex<athena_core::AthenaStore>>,
 ) {
     let mut registry = TokenRegistry::default();
     let operator = registry.issue("operator-test", Role::Operator);
     let store = std::sync::Arc::new(std::sync::Mutex::new(
-        athena_core::SqliteStore::in_memory().expect("store"),
+        athena_core::AthenaStore::in_memory().expect("store"),
     ));
     let router = crate::build_router(crate::AppState {
         registry: std::sync::Arc::new(registry),
@@ -737,7 +737,7 @@ async fn approvals_router() -> (
 }
 
 async fn seed_requested_approval(
-    store: &std::sync::Arc<std::sync::Mutex<athena_core::SqliteStore>>,
+    store: &std::sync::Arc<std::sync::Mutex<athena_core::AthenaStore>>,
 ) -> String {
     use athena_core::{ApprovalRepository, TaskRepository};
     let mut guard = store.lock().expect("store");

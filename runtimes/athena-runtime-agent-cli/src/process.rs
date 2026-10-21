@@ -115,16 +115,18 @@ impl ProcessDriver for TokioDriver {
             cmd.stdin(std::process::Stdio::null());
             cmd.stdout(std::process::Stdio::null());
             cmd.stderr(std::process::Stdio::null());
-            let child = cmd
-                .spawn()
-                .map_err(|error| RuntimeError::Failure(format!("agent-cli spawn failed: {error}")))?;
+            let child = cmd.spawn().map_err(|error| {
+                RuntimeError::Failure(format!("agent-cli spawn failed: {error}"))
+            })?;
             let pid = child
                 .id()
                 .ok_or_else(|| RuntimeError::Failure("agent-cli spawn reported no pid".into()))?;
             if pid == 0 {
                 // Pre-registration semantics: without an OS pid there is nothing to
                 // supervise, so this is spawn-class failure, never a recorded instance.
-                return Err(RuntimeError::Failure("agent-cli spawn reported pid 0".into()));
+                return Err(RuntimeError::Failure(
+                    "agent-cli spawn reported pid 0".into(),
+                ));
             }
             self.table.lock().expect("driver table").entries.insert(
                 pid,
@@ -150,9 +152,9 @@ impl ProcessDriver for TokioDriver {
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
-            let out = std_cmd
-                .output()
-                .map_err(|error| RuntimeError::Failure(format!("spawn launcher failed: {error}")))?;
+            let out = std_cmd.output().map_err(|error| {
+                RuntimeError::Failure(format!("spawn launcher failed: {error}"))
+            })?;
             std::fs::write(
                 std::env::temp_dir().join("athena-launcher-debug.txt"),
                 format!(

@@ -5,7 +5,7 @@
 //!   leased to a non-terminal Task answers 409 (R-DATA-005, ath-API-023); `auto_run`
 //!   queues at creation, so a later `run` is a 409 (R-API-17).
 //! - **Run / cancel** ride the exact §17.1 rows: `athena-state` resolves the table, and
-//!   `SqliteStore::transition_task` writes transition + Event atomically (ATH-PERS-003).
+//!   `AthenaStore::transition_task` writes transition + Event atomically (ATH-PERS-003).
 //!   An out-of-table move is a 409, never a fabrication.
 //! - **Events** replay per Task through the store, cursor-paginated (P1-39).
 //! - **Idempotency**: a `POST /tasks` presenting `Idempotency-Key` replays its recorded
@@ -24,9 +24,9 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
-/// The store holder the handlers share (`SqliteStore` rides the allowed edge list
+/// The store holder the handlers share (`AthenaStore` rides the allowed edge list
 /// through `athena-core`'s re-export).
-pub type SharedStore = Arc<Mutex<athena_core::SqliteStore>>;
+pub type SharedStore = Arc<Mutex<athena_core::AthenaStore>>;
 
 /// One row serialized per §22.3's field map.
 #[must_use]
@@ -200,10 +200,10 @@ pub fn list_tasks(
 ) -> Result<Response, crate::errors::ApiError> {
     let guard = store.lock().expect("task store poisoned");
     let start = page.cursor.unwrap_or(0);
-    let items = TaskRepository::list_page(&*guard, start, page.limit)
-        .map_err(|e| store_fault(e, ""))?;
-    let next_cursor: Option<u64> = (page.limit > 0 && items.len() == page.limit as usize)
-        .then(|| start + page.limit);
+    let items =
+        TaskRepository::list_page(&*guard, start, page.limit).map_err(|e| store_fault(e, ""))?;
+    let next_cursor: Option<u64> =
+        (page.limit > 0 && items.len() == page.limit as usize).then(|| start + page.limit);
     Ok((
         StatusCode::OK,
         Json(json!({ "items": items, "next_cursor": next_cursor })),
@@ -418,7 +418,7 @@ fn transition(
 }
 
 fn transition_to_queued(
-    guard: &mut athena_core::SqliteStore,
+    guard: &mut athena_core::AthenaStore,
     task: &TaskId,
     event: &NewEvent,
 ) -> Result<athena_core::StoredEvent, athena_core::PersistenceError> {

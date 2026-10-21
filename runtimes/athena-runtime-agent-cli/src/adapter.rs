@@ -372,11 +372,7 @@ impl<D: ProcessDriver + 'static> Runtime for AgentCliAdapter<D> {
                 .clone()
                 .unwrap_or_else(|| record.definition.id.as_str().to_string());
             let reply = transport
-                .ask(
-                    &record.workspace,
-                    &peer,
-                    &message.body,
-                )
+                .ask(&record.workspace, &peer, &message.body)
                 .await?;
             let outbox = record.workspace.join(".athena-outbox");
             std::fs::create_dir_all(&outbox).map_err(|error| {
@@ -508,7 +504,11 @@ impl<D: ProcessDriver + 'static> Runtime for AgentCliAdapter<D> {
                             let path = entry.path();
                             let text = std::fs::read_to_string(&path).ok()?;
                             let value = serde_json::from_str::<serde_json::Value>(&text).ok()?;
-                            if value.get("type")? == "complete" { Some((path, value)) } else { None }
+                            if value.get("type")? == "complete" {
+                                Some((path, value))
+                            } else {
+                                None
+                            }
                         })
                         .collect()
                 })

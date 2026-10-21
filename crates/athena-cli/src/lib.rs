@@ -20,6 +20,7 @@ pub mod skill;
 /// `athena-conformance` — a test dependency, never a Core/UI edge; the section-32.2
 /// boundary check excludes the `tests/` package by design).
 pub mod template;
+pub mod update;
 
 use std::path::Path;
 
@@ -71,6 +72,18 @@ pub fn run(args: &[String], cwd: &Path) -> Outcome {
             Err(fault) => Outcome::fail(4, format!("athena init failed: {fault}")),
         },
         Some("help") | None => Outcome::ok(USAGE),
+        // The update verb is a *tool-side* operation (R-OPS-11/R-CLI-08, design §2.9/D-21):
+        // installer-equivalent tool refresh always; a project-side refresh of exactly
+        // `personas/` and `skills/` when `.athena/` resolves. It is not a Core-API client face
+        // and not subject to the resolvable-home prompt (D-21) — a non-project cwd still gets
+        // the tool refresh.
+        Some("update") => {
+            let json_wanted = args.iter().any(|arg| arg == "--json");
+            match update::run_update(cwd) {
+                Ok(report) => update::update_outcome(&report, json_wanted),
+                Err(fault) => Outcome::fail(4, format!("athena update failed: {fault}")),
+            }
+        }
         Some("skill") => skill::run_skill(&args[1..], cwd),
         Some(command)
             if matches!(
@@ -109,4 +122,4 @@ pub fn run(args: &[String], cwd: &Path) -> Outcome {
 }
 
 /// The command surface summary the bin prints for `athena help` / no arguments.
-const USAGE: &str = "athena — organize multiple AI agents to carry out one Task                      (spec 1.0)\n\nusage:\n  athena init      introduce this project: create .athena/ and expand aiprj\n                   (ATH-CLI-009)\n  athena help      this summary\n\nOther commands (chat, run, task, ...) reach the Core API and arrive in Phase 6; they exit\nwith code 2 and prompt `athena init` while no .athena/ can be resolved (ATH-CLI-010).\n";
+const USAGE: &str = "athena — organize multiple AI agents to carry out one Task                      (spec 1.0)\n\nusage:\n  athena init      introduce this project: create .athena/ and expand aiprj\n                   (ATH-CLI-009)\n  athena update    refresh the tool from the published repository; when a .athena/\n                   project resolves, update only personas/ and skills/ (R-CLI-08)\n  athena help      this summary\n\nOther commands (chat, run, task, ...) reach the Core API and arrive in Phase 6; they exit\nwith code 2 and prompt `athena init` while no .athena/ can be resolved (ATH-CLI-010).\n";

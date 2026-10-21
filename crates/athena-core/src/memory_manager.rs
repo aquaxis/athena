@@ -66,7 +66,7 @@ pub mod eviction {
     //! Working Memory writes.
 
     use crate::ownership::{Entity, ModuleRole};
-    use athena_persistence::SqliteStore;
+    use athena_persistence::AthenaStore;
     use athena_persistence::repository::MemoryRepository;
     use athena_types::{MemoryId, MemoryTier};
 
@@ -167,7 +167,7 @@ pub mod eviction {
     /// # Errors
     /// Store failures, surfaced whole.
     pub fn apply_fallback(
-        store: &mut SqliteStore,
+        store: &mut AthenaStore,
         targets: &[Target],
     ) -> Result<usize, athena_persistence::error::PersistenceError> {
         let mut applied = 0usize;
@@ -268,7 +268,7 @@ pub mod long_term {
     //! `tier: Long`, `scope_id: ProjectId`, never a separate file or vector store.
 
     use crate::ownership::{Entity, ModuleRole};
-    use athena_persistence::SqliteStore;
+    use athena_persistence::AthenaStore;
     use athena_persistence::repository::MemoryRepository;
     use athena_types::{
         EventId, MemoryId, MemoryOrigin, MemoryRecord, MemoryTier, ProjectId, TaskId,
@@ -360,7 +360,7 @@ pub mod long_term {
     /// # Errors
     /// Store failures, surfaced whole.
     pub fn insert_long(
-        store: &mut SqliteStore,
+        store: &mut AthenaStore,
         record: &MemoryRecord,
     ) -> Result<(), athena_persistence::error::PersistenceError> {
         MemoryRepository::insert(store, record)
@@ -373,7 +373,7 @@ pub mod long_term {
     /// # Errors
     /// Store failures, or `NotFound` when no record is there to delete.
     pub fn delete(
-        store: &mut SqliteStore,
+        store: &mut AthenaStore,
         id: &MemoryId,
     ) -> Result<MemoryRecord, athena_persistence::error::PersistenceError> {
         let record = MemoryRepository::get(store, id)?.ok_or_else(|| {
@@ -419,7 +419,7 @@ pub mod long_term {
     /// # Errors
     /// [`RetentionFault::CeilingReached`] at pressure; store failures surfacing whole.
     pub fn write_with_retention(
-        store: &mut SqliteStore,
+        store: &mut AthenaStore,
         record: &MemoryRecord,
         max_records: u64,
     ) -> Result<(), RetentionFault> {
@@ -441,7 +441,7 @@ pub mod long_term {
     /// # Errors
     /// Store failures, surfaced whole.
     pub fn provenance_query(
-        store: &SqliteStore,
+        store: &AthenaStore,
         task: Option<&TaskId>,
         event: Option<&EventId>,
     ) -> Result<Vec<MemoryRecord>, athena_persistence::error::PersistenceError> {
@@ -576,7 +576,7 @@ mod long_term_tests {
 
     #[test]
     fn the_staged_record_lives_in_the_same_store_and_deletion_is_the_audit() {
-        let mut store = athena_persistence::SqliteStore::in_memory().expect("store");
+        let mut store = athena_persistence::AthenaStore::in_memory().expect("store");
         let task = task_row();
         TaskRepository::insert(&mut store, &task).expect("task seeds");
         let scope = ProjectId::derive("/work/lt-project");
@@ -627,7 +627,7 @@ mod long_term_tests {
 
     #[test]
     fn retention_pressure_refuses_at_the_ceiling_and_never_digests() {
-        let mut store = athena_persistence::SqliteStore::in_memory().expect("store");
+        let mut store = athena_persistence::AthenaStore::in_memory().expect("store");
         let task = TaskId::new();
         TaskRepository::insert(&mut store, &task_row_method(task.clone())).ok();
         // A prepared scope + provenance-carrying staged record from `review`.
@@ -683,7 +683,7 @@ mod long_term_tests {
 
     #[test]
     fn the_provenance_query_answers_anchored_long_records() {
-        let mut store = athena_persistence::SqliteStore::in_memory().expect("store");
+        let mut store = athena_persistence::AthenaStore::in_memory().expect("store");
         let task = TaskId::new();
         let event = athena_types::EventId::new();
         let scope = ProjectId::derive("/work/provenance");

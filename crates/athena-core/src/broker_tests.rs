@@ -2,7 +2,7 @@
 
 use crate::broker::{BrokerDelivery, BrokerFault, broker_deliver};
 use athena_messaging::envelope::SendRefusal;
-use athena_persistence::SqliteStore;
+use athena_persistence::AthenaStore;
 use athena_persistence::repository::MessageRepository;
 use athena_types::{AgentId, InstanceId, MessageId, MessageType, Priority, TaskId};
 
@@ -38,7 +38,7 @@ fn parent_child(_from: &athena_types::InstanceId, _to: &athena_types::InstanceId
 #[test]
 fn the_broker_persists_then_acks_a_fresh_delivery() {
     // ATH-MSG-012: the `messages` row + the delivery row land before the ack contract.
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let to = InstanceId::new();
     let message = row("rtl-worker", &to, "th-1", "produce the report");
     let id = message.message_id.clone();
@@ -54,7 +54,7 @@ fn the_broker_persists_then_acks_a_fresh_delivery() {
 #[test]
 fn a_repeated_delivery_deduplicates() {
     // ATH-MSG-014: a repeated send answers from the dedup record.
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let to = InstanceId::new();
     let first = row("rtl-worker", &to, "th-1", "produce");
     broker_deliver(first.clone(), parent_child, &mut store).expect("first");
@@ -69,7 +69,7 @@ fn a_repeated_delivery_deduplicates() {
 #[test]
 fn a_route_denial_refuses_with_the_permission_class() {
     // ATH-MSG-018: sibling pairs outside the ACL refuse at delivery.
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let to = InstanceId::new();
     let message = row("rtl-lead", &to, "th-1", "route through?");
     let refusal = broker_deliver(message, |_from, _to| false, &mut store).expect_err("refused");
@@ -82,7 +82,7 @@ fn a_route_denial_refuses_with_the_permission_class() {
 #[test]
 fn an_empty_thread_id_is_refused_before_persistence() {
     // ATH-MSG-013: the thread id is Core Host's; a blank id cannot route.
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let to = InstanceId::new();
     let mut message = row("rtl-worker", &to, "", "hi");
     message.thread_id = " ".into();
@@ -138,7 +138,7 @@ fn acl_fixture() -> (
 fn a_sibling_pair_without_a_mutual_acl_is_refused_at_delivery() {
     // ATH-MSG-006/018 wired through: the recorded composition is what the Broker checks.
     let (world, inst_a, inst_b, _) = acl_fixture();
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let message = row("rtl-lead-a", &inst_b, "th-sib", "sibling direct send");
     let refusal = broker_deliver(message, |from, to| world.permits(from, to), &mut store)
         .expect_err("refused");
@@ -154,7 +154,7 @@ fn a_parent_child_pair_routes_without_any_acl_record() {
     // ATH-MSG-006: the hierarchy edge is the default route — the same world admitting
     // producer → lead proves the ACL is a widening, not a replacement.
     let (world, _, inst_b, inst_p) = acl_fixture();
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let mut message = row(
         "athena-core-agent",
         &inst_b,

@@ -56,7 +56,7 @@ fn nfr12_a_normal_task_logs_under_one_megabyte() {
 }
 
 use athena_persistence::repository::EventRepository;
-use athena_persistence::{NewEvent, SqliteStore};
+use athena_persistence::{AthenaStore, NewEvent};
 use athena_runtime::{
     FilesystemScope, IsolationBoundary, Runtime, StartContext, StubConfig, StubRuntime, StubScript,
 };
@@ -168,7 +168,7 @@ fn nfr01_sixteen_concurrent_instances_with_no_cross_contamination() {
 
 #[test]
 fn nfr04_event_write_throughput_at_least_200_per_second_without_loss() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = TaskId::new();
     let total = 800_usize; // well beyond the 200/s target's smallest sample size
 

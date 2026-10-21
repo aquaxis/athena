@@ -21,7 +21,7 @@
 //!   a record cannot carry plaintext bursts into the store.
 
 use athena_events::redact::mask_value;
-use athena_persistence::SqliteStore;
+use athena_persistence::AthenaStore;
 use athena_persistence::error::PersistenceError;
 use athena_persistence::repository::MemoryRepository;
 use athena_types::{MemoryOrigin, MemoryRecord, MemoryTier};
@@ -138,7 +138,7 @@ impl WorkingMemory {
     /// aborting a write, per ATH-MEM-002's tier policy).
     pub fn write(
         &self,
-        store: &mut SqliteStore,
+        store: &mut AthenaStore,
         task: &TaskId,
         request: WorkingWrite,
     ) -> Result<WriteReport, PersistenceError> {
@@ -191,7 +191,7 @@ impl WorkingMemory {
     #[allow(clippy::too_many_lines, reason = "explicit eviction bookkeeping")]
     fn evict_oldest(
         &self,
-        store: &mut SqliteStore,
+        store: &mut AthenaStore,
         task: &TaskId,
         evicted_report: &mut Vec<Evicted>,
     ) -> Result<(), PersistenceError> {
@@ -251,7 +251,7 @@ impl WorkingMemory {
     /// Store failures.
     pub fn records(
         &self,
-        store: &mut SqliteStore,
+        store: &mut AthenaStore,
         task: &TaskId,
     ) -> Result<Vec<MemoryRecord>, PersistenceError> {
         MemoryRepository::list(store, MemoryTier::Working, task.as_str())
@@ -269,8 +269,8 @@ mod working_memory_tests {
     use athena_persistence::repository::TaskRepository;
     use athena_types::Task as TaskRow;
 
-    fn store_with_task() -> (SqliteStore, TaskId) {
-        let mut store = SqliteStore::in_memory().expect("store");
+    fn store_with_task() -> (AthenaStore, TaskId) {
+        let mut store = AthenaStore::in_memory().expect("store");
         let task = TaskRow {
             id: TaskId::new(),
             parent_id: None,

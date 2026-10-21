@@ -1,14 +1,14 @@
-//! Tests for the `ConversationRepository` on `SqliteStore` (P6-02's support).
+//! Tests for the `ConversationRepository` on `AthenaStore` (P6-02's support).
 
-use crate::SqliteStore;
+use crate::AthenaStore;
 use crate::repository::ConversationRepository as Store;
 use athena_types::{Conversation, ConversationId, TaskId, Utterance, UtteranceKind, UtteranceRole};
 
-fn open() -> SqliteStore {
-    SqliteStore::in_memory().expect("store")
+fn open() -> AthenaStore {
+    AthenaStore::in_memory().expect("store")
 }
 
-fn create_task_row(store: &mut SqliteStore, id: &TaskId, now: &str) {
+fn create_task_row(store: &mut AthenaStore, id: &TaskId, now: &str) {
     let task = athena_types::Task {
         id: id.clone(),
         parent_id: None,

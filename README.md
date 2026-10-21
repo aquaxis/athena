@@ -151,6 +151,23 @@ Further commands: `athena task show/cancel`, `athena plan show`, `athena agent l
 Every command accepts `--json` for scripting. The CLI talks to the Core API only (`/api/v1`);
 it never launches `agent-cli` directly (`ATH-CLI-001`/`002`).
 
+## Updating
+
+Keep the tool and a project's definitions current:
+
+```sh
+athena update
+```
+
+Running `athena update` performs the work equivalent to the one-line installer
+(`curl -fsSL https://raw.githubusercontent.com/aquaxis/athena/main/install.sh | sh`):
+it fetches the published repository, builds it in release mode, and re-installs
+the `athena` and `athena-api` binaries onto PATH. When a `.athena/` project resolves
+from the invocation directory, it additionally updates **only** the project's
+`personas/` and `skills/` from the repository's shipped defaults — additively, never
+overwriting a definition you have modified (`config.yaml`, `agents/`, and `var/` are
+never touched). In a directory without a `.athena/`, only the tool refresh runs.
+
 Implementation-status note: the CLI verbs currently compose and print the request they would
 send to the Core API (method / path / body). Tokens are recorded only as SHA-256 hashes under
 `<ATHENA_HOME>/var/api-tokens.json` (`ATH-SEC-005`). The Studio UI builds to WebAssembly via

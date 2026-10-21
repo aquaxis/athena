@@ -1,8 +1,8 @@
-//! Tests for the `HierarchyRepository` / `RuntimeInstanceRepository` on `SqliteStore`
+//! Tests for the `HierarchyRepository` / `RuntimeInstanceRepository` on `AthenaStore`
 //! (P1-05's closure): round trips, the revision walk, heartbeats, staleness, and the
 //! stopped-marking contract (`ATH-CORE-047`, `ATH-CORE-048`).
 
-use crate::SqliteStore;
+use crate::AthenaStore;
 use crate::repository::{HierarchyRepository, RuntimeInstanceRepository, TaskRepository};
 use athena_types::{
     AgentId, AgentInstanceState, AgentLevel, Hierarchy, HierarchyId, HierarchyNode, InstanceId,
@@ -10,7 +10,7 @@ use athena_types::{
 };
 
 /// The `hierarchies.task_id` FK demands a Task row; seeding it keeps the tests honest.
-fn seed_task(store: &mut SqliteStore, task_id: &TaskId) {
+fn seed_task(store: &mut AthenaStore, task_id: &TaskId) {
     let mut task = task_fixture();
     task.id = task_id.clone();
     TaskRepository::insert(store, &task).expect("task seeded");
@@ -71,7 +71,7 @@ fn hierarchy_fixture(task: &TaskId, revision: u64) -> Hierarchy {
 
 #[test]
 fn a_hierarchy_round_trips_with_nodes_and_revisions() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = TaskId::new();
     seed_task(&mut store, &task);
     let fixture = hierarchy_fixture(&task, 1);
@@ -112,7 +112,7 @@ fn a_hierarchy_round_trips_with_nodes_and_revisions() {
 
 #[test]
 fn latest_for_task_answers_by_revision_even_out_of_insertion_order_and_absents() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = TaskId::new();
     seed_task(&mut store, &task);
     assert!(
@@ -147,7 +147,7 @@ fn runtime_fixture() -> RuntimeInstance {
 
 #[test]
 fn a_runtime_instance_round_trips_and_heartbeats_and_stops() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let fixture = runtime_fixture();
     RuntimeInstanceRepository::insert(&mut store, &fixture).expect("inserted");
 
@@ -191,7 +191,7 @@ fn a_runtime_instance_round_trips_and_heartbeats_and_stops() {
 
 #[test]
 fn staleness_names_live_rows_only() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let beat = runtime_fixture();
     RuntimeInstanceRepository::insert(&mut store, &beat).expect("inserted");
     RuntimeInstanceRepository::record_heartbeat(&mut store, &beat.id, "2026-10-18T00:00:00Z")

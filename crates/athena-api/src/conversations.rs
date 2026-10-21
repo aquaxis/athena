@@ -27,7 +27,7 @@ fn fault(status: StatusCode, code: &str, detail: Value) -> Response {
         .into_response()
 }
 
-fn open(state: &AppState) -> Option<Arc<Mutex<athena_core::SqliteStore>>> {
+fn open(state: &AppState) -> Option<Arc<Mutex<athena_core::AthenaStore>>> {
     state.rows.clone()
 }
 
@@ -181,7 +181,7 @@ pub async fn list_utterances(
 /// # Errors
 /// `ApiError` with the class's default mapping.
 pub fn link_conversation_to_task(
-    guard: &mut athena_core::SqliteStore,
+    guard: &mut athena_core::AthenaStore,
     conversation_id: &str,
     task: &TaskId,
 ) -> Result<(), ApiError> {

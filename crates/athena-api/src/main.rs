@@ -19,8 +19,8 @@ use std::time::Duration;
 use athena_api::{AppState, AuthMode, TokenRegistry, build_router};
 use athena_core::NewEvent;
 use athena_core::{
-    Config, ConfigAuthMode, ConfigCliInputs, Database, FilesystemScope, Runtime,
-    RuntimeInstanceRef, SqliteStore, StartContext, load_config, start_core_agent,
+    AthenaStore, Config, ConfigAuthMode, ConfigCliInputs, FilesystemScope, Runtime,
+    RuntimeInstanceRef, StartContext, load_config, start_core_agent,
 };
 use athena_runtime_agent_cli::{
     AgentCliAdapter, Budgets, RealIpc, ShortTermRender, TokioDriver, adapter::ProcessDriver,
@@ -194,8 +194,8 @@ async fn main() {
     // 3. The store: open (or create) with migrations verified; a newer-than-build
     //    database aborts (ATH-PERS-010). The store is authoritative (ATH-PERS-002).
     let db_path = PathBuf::from(&config.athena.data.database);
-    let mut store = match Database::open(&db_path) {
-        Ok(db) => SqliteStore::new(db),
+    let mut store = match AthenaStore::open(&db_path) {
+        Ok(store) => store,
         Err(error) => fail(&format!(
             "store open failed at {}: {error}",
             db_path.display()
@@ -226,7 +226,7 @@ async fn main() {
 
     // From here the store lives behind the shared handle the API's handlers and the
     // supervision poll lock.
-    let rows: Arc<Mutex<SqliteStore>> = Arc::new(Mutex::new(store));
+    let rows: Arc<Mutex<AthenaStore>> = Arc::new(Mutex::new(store));
 
     // 5. The token registry under var/ (ATH-SEC-005: hashes only on disk).
     let registry = match TokenRegistry::load(&home.var_dir().join("api-tokens.json")) {
@@ -382,7 +382,7 @@ fn control_surface_checksum(agent_cli_dir: &Path) -> athena_core::ControlSurface
 /// not (ATH-CORE-049) — nothing here decides on the agent's behalf.
 fn core_supervision<D>(
     adapter: Arc<AgentCliAdapter<D>>,
-    rows: Arc<Mutex<SqliteStore>>,
+    rows: Arc<Mutex<AthenaStore>>,
     control_surface: Option<athena_core::ControlSurfaceChecksum>,
 ) -> tokio::task::JoinHandle<()>
 where

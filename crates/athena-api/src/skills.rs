@@ -29,7 +29,7 @@ fn fault(status: StatusCode, code: &str, detail: Value) -> Response {
         .into_response()
 }
 
-fn open_store(state: &AppState) -> Option<Arc<Mutex<athena_core::SqliteStore>>> {
+fn open_store(state: &AppState) -> Option<Arc<Mutex<athena_core::AthenaStore>>> {
     state.rows.clone()
 }
 

@@ -9,7 +9,7 @@
 //! carry digests only (`ATH-EVENT-007`).
 
 use crate::digest;
-use athena_persistence::SqliteStore;
+use athena_persistence::AthenaStore;
 use athena_persistence::error::PersistenceError;
 use athena_persistence::repository::{ClarificationRepository, TaskRepository};
 use athena_types::{Clarification, ClarificationId, ClarificationState, Task, TaskId, TaskState};
@@ -34,7 +34,7 @@ pub enum ClarifyFault {
 /// # Errors
 /// Store or table faults surface whole through [`ClarifyFailure`].
 pub fn ask_task(
-    store: &mut SqliteStore,
+    store: &mut AthenaStore,
     task: &TaskId,
     question: &str,
     expires_at: &str,
@@ -105,7 +105,7 @@ pub fn ask_task(
 /// Unknown/malformed id ⇒ [`ClarifyFailure::UnknownClarification`]; a row already
 /// answered or expired refuses (`ClarifyFailure::Store` `NotFound`); store faults whole.
 pub fn answer(
-    store: &mut SqliteStore,
+    store: &mut AthenaStore,
     clarification: &ClarificationId,
     text: &str,
     now: &str,
@@ -171,7 +171,7 @@ pub fn answer(
 /// # Errors
 /// Store faults surface whole.
 pub fn expiry_sweep(
-    store: &mut SqliteStore,
+    store: &mut AthenaStore,
     now: &str,
     correlation_id: &str,
 ) -> Result<Vec<TaskId>, ClarifyFailure> {
@@ -282,7 +282,7 @@ mod clarify_tests {
 
     #[test]
     fn the_ask_opens_and_answers_resume_the_task() {
-        let mut store = athena_persistence::SqliteStore::in_memory().expect("store");
+        let mut store = athena_persistence::AthenaStore::in_memory().expect("store");
         let task = task_row();
         TaskRepository::insert(&mut store, &task).expect("seeded");
 
@@ -337,7 +337,7 @@ mod clarify_tests {
 
     #[test]
     fn the_expired_silence_fails_the_task_never_answers_it() {
-        let mut store = athena_persistence::SqliteStore::in_memory().expect("store");
+        let mut store = athena_persistence::AthenaStore::in_memory().expect("store");
         let task = task_row();
         TaskRepository::insert(&mut store, &task).expect("seeded");
 
@@ -385,7 +385,7 @@ mod clarify_tests {
 
     #[test]
     fn the_ask_refuses_an_empty_question_and_a_past_deadline() {
-        let mut store = athena_persistence::SqliteStore::in_memory().expect("store");
+        let mut store = athena_persistence::AthenaStore::in_memory().expect("store");
         let task = task_row();
         TaskRepository::insert(&mut store, &task).expect("seeded");
         assert!(matches!(

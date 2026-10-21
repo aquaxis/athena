@@ -124,14 +124,14 @@ pub fn delete(
 }
 
 fn by_tier(
-    store: &athena_core::SqliteStore,
+    store: &athena_core::AthenaStore,
     tier: MemoryTier,
 ) -> Result<Vec<athena_types::MemoryRecord>, ApiError> {
     MemoryRepository::list_by_tier(store, tier).map_err(|e| crate::tasks::store_fault(e, ""))
 }
 
 fn filter_scope(
-    store: &athena_core::SqliteStore,
+    store: &athena_core::AthenaStore,
     scope: &str,
 ) -> Result<Vec<athena_types::MemoryRecord>, ApiError> {
     let mut rows: Vec<athena_types::MemoryRecord> = Vec::new();

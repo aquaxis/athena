@@ -20,7 +20,7 @@ use athena_types::{
 /// Defined here rather than in `athena-events` because `athena-persistence` must not depend on
 /// it: the permitted dependency direction is `athena-core -> athena-persistence` and
 /// `athena-core -> athena-events`, with no edge between the two (spec section 32.2).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StoredEvent {
     /// Identifier.
     pub event_id: EventId,
@@ -110,7 +110,12 @@ pub trait TaskRepository {
     fn list_page(&self, offset: u64, limit: u64) -> Result<Vec<Task>> {
         // The natural face of `list_all` chopped in memory — drivers with a real
         // backend override this; the default keeps the contract meaningful.
-        Ok(self.list_all()?.into_iter().skip(offset as usize).take(limit as usize).collect())
+        Ok(self
+            .list_all()?
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect())
     }
     /// Fetch by identifier.
     fn get(&self, id: &TaskId) -> Result<Option<Task>>;
@@ -358,7 +363,7 @@ pub trait MessageRepository {
 }
 
 /// A stored message (spec section 10.2).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MessageRow {
     /// Identifier.
     pub message_id: athena_types::MessageId,

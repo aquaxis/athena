@@ -68,7 +68,10 @@ fn worker_definition(provider: &str, model: &str, persona_file: &Path) -> AgentD
 #[tokio::test]
 #[ignore = "the real-runner lane: contacts the installed agent-cli and its provider"]
 async fn a_real_agent_completes_the_delegated_work() {
-    assert!(agent_cli_present(), "agent-cli must be installed for this lane");
+    assert!(
+        agent_cli_present(),
+        "agent-cli must be installed for this lane"
+    );
     // The provider/model come from the environment (the composition root's resolved
     // configuration in a real boot); the local ollama provider is the assumption.
     let (provider, model) = (
@@ -84,8 +87,11 @@ async fn a_real_agent_completes_the_delegated_work() {
     let commands = template.join("commands");
     std::fs::create_dir_all(&commands).expect("commands dir");
     for name in ["ai.md", "next_ai.md", "close_ai.md"] {
-        std::fs::write(commands.join(name), format!("# {name}: obey the running conventions\n"))
-            .expect("procedure file");
+        std::fs::write(
+            commands.join(name),
+            format!("# {name}: obey the running conventions\n"),
+        )
+        .expect("procedure file");
     }
     let adapter = AgentCliAdapter::new(TokioDriver::default(), template, 4, 4, vec![])
         .with_ipc_transport(Arc::new(RealIpc));
@@ -132,8 +138,8 @@ async fn a_real_agent_completes_the_delegated_work() {
         worker_definition(&provider, &model, &persona_file),
         context,
     )
-        .await
-        .expect("the real serve peer started");
+    .await
+    .expect("the real serve peer started");
 
     Runtime::send(
         &adapter,
@@ -184,7 +190,10 @@ async fn a_real_agent_completes_the_delegated_work() {
     let error = Runtime::status(&adapter, &handle)
         .await
         .expect_err("the record released at terminal state");
-    assert!(matches!(error, athena_runtime::RuntimeError::UnknownInstance(_)), "{error}");
+    assert!(
+        matches!(error, athena_runtime::RuntimeError::UnknownInstance(_)),
+        "{error}"
+    );
 }
 
 /// A deterministic arg check so the file parses in CI even when ignored: the probe of the

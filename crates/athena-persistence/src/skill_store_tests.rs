@@ -1,6 +1,6 @@
-//! Tests for the `SkillRepository` on `SqliteStore` (P5-13 supporting layer).
+//! Tests for the `SkillRepository` on `AthenaStore` (P5-13 supporting layer).
 
-use crate::SqliteStore;
+use crate::AthenaStore;
 use crate::repository::SkillRepository;
 use athena_types::{
     AgentId, Permission, RiskLevel, Skill, SkillId, SkillRef, SkillState, ToolName,
@@ -37,7 +37,7 @@ fn fixture(id: &str, version: &str) -> Skill {
 
 #[test]
 fn a_registered_skill_round_trips_through_the_store() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let fixture = fixture("round-trip", "1.0.0");
     SkillRepository::upsert(&mut store, &fixture).expect("upserted");
 
@@ -57,7 +57,7 @@ fn a_registered_skill_round_trips_through_the_store() {
 
 #[test]
 fn versions_list_per_id_and_states_list_per_state() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let mut enabled = fixture("multi-version", "1.0.0");
     enabled.state = SkillState::Enabled;
     SkillRepository::upsert(&mut store, &enabled).expect("upverted");
@@ -75,7 +75,7 @@ fn versions_list_per_id_and_states_list_per_state() {
 
 #[test]
 fn the_capability_search_honors_the_enabled_state_exact_text() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let mut helper = fixture("helper", "1.0.0");
     helper.capabilities = vec!["summarize".into()];
     helper.state = SkillState::Enabled;
@@ -97,7 +97,7 @@ fn the_capability_search_honors_the_enabled_state_exact_text() {
 
 #[test]
 fn the_delete_refuses_a_missing_version() {
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     assert!(SkillRepository::delete(&mut store, &SkillId::new("absent"), "1.0.0").is_err());
     SkillRepository::upsert(&mut store, &fixture("doomed", "1.0.0")).expect("in");
     SkillRepository::delete(&mut store, &SkillId::new("doomed"), "1.0.0").expect("gone");

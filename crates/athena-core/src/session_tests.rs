@@ -11,7 +11,7 @@ use athena_persistence::repository::{
     AgentRepository, ApprovalRepository, EventRepository, MemoryRepository, PlanRepository,
     TaskRepository,
 };
-use athena_persistence::{NewEvent, SqliteStore};
+use athena_persistence::{AthenaStore, NewEvent};
 use athena_runtime::context::{FilesystemScope, StartContext};
 use athena_runtime::interface::{Runtime, boxed_stream};
 use athena_runtime::{RuntimeError, RuntimeInstanceRef};
@@ -315,6 +315,30 @@ fn the_boot_refuses_a_task_bound_context_and_starts_the_session() {
     assert!(granted.runtime_instance_id.as_str().starts_with("ri-"));
 }
 
+fn worker_definition() -> AgentDefinition {
+    // The worker-level definition the `seed_instance` rows reference (ATH-AGENT-002's
+    // parent record): a static, minimal definition with the minimal default tools.
+    AgentDefinition {
+        id: AgentId::new("rtl-worker"),
+        name: "RTL Worker".into(),
+        level: athena_types::AgentLevel::Worker,
+        description: "the worker the reconciliation seeds reference".into(),
+        capabilities: vec![],
+        persona_ref: "worker".into(),
+        persona_version: "1.0.0".into(),
+        allowed_tools: vec![ToolName::FsRead, ToolName::SendTo],
+        delegable_tools: vec![],
+        default_skills: vec![],
+        runtime: RuntimeType::AgentCli,
+        model: ModelRef {
+            provider: "claude".into(),
+            name: "claude-opus-5".into(),
+        },
+        max_delegation_depth: 4,
+        dynamic: false,
+    }
+}
+
 fn the_definition() -> AgentDefinition {
     AgentDefinition {
         id: AgentId::core_agent(),
@@ -373,7 +397,7 @@ fn the_rebuilt_context_document_carries_every_memory_007_row() {
     // ATH-MEM-007 / ATH-CORE-046: the Working Memory minimum must be reconstructible from
     // the store: plan + revision, incomplete steps, unterminated delegations, reports by
     // reference, pending + granted approvals, denials, `SUSPENDED` snapshots.
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = seed_task(&mut store);
     let [done_step, running_step] = seed_plan(&mut store, &task);
     seed_instance(
@@ -430,7 +454,7 @@ fn the_rebuilt_context_document_carries_every_memory_007_row() {
 
 // --- Fixtures ----------------------------------------------------------------------------
 
-fn seed_task(store: &mut SqliteStore) -> TaskId {
+fn seed_task(store: &mut AthenaStore) -> TaskId {
     let task = Task {
         id: TaskId::new(),
         parent_id: None,
@@ -476,7 +500,7 @@ fn step(
     }
 }
 
-fn seed_plan(store: &mut SqliteStore, task: &TaskId) -> [PlanStepId; 2] {
+fn seed_plan(store: &mut AthenaStore, task: &TaskId) -> [PlanStepId; 2] {
     let plan_id = athena_types::PlanId::new();
     let plan = athena_types::Plan {
         id: plan_id.clone(),
@@ -495,13 +519,14 @@ fn seed_plan(store: &mut SqliteStore, task: &TaskId) -> [PlanStepId; 2] {
 }
 
 fn seed_instance(
-    store: &mut SqliteStore,
+    store: &mut AthenaStore,
     task: &TaskId,
     plan_step: Option<&PlanStepId>,
     state: AgentInstanceState,
 ) -> InstanceId {
-    // The definition row precedes the instance (the store FK chain, ATH-AGENT-002).
-    AgentRepository::upsert_definition(store, &the_definition()).expect("definition seeds");
+    // The definition row precedes the instance (the store FK chain, ATH-AGENT-002) — and
+    // the definition seeded is the one the instance's own `agent_id` names.
+    AgentRepository::upsert_definition(store, &worker_definition()).expect("definition seeds");
     let instance = AgentInstance {
         id: InstanceId::new(),
         agent_id: AgentId::new("rtl-worker"),
@@ -522,7 +547,7 @@ fn seed_instance(
     instance.id
 }
 
-fn seed_snapshot(store: &mut SqliteStore, instance: &InstanceId) {
+fn seed_snapshot(store: &mut AthenaStore, instance: &InstanceId) {
     let record = MemoryRecord {
         id: MemoryId::new(),
         tier: MemoryTier::Working,
@@ -539,7 +564,7 @@ fn seed_snapshot(store: &mut SqliteStore, instance: &InstanceId) {
     MemoryRepository::insert(store, &record).expect("snapshot seeds");
 }
 
-fn seed_report_event(store: &mut SqliteStore, task: &TaskId) -> (String, String) {
+fn seed_report_event(store: &mut AthenaStore, task: &TaskId) -> (String, String) {
     let reporter = InstanceId::new();
     let reporter_return = reporter.clone();
     let event = NewEvent {
@@ -566,7 +591,7 @@ fn seed_report_event(store: &mut SqliteStore, task: &TaskId) -> (String, String)
     (reporter_return.as_str().into(), "msg-report-1".into())
 }
 
-fn seed_denial_event(store: &mut SqliteStore, task: &TaskId) {
+fn seed_denial_event(store: &mut AthenaStore, task: &TaskId) {
     let event = NewEvent {
         event_id: athena_types::EventId::new(),
         schema_version: 1,
@@ -590,7 +615,7 @@ fn seed_denial_event(store: &mut SqliteStore, task: &TaskId) {
     EventRepository::append(store, &event).expect("append");
 }
 
-fn seed_approvals(store: &mut SqliteStore, task: &TaskId) {
+fn seed_approvals(store: &mut AthenaStore, task: &TaskId) {
     let pending = Approval {
         id: ApprovalId::new(),
         task_id: task.clone(),
@@ -640,7 +665,7 @@ fn the_reconciliation_finalizes_process_less_rows_and_orphans_their_step() {
     // ATH-CORE-048: a non-terminal row without a process is `FAILED` with unknown side
     // effects, and its `RUNNING` PlanStep is `ORPHANED` — every write through the exact
     // §17.2 / §17.5 trigger, in one transaction.
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = seed_task(&mut store);
     let [done_step, running_step] = seed_plan(&mut store, &task);
     let process_less = seed_instance(
@@ -731,7 +756,7 @@ fn the_reconciliation_finalizes_process_less_rows_and_orphans_their_step() {
 fn waiting_and_suspended_rows_are_kept_not_finalized() {
     // ATH-STATE-019: a `WAITING` / `SUSPENDED` row *legitimately* holds no process —
     // time out the instance, and the reconciliation must not call it a failure.
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let task = seed_task(&mut store);
     let [_, running_step] = seed_plan(&mut store, &task);
     seed_instance(

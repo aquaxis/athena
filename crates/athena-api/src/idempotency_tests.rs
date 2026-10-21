@@ -1,7 +1,7 @@
 use super::apply;
 use super::HEADER;
 use athena_core::IdempotencyRepository as _;
-use athena_core::SqliteStore;
+use athena_core::AthenaStore;
 
 fn headers_with(key: Option<&str>) -> axum::http::HeaderMap {
     let mut headers = axum::http::HeaderMap::new();
@@ -15,7 +15,7 @@ fn headers_with(key: Option<&str>) -> axum::http::HeaderMap {
 fn a_key_executes_exactly_once() {
     // R-API-05: the first write executes and records; the replay answers the same
     // outcome with no second execution.
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let once = std::cell::Cell::new(0_u32);
     let headers = headers_with(Some("client-op-1"));
     let first = apply(&headers, &mut store, || {
@@ -37,7 +37,7 @@ fn a_key_executes_exactly_once() {
 fn no_key_means_free_reexecution() {
     // A client without the header owns the re-execution semantics: the request runs every
     // time (the Core's idempotency guard is keyed, not ambient).
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     let headers = headers_with(None);
     let first = apply(&headers, &mut store, || "a".to_string()).expect("applied");
     let second = apply(&headers, &mut store, || "b".to_string()).expect("applied");
@@ -49,7 +49,7 @@ fn no_key_means_free_reexecution() {
 fn the_crash_hole_replays_as_first_write_without_breaking_exclusivity() {
     // Claims persist before the outcome lands; a replay of a claimed-but-unrecorded key
     // completes the recording (never a silent 500, never a double-write of a pair).
-    let mut store = SqliteStore::in_memory().expect("store");
+    let mut store = AthenaStore::in_memory().expect("store");
     athena_core::IdempotencyRepository::claim(&mut store, "hop-key")
         .expect("the crash ate the write, not the claim");
     let headers = headers_with(Some("hop-key"));

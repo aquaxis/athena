@@ -156,9 +156,7 @@ fn reject_secrets(value: &Value, path: &mut Vec<String>) -> Result<()> {
 
 /// The substring check with the counting-rule carve-outs.
 fn is_secret_shaped(compact: &str) -> bool {
-    if compact == "tokenizer"
-        || compact.ends_with("_tokenizer")
-        || compact.ends_with("max_tokens")
+    if compact == "tokenizer" || compact.ends_with("_tokenizer") || compact.ends_with("max_tokens")
     {
         return false;
     }
@@ -665,7 +663,8 @@ mod tests {
         // The real resident boot aborted on the schema's own `memory.tokenizer` default
         // (2026-10-18): the substring "token" is not automatically a secret. The full
         // default file itself must resolve, and a `token*` *secret* still refuses.
-        let yaml = "memory:\n  tokenizer: provider-default-claude\n  short_term_max_tokens: 32000\n";
+        let yaml =
+            "memory:\n  tokenizer: provider-default-claude\n  short_term_max_tokens: 32000\n";
         let config = resolve_with(ResolveInputs {
             file_yaml: Some(yaml.into()),
             ..Default::default()

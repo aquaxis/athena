@@ -39,7 +39,7 @@ pub struct AppState {
     /// The bind address, exposed only to the *caller* bind check (never to the routes).
     pub host: String,
     /// The open store the Task API reads and writes (the Core Host opened it at boot).
-    pub rows: Option<Arc<Mutex<athena_core::SqliteStore>>>,
+    pub rows: Option<Arc<Mutex<athena_core::AthenaStore>>>,
 }
 
 /// A call-time seed for the correlation mint (locked monotonicity is fine here: the
@@ -217,7 +217,7 @@ async fn status_stub(State(_state): State<AppState>) -> Json<Value> {
 
 /// The Task store on the route state (a lazily built shared store; the Core Host
 /// process opens the real database at boot — the tests use in-memory stores).
-pub(crate) fn task_rows(state: &AppState) -> Option<Arc<Mutex<athena_core::SqliteStore>>> {
+pub(crate) fn task_rows(state: &AppState) -> Option<Arc<Mutex<athena_core::AthenaStore>>> {
     state.rows.clone()
 }
 

@@ -2,15 +2,110 @@
 //!
 //! The persistent store is authoritative and in-memory state is derived (ATH-PERS-002), which
 //! is what makes crash recovery a reload rather than a reconstruction.
+//!
+//! The engine is [`redb`] — a pure-Rust embedded ACID store, file-backed (or in-memory for
+//! tests). There is no SQL and there is no SQLite anywhere: its use is prohibited by the
+//! instruction source (最優先事項, 2026-10-18). Every durability clause of section 27
+//! stands: each commit is a durable, atomic, multi-table write unit; the transition+Event
+//! pair commits inside one such unit (ATH-PERS-003); `events`/`results` have no write or
+//! delete path other than the retention sweep and the append.
 
-use crate::ddl::{CURRENT_SCHEMA_VERSION, MIGRATIONS};
 use crate::error::{PersistenceError, Result};
-use rusqlite::{Connection, OpenFlags, Transaction};
+use redb::{ReadableTable, TableDefinition};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Every logical table of the §27.3 data model, engine-natively (R-PRS-04).
+///
+/// A table is keyed by its row's identifier (or a composite key written
+/// `first|second`); the value is the row's full entity as JSON text. Ordering comes
+/// from the key: prefixed-ULID identifiers are lexicographically chronological, and
+/// composite keys pad their numeric parts to a fixed width so ordered scans stay
+/// ordered.
+pub mod tables {
+    use redb::TableDefinition;
+
+    /// Tasks (spec section 26.2).
+    pub const TASKS: TableDefinition<String, String> = TableDefinition::new("tasks");
+    /// Plans (row: plan meta, no steps).
+    pub const PLANS: TableDefinition<String, String> = TableDefinition::new("plans");
+    /// Plan revisions by Task: `task_id|revision-padded` → `plan_id`.
+    pub const PLANS_BY_REV: TableDefinition<String, String> = TableDefinition::new("plans_by_rev");
+    /// Plan identifiers → their revision key (the `get(plan_id)` face).
+    pub const PLANS_BY_ID: TableDefinition<String, String> = TableDefinition::new("plans_by_id");
+    /// PlanSteps.
+    pub const PLAN_STEPS: TableDefinition<String, String> = TableDefinition::new("plan_steps");
+    /// Steps by Plan: `plan_id|step_order-padded` → `step_id`.
+    pub const STEPS_BY_PLAN: TableDefinition<String, String> =
+        TableDefinition::new("steps_by_plan");
+    /// PlanStep attempts, keyed `step_id|attempt-padded`; the history is never rewritten.
+    pub const PLAN_STEP_ATTEMPTS: TableDefinition<String, String> =
+        TableDefinition::new("plan_step_attempts");
+    /// Events, keyed by identifier (ULID-chronological). Append-only (R-PRS-05).
+    pub const EVENTS: TableDefinition<String, String> = TableDefinition::new("events");
+    /// Events by Task: `task_id|event_id` → `event_id`.
+    pub const EVENTS_BY_TASK: TableDefinition<String, String> =
+        TableDefinition::new("events_by_task");
+    /// Events by sequence: `sequence-padded` → `event_id`.
+    pub const EVENTS_BY_SEQ: TableDefinition<String, String> =
+        TableDefinition::new("events_by_seq");
+    /// Meta: the engine's own counters (`event_sequence`).
+    pub const META: TableDefinition<String, String> = TableDefinition::new("meta");
+    /// Idempotency keys (ATH-CORE-035); retained 7 days (R-PRS-06's table set).
+    pub const IDEMPOTENCY_KEYS: TableDefinition<String, String> =
+        TableDefinition::new("idempotency_keys");
+    /// Workspace leases (ATH-DATA-009).
+    pub const WORKSPACE_LEASES: TableDefinition<String, String> =
+        TableDefinition::new("workspace_leases");
+    /// Agent definitions.
+    pub const AGENT_DEFINITIONS: TableDefinition<String, String> =
+        TableDefinition::new("agent_definitions");
+    /// Agent instances.
+    pub const AGENT_INSTANCES: TableDefinition<String, String> =
+        TableDefinition::new("agent_instances");
+    /// Results. Append-only (R-PRS-05).
+    pub const RESULTS: TableDefinition<String, String> = TableDefinition::new("results");
+    /// Evaluations.
+    pub const EVALUATIONS: TableDefinition<String, String> = TableDefinition::new("evaluations");
+    /// Evaluations by Result: `result_id|evaluation_id` → `evaluation_id`.
+    pub const EVALUATIONS_BY_RESULT: TableDefinition<String, String> =
+        TableDefinition::new("evaluations_by_result");
+    /// Skills, keyed `id|version`.
+    pub const SKILLS: TableDefinition<String, String> = TableDefinition::new("skills");
+    /// Approvals.
+    pub const APPROVALS: TableDefinition<String, String> = TableDefinition::new("approvals");
+    /// Memory records.
+    pub const MEMORY_RECORDS: TableDefinition<String, String> =
+        TableDefinition::new("memory_records");
+    /// Clarifications.
+    pub const CLARIFICATIONS: TableDefinition<String, String> =
+        TableDefinition::new("clarifications");
+    /// Messages.
+    pub const MESSAGES: TableDefinition<String, String> = TableDefinition::new("messages");
+    /// Message-delivery dedup rows, keyed `to_instance_id|message_id` (ATH-MSG-014).
+    pub const MESSAGE_DELIVERIES: TableDefinition<String, String> =
+        TableDefinition::new("message_deliveries");
+    /// Hierarchies (one row carries the node set).
+    pub const HIERARCHIES: TableDefinition<String, String> = TableDefinition::new("hierarchies");
+    /// Runtime instances.
+    pub const RUNTIME_INSTANCES: TableDefinition<String, String> =
+        TableDefinition::new("runtime_instances");
+    /// Tool executions.
+    pub const TOOL_EXECUTIONS: TableDefinition<String, String> =
+        TableDefinition::new("tool_executions");
+    /// Conversations.
+    pub const CONVERSATIONS: TableDefinition<String, String> =
+        TableDefinition::new("conversations");
+    /// Utterances, keyed `conversation_id|ordinal-padded`.
+    pub const UTTERANCES: TableDefinition<String, String> = TableDefinition::new("utterances");
+    /// The data's own schema-version record (R-PRS-06).
+    pub const SCHEMA_VERSION: TableDefinition<String, String> =
+        TableDefinition::new("schema_version");
+}
 
 /// A handle to the ATHENA database.
 pub struct Database {
-    conn: Connection,
+    engine: redb::Database,
 }
 
 impl std::fmt::Debug for Database {
@@ -20,7 +115,10 @@ impl std::fmt::Debug for Database {
 }
 
 impl Database {
-    /// Open or create the database at `path`, applying pragmas and migrations.
+    /// Open or create the database at `path` and bring it to the current schema.
+    ///
+    /// # Errors
+    /// Engine open, or schema bring-up.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
@@ -30,548 +128,351 @@ impl Database {
                 source,
             })?;
         }
-        let conn = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_URI,
-        )?;
-        Self::from_connection(conn)
+        let engine = redb::Database::create(path)?;
+        Self::from_engine(engine)
     }
 
     /// Open an in-memory database, for tests.
+    ///
+    /// # Errors
+    /// Engine open, or schema bring-up.
     pub fn open_in_memory() -> Result<Self> {
-        Self::from_connection(Connection::open_in_memory()?)
+        let engine = redb::backends::InMemoryBackend::new();
+        let engine = redb::Database::builder().create_with_backend(engine)?;
+        Self::from_engine(engine)
     }
 
-    fn from_connection(conn: Connection) -> Result<Self> {
-        let mut db = Self { conn };
-        db.apply_pragmas()?;
+    fn from_engine(engine: redb::Database) -> Result<Self> {
+        let db = Self { engine };
         db.migrate()?;
         Ok(db)
     }
 
-    /// Apply the required pragmas (ATH-PERS-005).
-    fn apply_pragmas(&mut self) -> Result<()> {
-        // WAL with synchronous=FULL is the specified pairing: WAL for concurrent readers,
-        // FULL so a committed transition survives a power loss. Anything less would let a
-        // state transition be acknowledged and then lost, breaking ATH-PERS-002.
-        //
-        // An in-memory database cannot use WAL, so the mode is applied best-effort and
-        // verified only for file-backed databases.
-        let _: String = self
-            .conn
-            .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
-            .unwrap_or_else(|_| "memory".to_string());
-        self.conn.pragma_update(None, "synchronous", "FULL")?;
-        // Referential integrity is declared in the schema, so it must actually be enforced;
-        // SQLite leaves it off by default.
-        self.conn.pragma_update(None, "foreign_keys", true)?;
-        Ok(())
-    }
-
-    /// The schema version recorded in the database, or `None` for a fresh database.
-    pub fn recorded_version(&self) -> Result<Option<u32>> {
-        let exists: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')",
-            [],
-            |row| row.get(0),
-        )?;
-        if !exists {
-            return Ok(None);
-        }
-        let version: Option<i64> =
-            self.conn
-                .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
-                    row.get(0)
-                })?;
-        Ok(version.map(|v| u32::try_from(v).unwrap_or(u32::MAX)))
-    }
-
-    /// Verify the schema version and migrate forward, or abort (ATH-PERS-010).
-    ///
-    /// A database newer than this build is refused rather than used: proceeding would mean
-    /// writing through a schema the build does not understand.
-    fn migrate(&mut self) -> Result<()> {
-        self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (
-                 version     INTEGER PRIMARY KEY,
-                 description TEXT NOT NULL,
-                 applied_at  TEXT NOT NULL
-             ) STRICT;",
-        )?;
-
-        let current = self.recorded_version()?.unwrap_or(0);
-        if current > CURRENT_SCHEMA_VERSION {
+    /// Bring the database to the current schema version (`ATH-PERS-009`/`010`): a fresh
+    /// or older stamp moves forward; a newer stamp aborts startup — silent operation on
+    /// a mismatched schema is forbidden. The check runs inside one write unit (a fresh
+    /// database has no version table; the write face auto-creates).
+    fn migrate(&self) -> Result<()> {
+        let current = crate::CURRENT_SCHEMA_VERSION;
+        let txn = self.engine.begin_write()?;
+        let mut table = txn.open_table(tables::SCHEMA_VERSION)?;
+        let moved = table
+            .get("version".to_string())?
+            .and_then(|guard| guard.value().parse::<u32>().ok())
+            .unwrap_or(0);
+        if moved > current {
+            drop(table);
+            drop(txn); // the refuser's unit commits nothing
             return Err(PersistenceError::SchemaTooNew {
-                found: current,
-                supported: CURRENT_SCHEMA_VERSION,
+                found: moved,
+                supported: current,
             });
         }
-
-        for migration in MIGRATIONS.iter().filter(|m| m.version > current) {
-            let tx = self.conn.transaction()?;
-            tx.execute_batch(migration.sql)?;
-            tx.execute(
-                "INSERT INTO schema_migrations (version, description, applied_at)
-                 VALUES (?1, ?2, ?3)",
-                rusqlite::params![migration.version, migration.description, now_rfc3339()],
-            )?;
-            tx.commit()?;
+        if moved != current {
+            table.insert("version".to_string(), current.to_string())?;
         }
+        drop(table);
+        txn.commit()?;
         Ok(())
     }
 
-    /// Run `work` inside a single transaction.
+    /// Commit one atomic unit: everything the closure writes commits, or nothing does
+    /// (`ATH-PERS-003`). Write transactions see their own writes, so
+    /// check-then-write transitions stay conflict-checkable inside the unit.
     ///
-    /// This is the primitive behind ATH-PERS-003: a state transition and its Event are written
-    /// atomically, so a transition that succeeds while its Event is lost cannot occur. Callers
-    /// publish to subscribers only *after* this returns, which is also what ATH-EVENT-020
-    /// requires.
-    pub fn transaction<T, F>(&mut self, work: F) -> Result<T>
-    where
-        F: FnOnce(&Transaction<'_>) -> Result<T>,
-    {
-        let tx = self.conn.transaction()?;
-        match work(&tx) {
+    /// # Errors
+    /// The closure's own faults, or the unit's commit fault.
+    pub fn commit<R>(&mut self, f: impl FnOnce(&mut WriteTx) -> Result<R>) -> Result<R> {
+        let txn = self.engine.begin_write()?;
+        let outcome = {
+            let mut tx = WriteTx { txn: &txn };
+            f(&mut tx)
+        };
+        match outcome {
             Ok(value) => {
-                tx.commit()?;
+                txn.commit()?; // consumes txn — the unit is atomic everything-or-nothing
                 Ok(value)
             }
-            Err(e) => {
-                // Dropping the transaction rolls it back; being explicit documents that a
-                // failed unit of work leaves no partial state behind.
-                drop(tx);
-                Err(e)
+            Err(fault) => {
+                drop(txn); // an uncommitted write transaction aborts on drop
+                Err(fault)
             }
         }
     }
 
-    /// Borrow the connection for read-only queries.
-    #[must_use]
-    pub fn connection(&self) -> &Connection {
-        &self.conn
-    }
-
-    /// Borrow the connection mutably.
-    pub fn connection_mut(&mut self) -> &mut Connection {
-        &mut self.conn
+    /// Read without committing anything.
+    ///
+    /// # Errors
+    /// The closure's own faults.
+    pub fn read<R>(&self, f: impl FnOnce(&ReadTx<'_, '_>) -> Result<R>) -> Result<R> {
+        let txn = self.engine.begin_read()?;
+        let view = ReadTx {
+            txn: &txn,
+            _marker: std::marker::PhantomData,
+        };
+        let outcome = f(&view);
+        drop(txn);
+        outcome
     }
 }
 
-/// The current time as an RFC 3339 UTC string (ATH-DATA-002).
-///
-/// Implemented without a date-time dependency: the specification fixes the representation, not
-/// the library.
+/// The written half of one atomic unit.
+pub struct WriteTx<'e> {
+    txn: &'e redb::WriteTransaction,
+}
+
+impl<'e> WriteTx<'e> {
+    fn open<'t>(
+        &'t self,
+        definition: TableDefinition<String, String>,
+    ) -> Result<redb::Table<'t, String, String>> {
+        self.txn
+            .open_table(definition)
+            .map_err(PersistenceError::from)
+    }
+
+    /// Insert (or replace) a row.
+    ///
+    /// # Errors
+    /// Engine faults.
+    pub fn put(
+        &mut self,
+        definition: TableDefinition<String, String>,
+        key: &str,
+        value: &str,
+    ) -> Result<()> {
+        let mut table = self.open(definition)?;
+        table
+            .insert(key.to_string(), value.to_string())
+            .map_err(PersistenceError::from)?;
+        Ok(())
+    }
+
+    /// Read one row inside the unit.
+    ///
+    /// # Errors
+    /// Engine faults.
+    pub fn get(
+        &self,
+        definition: TableDefinition<String, String>,
+        key: &str,
+    ) -> Result<Option<String>> {
+        let table = self.open(definition)?;
+        let guard = table.get(key.to_string()).map_err(PersistenceError::from)?;
+        Ok(guard.map(|row| row.value().to_string()))
+    }
+
+    /// Remove one row; returns whether a row was removed.
+    ///
+    /// # Errors
+    /// Engine faults.
+    pub fn remove(
+        &mut self,
+        definition: TableDefinition<String, String>,
+        key: &str,
+    ) -> Result<bool> {
+        let mut table = self.open(definition)?;
+        let prior = table
+            .remove(key.to_string())
+            .map_err(PersistenceError::from)?;
+        Ok(prior.is_some())
+    }
+
+    /// Insert only when the key is absent; `false` means the key already existed.
+    ///
+    /// This is the atomic claim/lease primitive (`ATH-CORE-035`, `ATH-NFR-017`,
+    /// `ATH-DATA-009`).
+    ///
+    /// # Errors
+    /// Engine faults.
+    pub fn insert_absent(
+        &mut self,
+        definition: TableDefinition<String, String>,
+        key: &str,
+        value: &str,
+    ) -> Result<bool> {
+        let mut table = self.open(definition)?;
+        let prior = table
+            .insert(key.to_string(), value.to_string())
+            .map_err(PersistenceError::from)?;
+        Ok(prior.is_none())
+    }
+
+    /// Iterate one table's rows in key order.
+    ///
+    /// # Errors
+    /// Engine faults.
+    pub fn rows(
+        &self,
+        definition: TableDefinition<String, String>,
+    ) -> Result<Vec<(String, String)>> {
+        let table = self.open(definition)?;
+        let mut rows = Vec::new();
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            rows.push((key.value().to_string(), value.value().to_string()));
+        }
+        Ok(rows)
+    }
+
+    /// Iterate one table's rows reversed (newest first).
+    ///
+    /// # Errors
+    /// Engine faults.
+    pub fn rows_rev(
+        &self,
+        definition: TableDefinition<String, String>,
+    ) -> Result<Vec<(String, String)>> {
+        let table = self.open(definition)?;
+        let mut rows = Vec::new();
+        for entry in table.iter()?.rev() {
+            let (key, value) = entry?;
+            rows.push((key.value().to_string(), value.value().to_string()));
+        }
+        Ok(rows)
+    }
+}
+
+/// The read-only view.
+pub struct ReadTx<'e, 'a> {
+    _marker: std::marker::PhantomData<&'a ()>,
+    txn: &'e redb::ReadTransaction,
+}
+
+impl<'e, 'a> ReadTx<'e, 'a> {
+    /// Read one row.
+    ///
+    /// # Errors
+    /// Engine faults.
+    pub fn get(
+        &self,
+        definition: TableDefinition<String, String>,
+        key: &str,
+    ) -> Result<Option<String>> {
+        // A table that was never committed to is an absent table, not an internal
+        // fault: an absent row answers None the same way an absent row does.
+        let Ok(table) = self.txn.open_table(definition) else {
+            return Ok(None);
+        };
+        let guard = table.get(key.to_string()).map_err(PersistenceError::from)?;
+        Ok(guard.map(|row| row.value().to_string()))
+    }
+
+    /// Iterate one table's rows in key order.
+    ///
+    /// # Errors
+    /// Engine faults.
+    pub fn rows(
+        &self,
+        definition: TableDefinition<String, String>,
+    ) -> Result<Vec<(String, String)>> {
+        let Ok(table) = self.txn.open_table(definition) else {
+            return Ok(Vec::new());
+        };
+        let mut rows = Vec::new();
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            rows.push((key.value().to_string(), value.value().to_string()));
+        }
+        Ok(rows)
+    }
+
+    /// Iterate one table's rows reversed (newest first).
+    ///
+    /// # Errors
+    /// Engine faults.
+    pub fn rows_rev(
+        &self,
+        definition: TableDefinition<String, String>,
+    ) -> Result<Vec<(String, String)>> {
+        let Ok(table) = self.txn.open_table(definition) else {
+            return Ok(Vec::new());
+        };
+        let mut rows = Vec::new();
+        for entry in table.iter()?.rev() {
+            let (key, value) = entry?;
+            rows.push((key.value().to_string(), value.value().to_string()));
+        }
+        Ok(rows)
+    }
+}
+
+/// Now, RFC 3339 UTC.
 #[must_use]
 pub fn now_rfc3339() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    format_rfc3339(now.as_secs(), now.subsec_millis())
+    format_rfc3339(SystemTime::now())
 }
 
-/// Format a Unix timestamp as RFC 3339 UTC with millisecond precision.
+/// Format a system time as RFC 3339 UTC (millisecond precision, `Z` suffix).
 #[must_use]
-pub fn format_rfc3339(unix_secs: u64, millis: u32) -> String {
-    // Days from 1970-01-01, converted with the civil-from-days algorithm.
-    let days = i64::try_from(unix_secs / 86_400).unwrap_or(0);
-    let secs_of_day = unix_secs % 86_400;
+pub fn format_rfc3339(when: SystemTime) -> String {
+    let since_epoch = when
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(std::time::Duration::ZERO);
+    time_string(since_epoch.as_secs() as i64, since_epoch.subsec_millis())
+}
 
+/// Seconds+millis → RFC 3339.
+fn time_string(seconds: i64, millis: u32) -> String {
+    let days = seconds.div_euclid(86_400);
+    let second_of_day = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = second_of_day / 3_600;
+    let minute = (second_of_day % 3_600) / 60;
+    let second = second_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+}
+
+/// Days since the epoch → `(year, month, day)` (civil calendar; the Hinnant algorithm).
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        y,
-        m,
-        d,
-        secs_of_day / 3600,
-        (secs_of_day % 3600) / 60,
-        secs_of_day % 60,
-        millis
-    )
+    (y + i64::from(m <= 2), m as u32, d as u32)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn db() -> Database {
-        Database::open_in_memory().expect("open in-memory database")
-    }
-
-    #[test]
-    fn a_fresh_database_is_migrated_to_the_current_version() {
-        let db = db();
-        assert_eq!(
-            db.recorded_version().expect("version"),
-            Some(CURRENT_SCHEMA_VERSION)
-        );
-    }
-
-    #[test]
-    fn migration_is_idempotent_across_reopen() {
-        // Reopening must not re-apply a migration; a second CREATE TABLE would fail.
-        let dir = std::env::temp_dir().join(format!("athena-db-{}", std::process::id()));
-        let path = dir.join("athena.db");
-        let _ = std::fs::remove_dir_all(&dir);
-
-        {
-            let db = Database::open(&path).expect("open");
-            assert_eq!(db.recorded_version().expect("version"), Some(1));
+impl From<redb::DatabaseError> for PersistenceError {
+    fn from(error: redb::DatabaseError) -> Self {
+        Self::Backend {
+            detail: format!("DatabaseError: {error}"),
         }
-        {
-            let db = Database::open(&path).expect("reopen");
-            assert_eq!(db.recorded_version().expect("version"), Some(1));
-            let applied: i64 = db
-                .connection()
-                .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
-                .expect("count");
-            assert_eq!(applied, 1, "a migration must be applied exactly once");
+    }
+}
+
+impl From<redb::TransactionError> for PersistenceError {
+    fn from(error: redb::TransactionError) -> Self {
+        Self::Backend {
+            detail: format!("TransactionError: {error}"),
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
+}
 
-    #[test]
-    fn a_database_newer_than_the_build_is_refused() {
-        // ATH-PERS-010: never operate silently against an unknown schema.
-        let dir = std::env::temp_dir().join(format!("athena-db-new-{}", std::process::id()));
-        let path = dir.join("athena.db");
-        let _ = std::fs::remove_dir_all(&dir);
-
-        {
-            let db = Database::open(&path).expect("open");
-            db.connection()
-                .execute(
-                    "INSERT INTO schema_migrations (version, description, applied_at)
-                     VALUES (999, 'from the future', '2030-01-01T00:00:00.000Z')",
-                    [],
-                )
-                .expect("insert future version");
+impl From<redb::StorageError> for PersistenceError {
+    fn from(error: redb::StorageError) -> Self {
+        Self::Backend {
+            detail: format!("StorageError: {error}"),
         }
-        let err = Database::open(&path).expect_err("must refuse");
-        assert!(
-            matches!(err, PersistenceError::SchemaTooNew { found: 999, .. }),
-            "{err}"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
+}
 
-    #[test]
-    fn file_backed_databases_run_in_wal_mode_with_full_synchronous() {
-        // ATH-PERS-005.
-        let dir = std::env::temp_dir().join(format!("athena-db-wal-{}", std::process::id()));
-        let path = dir.join("athena.db");
-        let _ = std::fs::remove_dir_all(&dir);
-
-        let db = Database::open(&path).expect("open");
-        let mode: String = db
-            .connection()
-            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
-            .expect("journal_mode");
-        assert_eq!(mode.to_lowercase(), "wal");
-        let sync: i64 = db
-            .connection()
-            .query_row("PRAGMA synchronous", [], |r| r.get(0))
-            .expect("synchronous");
-        assert_eq!(sync, 2, "synchronous=FULL is 2");
-        let _ = std::fs::remove_dir_all(&dir);
+impl From<redb::CommitError> for PersistenceError {
+    fn from(error: redb::CommitError) -> Self {
+        Self::Backend {
+            detail: format!("CommitError: {error}"),
+        }
     }
+}
 
-    #[test]
-    fn foreign_keys_are_enforced() {
-        // The schema declares references, so they must actually hold.
-        let db = db();
-        let on: i64 = db
-            .connection()
-            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
-            .expect("foreign_keys");
-        assert_eq!(on, 1);
-
-        let err = db.connection().execute(
-            "INSERT INTO plans (id, task_id, revision, goal, created_at)
-             VALUES ('plan-1', 'task-missing', 1, 'g', '2026-10-14T00:00:00.000Z')",
-            [],
-        );
-        assert!(err.is_err(), "a plan referencing no task must be refused");
-    }
-
-    #[test]
-    fn a_committed_transaction_persists_and_a_failed_one_leaves_nothing() {
-        // ATH-PERS-003's primitive: all or nothing.
-        let mut db = db();
-        db.transaction(|tx| {
-            tx.execute(
-                "INSERT INTO tasks (id, title, instruction, workspace, state, priority,
-                     risk_level, max_attempts, max_iterations, created_by, created_at, updated_at)
-                 VALUES ('task-1', 't', 'i', '/w', 'CREATED', 'normal', 'low', 3, 50, 'u',
-                     '2026-10-14T00:00:00.000Z', '2026-10-14T00:00:00.000Z')",
-                [],
-            )?;
-            Ok(())
-        })
-        .expect("commit");
-
-        let count: i64 = db
-            .connection()
-            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
-            .expect("count");
-        assert_eq!(count, 1);
-
-        let failed: Result<()> = db.transaction(|tx| {
-            tx.execute(
-                "INSERT INTO tasks (id, title, instruction, workspace, state, priority,
-                     risk_level, max_attempts, max_iterations, created_by, created_at, updated_at)
-                 VALUES ('task-2', 't', 'i', '/w', 'CREATED', 'normal', 'low', 3, 50, 'u',
-                     '2026-10-14T00:00:00.000Z', '2026-10-14T00:00:00.000Z')",
-                [],
-            )?;
-            Err(PersistenceError::Conflict {
-                detail: "deliberate".into(),
-            })
-        });
-        assert!(failed.is_err());
-
-        let count: i64 = db
-            .connection()
-            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
-            .expect("count");
-        assert_eq!(count, 1, "the failed transaction must leave no row behind");
-    }
-
-    #[test]
-    fn events_cannot_be_updated() {
-        // ATH-PERS-008: history is append-only, enforced in the database so no code path can
-        // rewrite it.
-        let db = db();
-        db.connection()
-            .execute(
-                "INSERT INTO events (event_id, schema_version, event_type, occurred_at, sequence,
-                     correlation_id, actor)
-                 VALUES ('evt-1', 1, 'TaskCreated', '2026-10-14T00:00:00.000Z', 1, 'cor-1',
-                     'human')",
-                [],
-            )
-            .expect("append");
-
-        let err = db
-            .connection()
-            .execute(
-                "UPDATE events SET event_type = 'TaskFailed' WHERE event_id = 'evt-1'",
-                [],
-            )
-            .expect_err("update must be refused");
-        assert!(err.to_string().contains("append-only"), "{err}");
-    }
-
-    #[test]
-    fn results_and_artifacts_cannot_be_updated() {
-        // ATH-RESULT-003: a correction is a new Result.
-        let db = db();
-        db.connection()
-            .execute_batch(
-                "INSERT INTO tasks (id, title, instruction, workspace, state, priority,
-                     risk_level, max_attempts, max_iterations, created_by, created_at, updated_at)
-                 VALUES ('task-1', 't', 'i', '/w', 'RUNNING', 'normal', 'low', 3, 50, 'u',
-                     '2026-10-14T00:00:00.000Z', '2026-10-14T00:00:00.000Z');
-                 INSERT INTO results (id, task_id, agent_id, instance_id, status, output,
-                     started_at, finished_at, execution_time_ms)
-                 VALUES ('res-1', 'task-1', 'a', 'ai-1', 'success', 'out',
-                     '2026-10-14T00:00:00.000Z', '2026-10-14T00:00:01.000Z', 1000);
-                 INSERT INTO artifacts (result_id, base, path, kind, created_at)
-                 VALUES ('res-1', 'store', 'report.md', 'report', '2026-10-14T00:00:01.000Z');",
-            )
-            .expect("seed");
-
-        let err = db
-            .connection()
-            .execute(
-                "UPDATE results SET output = 'tampered' WHERE id = 'res-1'",
-                [],
-            )
-            .expect_err("must be refused");
-        assert!(err.to_string().contains("immutable"), "{err}");
-
-        let err = db
-            .connection()
-            .execute(
-                "UPDATE artifacts SET path = 'other.md' WHERE result_id = 'res-1'",
-                [],
-            )
-            .expect_err("must be refused");
-        assert!(err.to_string().contains("immutable"), "{err}");
-    }
-
-    #[test]
-    fn an_artifact_base_outside_the_two_permitted_values_is_refused() {
-        // ATH-RESULT-002: a Workspace-relative base must be unrepresentable, because Instance
-        // areas are deleted at retention expiry and the reference would dangle.
-        let db = db();
-        db.connection()
-            .execute_batch(
-                "INSERT INTO tasks (id, title, instruction, workspace, state, priority,
-                     risk_level, max_attempts, max_iterations, created_by, created_at, updated_at)
-                 VALUES ('task-1', 't', 'i', '/w', 'RUNNING', 'normal', 'low', 3, 50, 'u',
-                     '2026-10-14T00:00:00.000Z', '2026-10-14T00:00:00.000Z');
-                 INSERT INTO results (id, task_id, agent_id, instance_id, status, output,
-                     started_at, finished_at, execution_time_ms)
-                 VALUES ('res-1', 'task-1', 'a', 'ai-1', 'success', 'out',
-                     '2026-10-14T00:00:00.000Z', '2026-10-14T00:00:01.000Z', 1000);",
-            )
-            .expect("seed");
-
-        let err = db
-            .connection()
-            .execute(
-                "INSERT INTO artifacts (result_id, base, path, kind, created_at)
-                 VALUES ('res-1', 'workspace', 'x.md', 'file', '2026-10-14T00:00:01.000Z')",
-                [],
-            )
-            .expect_err("must be refused");
-        assert!(err.to_string().contains("CHECK"), "{err}");
-    }
-
-    #[test]
-    fn plan_revisions_are_unique_per_task() {
-        // ATH-PLAN-004: a revision is never overwritten, so a duplicate must be impossible.
-        let db = db();
-        db.connection()
-            .execute_batch(
-                "INSERT INTO tasks (id, title, instruction, workspace, state, priority,
-                     risk_level, max_attempts, max_iterations, created_by, created_at, updated_at)
-                 VALUES ('task-1', 't', 'i', '/w', 'RUNNING', 'normal', 'low', 3, 50, 'u',
-                     '2026-10-14T00:00:00.000Z', '2026-10-14T00:00:00.000Z');
-                 INSERT INTO plans (id, task_id, revision, goal, created_at)
-                 VALUES ('plan-1', 'task-1', 1, 'g', '2026-10-14T00:00:00.000Z');",
-            )
-            .expect("seed");
-
-        let err = db.connection().execute(
-            "INSERT INTO plans (id, task_id, revision, goal, created_at)
-             VALUES ('plan-2', 'task-1', 1, 'g', '2026-10-14T00:00:00.000Z')",
-            [],
-        );
-        assert!(err.is_err(), "a duplicate revision must be refused");
-    }
-
-    #[test]
-    fn event_sequence_is_unique() {
-        // ATH-EVENT-003: monotonic per Core, so two events cannot share a position.
-        let db = db();
-        db.connection()
-            .execute(
-                "INSERT INTO events (event_id, schema_version, event_type, occurred_at, sequence,
-                     correlation_id, actor)
-                 VALUES ('evt-1', 1, 'TaskCreated', '2026-10-14T00:00:00.000Z', 1, 'cor-1', 'human')",
-                [],
-            )
-            .expect("append");
-        let err = db.connection().execute(
-            "INSERT INTO events (event_id, schema_version, event_type, occurred_at, sequence,
-                 correlation_id, actor)
-             VALUES ('evt-2', 1, 'TaskQueued', '2026-10-14T00:00:01.000Z', 1, 'cor-1', 'system')",
-            [],
-        );
-        assert!(err.is_err(), "a duplicate sequence must be refused");
-    }
-
-    #[test]
-    fn a_workspace_can_be_leased_by_only_one_task() {
-        // ATH-DATA-009: the primary key is the exclusivity that the API's 409 rests on.
-        let db = db();
-        db.connection()
-            .execute_batch(
-                "INSERT INTO tasks (id, title, instruction, workspace, state, priority,
-                     risk_level, max_attempts, max_iterations, created_by, created_at, updated_at)
-                 VALUES ('task-1', 't', 'i', '/w', 'RUNNING', 'normal', 'low', 3, 50, 'u',
-                     '2026-10-14T00:00:00.000Z', '2026-10-14T00:00:00.000Z');
-                 INSERT INTO tasks (id, title, instruction, workspace, state, priority,
-                     risk_level, max_attempts, max_iterations, created_by, created_at, updated_at)
-                 VALUES ('task-2', 't', 'i', '/w', 'CREATED', 'normal', 'low', 3, 50, 'u',
-                     '2026-10-14T00:00:00.000Z', '2026-10-14T00:00:00.000Z');
-                 INSERT INTO workspace_leases (workspace, task_id, acquired_at)
-                 VALUES ('/w', 'task-1', '2026-10-14T00:00:00.000Z');",
-            )
-            .expect("seed");
-
-        let err = db.connection().execute(
-            "INSERT INTO workspace_leases (workspace, task_id, acquired_at)
-             VALUES ('/w', 'task-2', '2026-10-14T00:00:00.000Z')",
-            [],
-        );
-        assert!(
-            err.is_err(),
-            "a second lease on one workspace must be refused"
-        );
-    }
-
-    #[test]
-    fn an_idempotency_key_cannot_be_inserted_twice() {
-        // ATH-CORE-035: this is what prevents a double delegation after a restart.
-        let db = db();
-        db.connection()
-            .execute(
-                "INSERT INTO idempotency_keys (key, created_at)
-                 VALUES ('step-1:0', '2026-10-14T00:00:00.000Z')",
-                [],
-            )
-            .expect("first");
-        let err = db.connection().execute(
-            "INSERT INTO idempotency_keys (key, created_at)
-             VALUES ('step-1:0', '2026-10-14T00:00:01.000Z')",
-            [],
-        );
-        assert!(err.is_err(), "a repeated key must be refused");
-    }
-
-    #[test]
-    fn skill_rows_are_keyed_by_id_and_version() {
-        // ATH-STATE-026: state is tracked per (id, version).
-        let db = db();
-        let insert = |id: &str, version: &str| {
-            db.connection().execute(
-                "INSERT INTO skills (id, version, name, description, runtime_provider, source,
-                     checksum, publisher, risk_level, state, registered_at, updated_at)
-                 VALUES (?1, ?2, 'n', 'd', 'agent-cli', 's', 'c', 'p', 'medium', 'AVAILABLE',
-                     '2026-10-14T00:00:00.000Z', '2026-10-14T00:00:00.000Z')",
-                rusqlite::params![id, version],
-            )
-        };
-        insert("fpga-timing-analysis", "1.2.0").expect("first version");
-        insert("fpga-timing-analysis", "1.3.0").expect("second version coexists");
-        assert!(
-            insert("fpga-timing-analysis", "1.2.0").is_err(),
-            "the same (id, version) must not be inserted twice"
-        );
-    }
-
-    #[test]
-    fn timestamps_are_rfc3339_utc() {
-        // ATH-DATA-002.
-        let now = now_rfc3339();
-        assert!(now.ends_with('Z'), "{now}");
-        assert_eq!(now.len(), 24, "{now}");
-        assert_eq!(&now[4..5], "-");
-        assert_eq!(&now[10..11], "T");
-
-        // Known epochs, to show the civil-from-days conversion is right rather than merely
-        // well-formed.
-        assert_eq!(format_rfc3339(0, 0), "1970-01-01T00:00:00.000Z");
-        assert_eq!(format_rfc3339(1_000_000_000, 0), "2001-09-09T01:46:40.000Z");
-        assert_eq!(
-            format_rfc3339(1_760_000_000, 123),
-            "2025-10-09T08:53:20.123Z"
-        );
-        // A leap day, where an off-by-one in the algorithm would show.
-        assert_eq!(format_rfc3339(1_709_164_800, 0), "2024-02-29T00:00:00.000Z");
+impl From<redb::TableError> for PersistenceError {
+    fn from(error: redb::TableError) -> Self {
+        Self::Backend {
+            detail: format!("TableError: {error}"),
+        }
     }
 }

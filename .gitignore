@@ -11,3 +11,6 @@ AI_PRJ_TASKS.md
 # runtime and user-local state (publication set — design §2.6)
 api.pid
 .agent-cli/
+
+# per-project ATHENA state (the flow ran in this repository too — design §2.6)
+.athena/

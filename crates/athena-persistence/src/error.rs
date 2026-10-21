@@ -8,9 +8,13 @@ use std::path::PathBuf;
 /// A persistence failure.
 #[derive(Debug, thiserror::Error)]
 pub enum PersistenceError {
-    /// The underlying store failed.
-    #[error("database error: {0}")]
-    Backend(#[from] rusqlite::Error),
+    /// The underlying store (the engine) failed.
+    #[error("database error: {detail}")]
+    Backend {
+        /// What failed.
+        detail: String,
+    },
+
     /// A surface-level fault that names itself (`UDS`-shaped wrappers and the like).
     #[error("{0}")]
     Plainly(String),

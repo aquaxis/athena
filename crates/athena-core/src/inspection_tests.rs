@@ -3,7 +3,7 @@
 use crate::inspection::{Inspection, InspectionFacts, Inspector, Reason, deny_envelope};
 use crate::protocol::{CoreRequest, ErrorClass, WritableMemoryTier};
 use athena_config::policy::{CompiledPolicy, Operation};
-use athena_persistence::SqliteStore;
+use athena_persistence::AthenaStore;
 use athena_types::{PlanStepId, TaskId, ToolName};
 
 /// Empty rules: everything classifies as the default deny (`high`, approval required).
@@ -15,8 +15,8 @@ fn empty_policy() -> CompiledPolicy {
     CompiledPolicy::compile(&section).expect("an empty rule set compiles")
 }
 
-fn runtime() -> SqliteStore {
-    SqliteStore::in_memory().expect("in-memory claim store")
+fn runtime() -> AthenaStore {
+    AthenaStore::in_memory().expect("in-memory claim store")
 }
 
 fn facts(tools: &[ToolName]) -> InspectionFacts {

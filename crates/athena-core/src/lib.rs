@@ -91,9 +91,9 @@ pub use ownership::{Entity, ModuleRole, OWNERSHIP};
 /// The repository surfaces the API needs, re-exported so `athena-api` needs no direct
 /// `athena-persistence` edge (spec §32.2 allows `athena-api → athena-core` only).
 pub use athena_persistence::{
-    AgentRepository, ApprovalRepository, ClarificationRepository, ConversationRepository,
-    EventRepository, IdempotencyRepository, MemoryRepository, Page, PersistenceError,
-    SkillRepository, SqliteStore, StoredEvent, TaskRepository,
+    AgentRepository, ApprovalRepository, AthenaStore, ClarificationRepository,
+    ConversationRepository, EventRepository, IdempotencyRepository, MemoryRepository, Page,
+    PersistenceError, SkillRepository, StoredEvent, TaskRepository,
 };
 
 /// Wrap a plain-text failure into the store's error face (the API's fault mapping does
@@ -109,12 +109,12 @@ pub fn persistence_internal(detail: String) -> PersistenceError {
 /// (`athena-api → runtimes/athena-runtime-agent-cli`) is declared directly by the binary,
 /// as the composition root.
 pub use athena_config::{
-    AuthMode as ConfigAuthMode, CliInputs as ConfigCliInputs, Config, Loaded,
-    load as load_config, redacted_snapshot as config_redacted,
+    AuthMode as ConfigAuthMode, CliInputs as ConfigCliInputs, Config, Loaded, load as load_config,
+    redacted_snapshot as config_redacted,
 };
 pub use athena_persistence::Database;
-pub use athena_runtime::{FilesystemScope, RuntimeError, RuntimeInstanceRef, StartContext};
 pub use athena_runtime::Runtime;
+pub use athena_runtime::{FilesystemScope, RuntimeError, RuntimeInstanceRef, StartContext};
 pub use protocol::{CoreRequest, CoreResponse, ErrorClass, ErrorEnvelope, WritableMemoryTier};
 pub use scheduler::{
     BlockingLimit, Inventory, InventoryInstance, QueuedStep, RetryBudget, SchedulerLimits, Tick,
