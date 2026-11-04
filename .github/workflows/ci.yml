@@ -7,6 +7,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -88,3 +89,18 @@ jobs:
         with:
           name: lcov
           path: lcov.info
+
+  tag-version:
+    # Review fix (v0.5.0 review, finding 3): the release tag must equal the workspace version —
+    # CI refuses the drift the v0.5.0 tag carried (tag `v0.5.0` over `version = "0.1.0"`).
+    name: Tag ↔ workspace version
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag equals Cargo.toml's workspace.package.version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(awk -F'"' '/^\[workspace\.package\]/{ws=1;next} /^\[/{ws=0} ws && $1=="version = "{print $2; exit}' Cargo.toml)"
+          echo "tag=$tag version=$version"
+          test "$tag" = "$version"

@@ -7,8 +7,8 @@
 //!   plaintext (ATH-SEC-005), lives under `<ATHENA_HOME>/var/` runtime data (ATH-OPS-02),
 //!   and answers only what the *caller* (process boundary) presents.
 //! - [`roles`]: the three-role hierarchy from spec §29.2 (`viewer` ⊂ `operator` ⊂ `admin`).
-//! - The route table: `/api/v1` scope with a per-route required role, `/healthz` as the
-//!   single anonymous endpoint (R-API-03, no internal state exposed).
+//! - The route table: `/api/v1` scope with a per-route required role, `/api/v1/healthz` as
+//!   the single anonymous endpoint (R-API-03, ATH-API-018, no internal state exposed).
 //! - Authentication / authorization denials are surfaced through the §22.2 envelope
 //!   already (R-API-07); the audit Events and logs stay the caller's job (ATH-SEC-006 —
 //!   wired when the orchestration lands).

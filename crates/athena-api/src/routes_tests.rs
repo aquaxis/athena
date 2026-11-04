@@ -31,7 +31,27 @@ fn bearer(request: &mut Request<Body>, token: &str) {
 
 #[tokio::test]
 async fn healthz_answers_anonymously() {
-    // R-API-03: `healthz` is the single unauthenticated endpoint and must not expose state.
+    // R-API-03 / ATH-API-018: `/api/v1/healthz` is the single unauthenticated endpoint and
+    // must not expose state.
+    let (state, _, _, _) = state();
+    let router = build_router(state);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/healthz")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("answered");
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_root_healthz_path_is_not_served() {
+    // The endpoint's path holds exactly (X-12(a)): the anonymous surface lives at
+    // `/api/v1/healthz` only — a bare `/healthz` at the router root answers nothing (404),
+    // so no unauthenticated route leaks outside the spec's `/api/v1` scope.
     let (state, _, _, _) = state();
     let router = build_router(state);
     let response = router
@@ -43,7 +63,7 @@ async fn healthz_answers_anonymously() {
         )
         .await
         .expect("answered");
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

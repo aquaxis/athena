@@ -1,5 +1,5 @@
-//! `athena update` — the update face of the installed tool (R-OPS-11 / R-CLI-08; task X-16;
-//! design §2.9 with D-21/D-22).
+//! `athena update` — the update face of the installed tool (R-OPS-11 / R-CLI-08; task X-16,
+//! corrective X-17; design §2.9 with D-21/D-22/D-24).
 //!
 //! The instruction directs: running `athena update` performs work *equivalent to* the published
 //! one-liner `curl -fsSL https://raw.githubusercontent.com/aquaxis/athena/main/install.sh | sh`,
@@ -35,10 +35,17 @@
 //! (`ATH-CLI-002` intact), no resident `athena-api` needed. The only processes it ever
 //! spawns are the §2.5 pipeline's own — `git` (the fetch) and `cargo` (the build/install) —
 //! asserted structurally in `tests/phase6_cli.rs` (D-22).
+//!
+//! The tool refresh's scratch space is a **fresh, uniquely named directory per run** (design
+//! D-24): it never pre-exists, so `athena update` never deletes a path it did not create
+//! itself, concurrent update runs cannot destroy each other's trees, and a failed run leaves
+//! no fetched source behind — a drop guard owns the tree and removes it on every path
+//! (success and every failure), whether or not the project face ran.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -199,17 +206,19 @@ fn record_shipped(manifest: &mut UpdateManifest, rel_key: &str, content: &str, w
 /// [`UpdateFault`] naming the failed step or path (the lib maps it to exit code 4).
 pub fn run_update(cwd: &Path) -> Result<UpdateReport, UpdateFault> {
     // --- Face 1: the tool refresh (the §2.5 pipeline against the publish home, D-22) ---
+    // The fetched tree is owned by the guard: it is cleaned up whatever the rest of this
+    // function does — success, a failed project face, or the unwind of any `?` below (D-24).
     let source = refresh_tool()?;
 
     // --- Face 2: the project definitions (only when `.athena/` resolves, D-21) ---
     let project = match resolve_home(cwd) {
-        Some(home) => Some(refresh_project(&home, &source)?),
+        Some(home) => Some(refresh_project(&home, source.as_path())?),
         None => None,
     };
 
     // The fetched source tree was the tool-refresh scratch space; the installed binaries
-    // never hold a path back into it, so the best-effort cleanup leaves nothing behind.
-    let _ = std::fs::remove_dir_all(&source);
+    // never hold a path back into it, so the guard's best-effort cleanup leaves nothing
+    // behind.
     Ok(UpdateReport {
         tool_refreshed: true,
         project,
@@ -258,19 +267,19 @@ pub fn update_outcome(report: &UpdateReport, json_wanted: bool) -> Outcome {
     Outcome::ok(lines.join("\n"))
 }
 
-/// The §2.5 installer pipeline's steps against the publish home; returns the fetched source
-/// tree (the definitions the project face refreshes from). Each step runs exactly one of the
-/// two programs `install.sh` itself runs — `git`, then `cargo` (D-22; the structural test
+/// The §2.5 installer pipeline's steps against the publish home; returns the owned fetched
+/// source tree (the definitions the project face refreshes from). Each step runs exactly one of
+/// the two programs `install.sh` itself runs — `git`, then `cargo` (D-22; the structural test
 /// asserts precisely these).
-fn refresh_tool() -> Result<PathBuf, UpdateFault> {
+///
+/// The fetched tree's workspace is a **uniquely created** directory under the system temp root
+/// (D-24): never a fixed name — two concurrent runs cannot collide or destroy each other's tree,
+/// and no pre-existing path is ever removed (an unexpected name collision is a refusal, not a
+/// deletion). The returned [`FetchedSource`] deletes the tree on every exit path, success or
+/// failure.
+fn refresh_tool() -> Result<FetchedSource, UpdateFault> {
     let repo_url = std::env::var("ATHENA_REPO_URL").unwrap_or_else(|_| REPO_URL.to_string());
-    let source = std::env::temp_dir().join("athena-update-source");
-    if source.exists() {
-        std::fs::remove_dir_all(&source).map_err(|error| UpdateFault::Io {
-            path: source.display().to_string(),
-            detail: error.to_string(),
-        })?;
-    }
+    let source = create_owned_source(&update_source_dir_name())?;
     tool_step(
         "fetch",
         run_git(&[
@@ -278,19 +287,82 @@ fn refresh_tool() -> Result<PathBuf, UpdateFault> {
             "--depth",
             "1",
             repo_url.as_str(),
-            source.to_string_lossy().as_ref(),
+            source.as_path().to_string_lossy().as_ref(),
         ]),
     )?;
-    tool_step("build", run_cargo(&["build", "--release"], &source))?;
+    tool_step(
+        "build",
+        run_cargo(&["build", "--release"], source.as_path()),
+    )?;
     tool_step(
         "install-athena",
-        run_cargo(&["install", "--path", "crates/athena-cli"], &source),
+        run_cargo(
+            &["install", "--path", "crates/athena-cli"],
+            source.as_path(),
+        ),
     )?;
     tool_step(
         "install-athena-api",
-        run_cargo(&["install", "--path", "crates/athena-api"], &source),
+        run_cargo(
+            &["install", "--path", "crates/athena-api"],
+            source.as_path(),
+        ),
     )?;
     Ok(source)
+}
+
+/// A unique-on-this-host workspace name for one update run (D-24): the process id plus the
+/// wall clock in nanoseconds. Uniqueness is the requirement; the name is minted for the run
+/// alone, so another run — or any unrelated directory — is never in the run's removal path.
+fn update_source_dir_name() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("athena-update-{}-{nanos}", std::process::id())
+}
+
+/// Create the run's workspace under the system temp root as `temp_dir()/name` — owned by the
+/// returned [`FetchedSource`]. The creation is exclusive: an already-existing path is a
+/// refusal (`D-24` — nothing is removed that this run does not own).
+fn create_owned_source(name: &str) -> Result<FetchedSource, UpdateFault> {
+    let dir = std::env::temp_dir().join(name);
+    match std::fs::create_dir(&dir) {
+        Ok(()) => Ok(FetchedSource(dir)),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(UpdateFault::Io {
+            path: dir.display().to_string(),
+            detail: "the update workspace name already exists; this run removes nothing it \
+                         does not own"
+                .to_string(),
+        }),
+        Err(error) => Err(UpdateFault::Io {
+            path: dir.display().to_string(),
+            detail: error.to_string(),
+        }),
+    }
+}
+
+/// One update run's fetched source tree, plus its cleanup ownership: the dropped guard removes
+/// the directory — best effort — on every exit path, success or failure alike (D-24), so a
+/// failed run never leaves fetched source behind.
+struct FetchedSource(PathBuf);
+
+impl FetchedSource {
+    fn as_path(&self) -> &Path {
+        self.0.as_path()
+    }
+}
+
+impl fmt::Debug for FetchedSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("FetchedSource").field(&self.0).finish()
+    }
+}
+
+impl Drop for FetchedSource {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn tool_step(step: &'static str, work: Result<(), UpdateFault>) -> Result<(), UpdateFault> {
@@ -648,6 +720,86 @@ mod tests {
                 .join("demo")
                 .join("SKILL.md")
                 .exists()
+        );
+    }
+
+    #[test]
+    fn the_workspace_is_exclusive_and_never_removes_a_foreign_path() {
+        // D-24's creation face: exclusive create — an already-existing path at the minted
+        // name is a refusal (nothing is removed), and a successful create is owned.
+        let name = format!("athena-update-own-{}-x", std::process::id());
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join(&name));
+
+        let first = create_owned_source(&name).expect("the minted name is free");
+        assert!(first.as_path().is_dir());
+
+        let second = create_owned_source(&name).expect_err("the existing path is a refusal");
+        match &second {
+            UpdateFault::Io { path, detail } => {
+                assert!(path.ends_with(&name), "{path}");
+                assert!(detail.contains("removes nothing"), "{detail}");
+            }
+            other => panic!("unexpected fault shape: {other:?}"),
+        }
+
+        // The foreign path survived the refused run (it is not this run's to delete).
+        assert!(std::env::temp_dir().join(&name).is_dir());
+
+        // Disowning removes exactly the owned tree, and only then.
+        drop(first);
+        assert!(!std::env::temp_dir().join(&name).exists());
+    }
+
+    #[test]
+    fn the_workspace_name_is_minted_per_run() {
+        // Two consecutive mints differ (pid + nanos), so no run reuses a former run's
+        // workspace name on the same host.
+        let first = update_source_dir_name();
+        std::thread::sleep(std::time::Duration::from_nanos(1));
+        let second = update_source_dir_name();
+        assert_ne!(first, second, "{first} vs {second}");
+        assert!(first.starts_with("athena-update-"), "{first}");
+    }
+
+    #[test]
+    fn the_fetched_source_guard_cleans_up_on_every_exit_path() {
+        // D-24's failure face: the guard — the same ownership `run_update` holds across the
+        // project face and every `?` — removes the workspace when dropped, so a run that
+        // fails anywhere after the fetch leaves no fetched source behind.
+        let name = update_source_dir_name();
+        let source = create_owned_source(&name).unwrap();
+        let path = source.as_path().to_path_buf();
+        fs::create_dir_all(path.join("personas")).unwrap();
+        fs::write(path.join("personas").join("producer.md"), "fetched\n").unwrap();
+        drop(source);
+        assert!(
+            !path.exists(),
+            "the guard removes the fetched tree on every exit path"
+        );
+    }
+
+    #[test]
+    fn a_colliding_workspace_name_refuses_and_never_removes_the_existing_path() {
+        // D-24's no-deletion face: a name that already exists is a refusal — whatever sits
+        // there (another run's tree, an unrelated directory) survives untouched.
+        let name = update_source_dir_name();
+        let dir = std::env::temp_dir().join(&name);
+        fs::create_dir_all(&dir).unwrap();
+        let _keep = tempfile_guard::Guard(dir.clone());
+        let sentinel = dir.join("sentinel.txt");
+        fs::write(&sentinel, "not ours\n").unwrap();
+
+        let refused = match create_owned_source(&name) {
+            Err(fault) => fault,
+            Ok(_) => panic!("a pre-existing workspace name must refuse, not be removed"),
+        };
+        let UpdateFault::Io { detail, .. } = refused else {
+            panic!("the collision refusal is an Io fault, got {refused:?}");
+        };
+        assert!(detail.contains("already exists"), "{detail}");
+        assert!(
+            dir.exists() && sentinel.exists(),
+            "the existing path survives the refusal untouched"
         );
     }
 

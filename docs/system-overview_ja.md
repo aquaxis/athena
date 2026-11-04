@@ -163,7 +163,7 @@ Human instruction → Task CREATED → QUEUED
 
 Agent Process は — Core Agent を含めて — 信頼対象外であり、Core Host が唯一の Policy
 Enforcement Point である。API は3ロール(`viewer` / `operator` / `admin`)の Bearer トークン
-で護られ、トークンはハッシュのみ保管; `healthz` のみが未認証で内部状態に晒されない。権限は
+で護られ、トークンはハッシュのみ保管; `/api/v1/healthz` のみが未認証で内部状態に晒されない。権限は
 既定最小、委任で拡大はできず、Agent が自身の権限を変更できる操作は存在しない
 (wire schema 監査を含めて構造的に実証)。filesystem スコープは制御面を除外し、秘密は導線の
 どこにも平文で現れない。

@@ -50,7 +50,7 @@
 
 | 行 | 目標 | 実測 | 判定 |
 |---|---|---|---|
-| NFR-11 | `athena-api` 起動 ready ≤ 3 秒 | **0.081–0.082 s** コールド boot-to-ready(3 回のクリーン実行。プロセス起動から `/healthz` をポーリング)。instance #0 常駐 | ✅ |
+| NFR-11 | `athena-api` 起動 ready ≤ 3 秒 | **0.081–0.082 s** コールド boot-to-ready(3 回のクリーン実行。プロセス起動から `/api/v1/healthz` をポーリング)。instance #0 常駐 | ✅ |
 | NFR-02 | 読取り p95 < 200 ms @10,000 Task | **combined p95 7.2 ms**(list p95 9.7 ms、id 読み p95 1.1 ms。ストア側 `list_page` 修正後の 600 混合サンプル — 修正前のメモリ内ウォークは list 当たり約 140 ms) | ✅ |
 | NFR-03 (timed) | kill -9 + 再起動、非終端 Task の復元 ≤ 10 秒 | **0.12 s**(kill -9 → 新規 boot → 復元行を Task list が提供) | ✅ |
 | NFR-13 | 安全な停止 ≤ 30 秒 | **0.06 s** SIGTERM → プロセス終了。全生存 Instance を Runtime Interface 経由で停止 | ✅ |

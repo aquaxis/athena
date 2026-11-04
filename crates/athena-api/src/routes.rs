@@ -10,8 +10,9 @@
 //! refusal carries the classification (401 unauthenticated, 403 under-privileged) which
 //! spec §22.2's HTTP mapping prescribes.
 //!
-//! `GET /healthz` rides the router *outside* any layer and is the single unauthenticated
-//! endpoint (R-API-03): it answers a literal `ok`, exposing no internal state.
+//! `GET /api/v1/healthz` rides the router *outside* any layer and is the single
+//! unauthenticated endpoint (R-API-03, ATH-API-018): it answers a literal `ok`, exposing
+//! no internal state.
 //!
 //! P1-37 is the skeleton: the handler bodies stubbed to a stable response shape; specific
 //! endpoints (the Task / Plan / Event groups) land with `P1-40` and the tests there.
@@ -52,15 +53,16 @@ fn request_wall_clock_seed() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-/// Build the router: `healthz` anonymous; `/api/v1` gated by per-group role layers.
+/// Build the router: `/api/v1/healthz` anonymous; the `/api/v1` groups each gated by their
+/// required-role layer.
 ///
 /// The layers stack per group: the routes come first and the layer applies to exactly
 /// those, so the role hierarchy `viewer ⊂ operator ⊂ admin` (ATH-SEC-003) is the routing
 /// tree's own structure.
 #[must_use = "a router that is never served answers nothing"]
 pub fn build_router(state: AppState) -> Router {
-    // `healthz` first, no layer.
-    let health = Router::new().route("/healthz", get(healthz));
+    // `/api/v1/healthz` first, no layer (R-API-03: the single unauthenticated endpoint).
+    let health = Router::new().route("/api/v1/healthz", get(healthz));
 
     // The role-gated scope; per group the routes come first and the role layer applies to
     // exactly those (ATH-SEC-004).
@@ -209,9 +211,12 @@ fn forbidden(required: Role, correlation_id: &str) -> crate::errors::ApiError {
 }
 
 /// The status stub: the skeleton's liveliness record before the counters land.
+///
+/// The skeleton serves a constant; it deliberately reads no build metadata (design §2.7's
+/// no built-in version string discipline) — the release identity is the git tag.
 async fn status_stub(State(_state): State<AppState>) -> Json<Value> {
     Json(json!({
-        "version": "0.1.0",
+        "status": "ready",
     }))
 }
 

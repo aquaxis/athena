@@ -52,7 +52,7 @@ Full verification table + follow-up items: `docs/agent_cli_0290_findings.md`.
 
 | Row | Target | Measured | Verdict |
 |---|---|---|---|
-| NFR-11 | `athena-api` ready ≤ 3 s | **0.081–0.082 s** cold boot-to-ready (three clean runs; `/healthz` polled from process launch), instance #0 resident | ✅ |
+| NFR-11 | `athena-api` ready ≤ 3 s | **0.081–0.082 s** cold boot-to-ready (three clean runs; polling `/api/v1/healthz` from process launch), instance #0 resident | ✅ |
 | NFR-02 | reads p95 < 200 ms @10,000 Tasks | **combined p95 7.2 ms** (list p95 9.7 ms, read-by-id p95 1.1 ms; 600 mixed samples after the store-side `list_page` fix — the in-memory slice walked ~140 ms/list before) — *superseded by the §4 `redb` re-record* | ✅ |
 | NFR-03 (timed) | kill -9 + restart, non-terminal Tasks restored ≤ 10 s | **0.12 s** (kill -9 → fresh boot → Task list serving the restored rows) — *superseded by the §4 re-record* | ✅ |
 | NFR-13 | safe shutdown ≤ 30 s | **0.06 s** SIGTERM → process exit, every live Instance stopped through the Runtime Interface (the process face stands; the store durability face is re-recorded in §4) | ✅ |

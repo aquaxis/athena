@@ -174,7 +174,7 @@ is 90 days by default, preserving final results.
 
 Agent Processes — Core Agent included — are untrusted: Core Host is the single Policy
 Enforcement Point. Bearer tokens with one of three roles (`viewer` / `operator` / `admin`)
-guard the API, stored hashed only; `healthz` alone is unauthenticated and exposes no
+guard the API, stored hashed only; `/api/v1/healthz` alone is unauthenticated and exposes no
 state. Permission sets are minimal by default, delegation cannot widen them, no operation
 lets an agent change its own permissions (audited structurally against the wire schema
 too), filesystem scopes exclude the control surface, and secrets never appear in
