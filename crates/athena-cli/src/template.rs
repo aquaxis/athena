@@ -109,3 +109,15 @@ pub const AIPRJ_GITIGNORE_ENTRIES: &str = include_str!("../vendor/aiprj/gitignor
 /// drift test (`tests/init_defaults.rs` in `athena-conformance`), which parses and validates
 /// this text through the real schema.
 pub const DEFAULT_CONFIG_TOML: &str = include_str!("default-config.toml");
+
+/// Every file under the repository's `personas/` and `skills/` directories, as
+/// `(path relative to <ATHENA_HOME>, content)`.
+///
+/// Generated at build time by `build.rs`, which walks the two directories, so the binary
+/// carries exactly what the repository holds — adding a definition needs no code change
+/// here. These are the defaults `athena init` copies into the target project (spec
+/// section 32.1, ATH-CLI-009); before this table existed only the four level personas
+/// were embedded, so a fresh `athena init` installed no Skill package and none of the
+/// other shipped personas until a later `athena update` fetched them.
+pub const EMBEDDED_DEFINITIONS: &[(&str, &str)] =
+    include!(concat!(env!("OUT_DIR"), "/embedded_definitions.rs"));

@@ -149,30 +149,15 @@ pub fn run_init(project_root: &Path) -> Result<InitReport, InitFault> {
         template::AGENT_PRODUCER_CORE_REQUESTS,
         &mut report,
     )?;
-    ensure_file(
-        &home.join("personas").join("producer.md"),
-        template::PERSONA_PRODUCER,
-        &mut report,
-    )?;
-    // The level personas (spec section 8.2): one default per hierarchy level below the
-    // Core Agent (P2-19). Their `allowed_tools` stay at the minimal working set
-    // (`fs_read`/`fs_write`/`send_to` — ATH-SEC-008's minimal-default policy); any
-    // broader grant remains the operator's agent-definition decision.
-    ensure_file(
-        &home.join("personas").join("director.md"),
-        template::PERSONA_DIRECTOR,
-        &mut report,
-    )?;
-    ensure_file(
-        &home.join("personas").join("lead.md"),
-        template::PERSONA_LEAD,
-        &mut report,
-    )?;
-    ensure_file(
-        &home.join("personas").join("worker.md"),
-        template::PERSONA_WORKER,
-        &mut report,
-    )?;
+    // The shipped persona and Skill-Package definitions (spec section 32.1: the
+    // repository's `personas/` and `skills/` are the defaults `athena init` copies into
+    // the target project). The set is generated at build time from those two
+    // directories (`build.rs`), so a definition added to the repository reaches a fresh
+    // project without a code change — previously only the four level personas were
+    // embedded and every Skill package arrived only on a later `athena update`.
+    for (rel_key, content) in template::EMBEDDED_DEFINITIONS {
+        ensure_file(&home.join(rel_key), content, &mut report)?;
+    }
 
     // The version-control boundary is one path (ATH-OPS-002): `var/` ignored inside the
     // `.athena/.gitignore` ATH-CLI-009 writes.
@@ -191,12 +176,7 @@ pub fn run_init(project_root: &Path) -> Result<InitReport, InitFault> {
     // `athena update` run has since built. Only files this run itself wrote are recorded —
     // an existing file could be an operator modification, and the never-overwrite
     // discipline does not let init legitimize it.
-    let shipped: &[(&str, &str)] = &[
-        ("personas/producer.md", template::PERSONA_PRODUCER),
-        ("personas/director.md", template::PERSONA_DIRECTOR),
-        ("personas/lead.md", template::PERSONA_LEAD),
-        ("personas/worker.md", template::PERSONA_WORKER),
-    ];
+    let shipped: &[(&str, &str)] = template::EMBEDDED_DEFINITIONS;
     let mut manifest = crate::update::read_manifest(&home).map_err(|fault| InitFault::Io {
         path: fault.to_string(),
         detail: "the update manifest read failed".to_string(),

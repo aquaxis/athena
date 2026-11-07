@@ -269,3 +269,87 @@ fn procedure_reads_are_absolute_at_the_template_and_cwd_relative_at_the_project_
     );
     assert_eq!(next.trim(), "Go next job");
 }
+
+/// A fresh `athena init` installs **every** shipped definition, not just the four level
+/// personas (spec section 32.1: the repository's `personas/` and `skills/` are the defaults
+/// init copies into the target project).
+///
+/// This is the regression the operator reported: a fresh project used to receive the four
+/// personas and nothing else, so every Skill Package and every non-level persona arrived
+/// only on a later `athena update` — which fetches the *published* repository, i.e. requires
+/// network access and a release that already carries them. Init must stand alone.
+#[test]
+fn a_fresh_init_installs_every_shipped_persona_and_skill_package() {
+    let root = tmp_dir("all-definitions");
+    run_init(&root).expect("init");
+    let home = root.join(".athena");
+
+    // The embedded table is the repository's two directories, so the assertion is
+    // structural: every entry must land, byte-identical.
+    assert!(
+        !template::EMBEDDED_DEFINITIONS.is_empty(),
+        "the build script must embed the repository's definitions"
+    );
+    for (rel_key, content) in template::EMBEDDED_DEFINITIONS {
+        let target = home.join(rel_key);
+        assert!(
+            target.is_file(),
+            "a fresh init must install {rel_key} ({} embedded)",
+            template::EMBEDDED_DEFINITIONS.len()
+        );
+        assert_eq!(
+            read(&target),
+            *content,
+            "{rel_key} must be byte-identical to the shipped definition"
+        );
+    }
+
+    // The concrete shape the operator asked for: every Skill Package is a complete package
+    // (`SKILL.md` + `manifest.yaml`, ATH-SKILL-003), and the PCB family's nine personas are
+    // present.
+    let mut packages = 0;
+    for entry in fs::read_dir(home.join("skills")).expect("skills dir") {
+        let path = entry.expect("entry").path();
+        if !path.is_dir() {
+            continue;
+        }
+        packages += 1;
+        assert!(
+            path.join("SKILL.md").is_file(),
+            "{}: no SKILL.md",
+            path.display()
+        );
+        assert!(
+            path.join("manifest.yaml").is_file(),
+            "{}: no manifest.yaml",
+            path.display()
+        );
+    }
+    assert_eq!(
+        packages, 9,
+        "the nine shipped Skill packages install at init"
+    );
+
+    for slug in [
+        "pcb-orchestrator",
+        "pcb-grand-design",
+        "pcb-system-design",
+        "pcb-schematic-design",
+        "pcb-artwork-design",
+        "pcb-si-analysis",
+        "pcb-pi-analysis",
+        "pcb-parts-research",
+        "pcb-common-operator",
+    ] {
+        assert!(
+            home.join("personas")
+                .join(format!("{slug}_ja.md"))
+                .is_file(),
+            "the PCB persona {slug} installs at init"
+        );
+    }
+
+    // Idempotency is unchanged: a re-run installs nothing new and keeps operator edits.
+    let report = run_init(&root).expect("re-run");
+    assert!(report.created.is_empty(), "a re-run creates nothing");
+}
