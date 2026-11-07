@@ -1,0 +1,28 @@
+id: pcb-common
+name: PCB開発共通ルール・成果物・レビュー基準
+version: "1.0.0"
+description: PCB Design Agent Skills 全工程で共有する用語・成果物形式・判断記録フォーマット・レビュー基準・エラー対応手順・引き渡しチェックリストを提供する共通パッケージ。
+capabilities:
+  - 共通用語と成果物形式の提供（Markdown・版管理・判断記録フォーマット）
+  - 4大品質基準（完全性・整合性・追跡可能性・検証可能性）チェックと共通チェックリストの適用
+  - 共通エラー対応手順（検出→記録→分類→修正→再検証→エスカレーション）の提供
+required_tools:
+  - fs_read
+  - fs_write
+  - search
+required_permissions:
+  - fs_read
+  - fs_write
+  - search
+supported_agents:
+  - athena-director
+  - athena-lead
+  - athena-worker
+  - athena-producer
+dependencies: []
+runtime:
+  provider: agent-cli
+source: project-local
+publisher: schema_skill
+risk:
+  level: low

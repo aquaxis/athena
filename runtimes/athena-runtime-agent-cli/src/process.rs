@@ -255,4 +255,23 @@ impl ProcessDriver for TokioDriver {
         }
         Ok(())
     }
+
+    /// The peer-registry liveness probe (X-13 (b), design §5.5 / D-20): `agent-cli list`
+    /// is the substrate's own liveness signal (the Phase-0 record), so a core-class
+    /// record's truth is the *peer's* presence, not the launcher pid's. `Some(false)`
+    /// ends the os-probe ambiguity — an unreaped zombie launcher pid can no longer
+    /// masquerade as residency.
+    fn peer_alive(&self, peer_id: &str) -> Option<bool> {
+        let output = std::process::Command::new("agent-cli")
+            .arg("list")
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        // Drop the ANSI-styled log lines the CLI prefixes; the peer table rows carry
+        // the `agent-…` id as the first token.
+        Some(
+            text.lines()
+                .any(|line| line.split_whitespace().next() == Some(peer_id)),
+        )
+    }
 }

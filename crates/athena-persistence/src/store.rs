@@ -1055,7 +1055,7 @@ impl SkillRepository for AthenaStore {
                     versions.push(decode_row::<Skill>("skill", "row", &raw)?);
                 }
             }
-            versions.sort_by(|a, b| semver_key(&b.version).cmp(&semver_key(&a.version)));
+            versions.sort_by_key(|b| std::cmp::Reverse(semver_key(&b.version)));
             Ok(versions)
         })
     }

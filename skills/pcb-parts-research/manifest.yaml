@@ -1,0 +1,29 @@
+id: pcb-parts-research
+name: PCB部品調査・選定支援
+version: "1.0.0"
+description: 部品候補の収集（ディストリビュータAPI・部品データベース・データシート抽出）、スペック照合、入手性・ライフサイクル（EOL・代替品）調査を行い、出典つき候補データを回路図設計工程へ引き渡す横断支援パッケージ。採用判断は行わない。
+capabilities:
+  - 承認済みデータ源からの部品候補収集と出典記録（データ源・日時・revつき）
+  - データシートからの必須スペック抽出・照合と余裕率・熱・ESRの初算
+  - 入手性（在庫・リードタイム・2次供給）とライフサイクル（量産中/NRND/EOL・代替品）調査
+required_tools:
+  - fs_read
+  - fs_write
+  - search
+required_permissions:
+  - fs_read
+  - fs_write
+  - search
+supported_agents:
+  - athena-director
+  - athena-lead
+  - athena-worker
+dependencies:
+  - id: pcb-common
+    version: "^1.0.0"
+runtime:
+  provider: agent-cli
+source: project-local
+publisher: schema_skill
+risk:
+  level: low

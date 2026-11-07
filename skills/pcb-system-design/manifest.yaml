@@ -1,0 +1,29 @@
+id: pcb-system-design
+name: PCBシステム設計
+version: "1.0.0"
+description: グランドデザインの目標仕様を機能ブロック分割・接続定義・電源ドメイン・電力予算・クロック体系・配置構想へ具体化し、回路設計へ引き渡す基板開発第2工程パッケージ。
+capabilities:
+  - 機能ブロック分割とブロック間接続一覧（信号・バス・電気レベル）の定義
+  - 電源ドメイン設計と電力予算（電圧・電流・リップル・Tj）の定量作成
+  - クロック体系・配置構想の設計と回路設計への引き渡し
+required_tools:
+  - fs_read
+  - fs_write
+  - search
+required_permissions:
+  - fs_read
+  - fs_write
+  - search
+supported_agents:
+  - athena-director
+  - athena-lead
+  - athena-worker
+dependencies:
+  - id: pcb-common
+    version: "^1.0.0"
+runtime:
+  provider: agent-cli
+source: project-local
+publisher: schema_skill
+risk:
+  level: low

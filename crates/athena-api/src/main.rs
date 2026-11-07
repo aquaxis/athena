@@ -271,7 +271,16 @@ async fn main() {
     //    Core Agent's registration must not hold the listener hostage.
     let listener = match tokio::net::TcpListener::bind((host.as_str(), port)).await {
         Ok(listener) => listener,
-        Err(error) => fail(&format!("bind {host}:{port} failed: {error}")),
+        // X-15: the port is an explicit barrier — no auto-fallback to another port, so a
+        // taken port must name itself and point at the configuration key that moves it
+        // (`athena.api.port`). Booting on a silently different port would break every
+        // client that resolved the configured one, and two boots would no longer be
+        // distinguishable from one (the per-project isolation face, design §2.8).
+        Err(error) => fail(&format!(
+            "bind {host}:{port} failed: {error} — port {port} is already in use; \
+             set `athena.api.port` to a free port for this project \
+             (no automatic fallback, design §2.8)"
+        )),
     };
     eprintln!(
         "athena-api: ready on {host}:{port} (store: {})",

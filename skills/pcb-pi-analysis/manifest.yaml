@@ -1,0 +1,33 @@
+id: pcb-pi-analysis
+name: PCB PI（Power Integrity）解析
+version: "1.0.0"
+description: 電源分配網（PDN）に対してターゲットインピーダンス算定・IRドロップ・Z(f)解析・デカップリング効果評価を実行し、PI解析報告書・修正指示書を作成する検証パッケージ。
+capabilities:
+  - 対象レール選定とターゲットインピーダンス算定（Z_target = V_ripple / ΔI_transient）
+  - PDN抽出・IRドロップ解析・Z(f)特性解析・デカップリング有効性評価（ESL/共振）
+  - 修正指示書（容量・配置・面構成の具体指令つき）によるアートワーク設計への差戻し
+required_tools:
+  - fs_read
+  - fs_write
+  - shell
+  - search
+required_permissions:
+  - fs_read
+  - fs_write
+  - shell
+  - search
+supported_agents:
+  - athena-director
+  - athena-lead
+  - athena-worker
+dependencies:
+  - id: pcb-common
+    version: "^1.0.0"
+  - id: pcb-artwork-design
+    version: "^1.0.0"
+runtime:
+  provider: agent-cli
+source: project-local
+publisher: schema_skill
+risk:
+  level: medium

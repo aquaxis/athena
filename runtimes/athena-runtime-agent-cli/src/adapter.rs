@@ -35,6 +35,17 @@ pub trait ProcessDriver: Send + Sync {
     #[must_use]
     fn is_alive(&self, pid: u32) -> bool;
 
+    /// Whether the *detached peer* the spawn launcher reported is still registered —
+    /// the liveness truth `agent-cli` itself publishes (`list` prunes dead peers; the
+    /// Phase-0 record). `None` means this driver has no peer face and the manager must
+    /// fall back to the pid probe alone (D-20's one-liveness-truth rule never *loses*
+    /// a death verdict to the OS probe; it only *gains* a second signal).
+    #[must_use]
+    fn peer_alive(&self, peer_id: &str) -> Option<bool> {
+        let _ = peer_id;
+        None
+    }
+
     /// The exit code, once terminated.
     #[must_use]
     fn exit_code(&self, pid: u32) -> Option<i32>;
@@ -278,6 +289,12 @@ impl<D: ProcessDriver + 'static> Runtime for AgentCliAdapter<D> {
             self.max_spawn_depth,
             self.max_spawn_children,
             &self.short_term,
+            // D-20 (3) / X-13 (c): the peer registry pins to *this Instance* — the
+            // generated config.toml carries a per-instance `registry_dir` under the
+            // Instance's own `.agent-cli/`, so no two boots (projects or restarts) can
+            // resolve instance #0 into one shared user-level registry. The pin rides
+            // the same isolation surface the Instance's `.agent-cli/` already has.
+            &prepared.layout.agent_cli.join("registry"),
         )
         .map_err(|fault| RuntimeError::Validation(fault.to_string()))?;
         // The persona file rides the definition's `persona_ref` resolution (the Adapter

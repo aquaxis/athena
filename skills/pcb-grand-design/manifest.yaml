@@ -1,0 +1,29 @@
+id: pcb-grand-design
+name: PCBグランドデザイン設計
+version: "1.0.0"
+description: 自然言語の基板設計要求を理解・構造化し、コンセプト案を定量的に評価して目標仕様・制約一覧・リスク登録簿を作成する、基板開発第1工程パッケージ。
+capabilities:
+  - 自然言語要求の理解・構造化と設計条件/制約の抽出
+  - 複数コンセプト案の生成と定量比較評価（コスト・層数概算・電力・Tj）
+  - ターゲット仕様・制約一覧・判断記録・リスク登録簿の作成とシステム設計への引き渡し
+required_tools:
+  - fs_read
+  - fs_write
+  - search
+required_permissions:
+  - fs_read
+  - fs_write
+  - search
+supported_agents:
+  - athena-director
+  - athena-lead
+  - athena-worker
+dependencies:
+  - id: pcb-common
+    version: "^1.0.0"
+runtime:
+  provider: agent-cli
+source: project-local
+publisher: schema_skill
+risk:
+  level: low

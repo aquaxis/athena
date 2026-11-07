@@ -260,16 +260,40 @@ impl<D: ProcessDriver + 'static> ProcessManager<D> {
             .cloned()
     }
 
-    /// The stale Core Agent record: role-tagged, but its process has died.
-    #[must_use]
+    /// The stale Core Agent record: role-tagged, and dead by **one liveness truth**
+    /// (design §5.5, D-20). The truth is the same facts [`Self::status`] answers from —
+    /// the process probe plus the deadline/heartbeat budgets — not the OS-pid probe
+    /// alone: an unreaped detached peer (or an unheld zombie under a recycled pid) must
+    /// not masquerade as residency and block the §7.5.3 restart reach. The record is
+    /// *released* as the first face of the fix: the caller drops it before spawning.
+    ///
+    /// A record this method returns is dead by both verdicts; the budget-shaped deaths
+    /// (deadline/heartbeat) that `status` reports count here as well, because the
+    /// supervision's own death verdict is what must concede the record — never a probe
+    /// a dead detached child can satisfy.
     fn core_stale(&self) -> Option<Record> {
-        self.live
-            .lock()
-            .expect("manager live")
-            .records
-            .values()
-            .find(|record| record.is_core_agent && !self.driver.is_alive(record.pid))
-            .cloned()
+        let record = self.core_live_record()?;
+        // Truth 1 — the process probe, the original face (kept so a vanished pid still
+        // concedes immediately without consulting the budgets).
+        if !self.driver.is_alive(record.pid) {
+            return Some(record);
+        }
+        // Truth 2 — the supervision-shaped deaths: the record's own started/beat facts
+        // against the same budgets `status` enforces. A process that answers the probe
+        // while its budgets have lapsed is exactly the split-truth defect D-20 closes.
+        let now = self.clock.now();
+        let elapsed = now
+            .duration_since(record.started_at)
+            .unwrap_or(Duration::ZERO);
+        let past_execution = elapsed >= self.budgets.execution;
+        let silence = now
+            .duration_since(record.last_beat)
+            .unwrap_or(Duration::ZERO);
+        let past_heartbeat = silence >= self.budgets.heartbeat;
+        if past_execution || past_heartbeat {
+            return Some(record);
+        }
+        None
     }
 
     /// Every subordinate record — the Core Agent's (`is_core_agent`) is excluded, which

@@ -126,6 +126,7 @@ pub fn render_config(
     max_spawn_depth: u64,
     max_spawn_children: u64,
     short_term: &ShortTermRender,
+    registry_dir: &Path,
 ) -> Result<GeneratedConfig, GenerationFault> {
     if definition.model.provider.trim().is_empty() || definition.model.name.trim().is_empty() {
         return Err(GenerationFault::ModelUnspecified);
@@ -150,7 +151,7 @@ pub fn render_config(
         .join(", ");
     let toml = format!(
         "# generated per-instance by ATHENA (never install.sh, ATH-ACLI-013)\n\
-         [runtime]\ncommands_dir = \".agent-cli/commands\"\npersona_file = \".agent-cli/persona.md\"\n\n\
+         [runtime]\ncommands_dir = \".agent-cli/commands\"\npersona_file = \".agent-cli/persona.md\"\nregistry_dir = \"{registry_dir}\"\n\n\
          [tools]\nenabled = [{tools}]\n\n\
          [permissions]\ndefault_mode = \"allow\"\n\n\
          [spawn]\nmax_depth = {spawn_depth}\nmax_children = {spawn_children}\n\n\
@@ -159,6 +160,7 @@ pub fn render_config(
         definition.model.provider,
         definition.model.name,
         short_term_tokens = short_term.max_tokens,
+        registry_dir = registry_dir.display(),
     );
     Ok(GeneratedConfig {
         toml,

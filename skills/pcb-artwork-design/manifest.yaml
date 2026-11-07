@@ -1,0 +1,33 @@
+id: pcb-artwork-design
+name: PCBアートワーク設計
+version: "1.0.0"
+description: 回路設計成果物をもとにスタックアップ決定・部品配置・配線・電源/リターン設計を実施し、DRC/DFM検証と製造データ（Gerber/drill/組立図/STEP）生成までを行う基板開発第4工程パッケージ。SI/PI解析の修正指示による差戻し再実行を担う。
+capabilities:
+  - スタックアップ設計と特性インピーダンス計算（マイクロストリップ/ストリップライン/差動）・IPC-2221電流容量算定
+  - 配置・配線・電源/リターンパス設計とDRC/DFM/リターンパス検証
+  - 製造データ（Gerber RS-274X、Excellon、組立図、ピック&プレース、STEP）生成とSI/PI差戻しループの対応
+required_tools:
+  - fs_read
+  - fs_write
+  - shell
+  - search
+required_permissions:
+  - fs_read
+  - fs_write
+  - shell
+  - search
+supported_agents:
+  - athena-director
+  - athena-lead
+  - athena-worker
+dependencies:
+  - id: pcb-common
+    version: "^1.0.0"
+  - id: pcb-schematic-design
+    version: "^1.0.0"
+runtime:
+  provider: agent-cli
+source: project-local
+publisher: schema_skill
+risk:
+  level: high

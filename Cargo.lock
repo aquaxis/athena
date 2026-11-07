@@ -94,6 +94,7 @@ dependencies = [
 name = "athena-conformance"
 version = "0.7.0"
 dependencies = [
+ "athena-agent",
  "athena-cli",
  "athena-config",
  "athena-core",

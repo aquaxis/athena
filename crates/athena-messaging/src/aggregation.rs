@@ -333,7 +333,7 @@ pub fn verbatim_relays(
         .filter(|(_, output)| !output.is_empty())
         .collect();
     // Longest first: a stitched listing strips overlaps greedily from the body.
-    candidates.sort_by(|a, b| b.1.chars().count().cmp(&a.1.chars().count()));
+    candidates.sort_by_key(|a| std::cmp::Reverse(a.1.chars().count()));
 
     for (agent, output) in &candidates {
         if body == *output {

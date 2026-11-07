@@ -74,6 +74,13 @@ struct FakeDriver {
     spawned: SpawnedSet,
 }
 
+impl FakeDriver {
+    /// How many processes this driver has been asked to spawn.
+    fn spawn_count(&self) -> usize {
+        self.spawned.count()
+    }
+}
+
 #[derive(Clone, Default)]
 struct DeadSet(std::sync::Arc<std::sync::Mutex<Vec<u32>>>);
 
@@ -104,6 +111,11 @@ impl SpawnedSet {
             .last()
             .cloned()
             .expect("a spawn happened")
+    }
+
+    /// How many spawn calls the driver has seen (the restart-reach assertion surface).
+    fn count(&self) -> usize {
+        self.0.lock().expect("spawned").len()
     }
 }
 
@@ -1065,6 +1077,7 @@ fn the_generated_tools_carry_the_agent_cli_vocabulary_ath_acli_018() {
         4,
         16,
         &crate::generation::ShortTermRender::default(),
+        std::path::Path::new("/tmp/athena-test-registry"),
     )
     .expect("renders");
     eprintln!("GENERATED TOML: {}", generated.toml);
@@ -1102,6 +1115,7 @@ fn an_empty_grant_renders_an_empty_enabled_list() {
         4,
         16,
         &crate::generation::ShortTermRender::default(),
+        std::path::Path::new("/tmp/athena-test-registry"),
     )
     .expect("renders");
     assert!(
@@ -1128,6 +1142,7 @@ fn the_generated_history_ceiling_carries_the_resolved_values() {
             max_tokens: 48_000,
             tokenizer: "provider-default-claude".into(),
         },
+        std::path::Path::new("/tmp/athena-test-registry"),
     )
     .expect("renders");
     assert!(
@@ -1151,6 +1166,7 @@ fn an_unstated_tokenizer_refuses_generation() {
             max_tokens: 32_000,
             tokenizer: "   ".into(),
         },
+        std::path::Path::new("/tmp/athena-test-registry"),
     )
     .expect_err("an empty tokenizer cannot count (ATH-MEM-009)");
     assert!(
@@ -1311,4 +1327,282 @@ async fn instance_zero_collects_no_task_result() {
         .await
         .expect_err("the Core Agent's output is not a Task result");
     assert!(matches!(error, RuntimeError::Validation(_)), "{error}");
+}
+
+// --- X-13 (d)(e): the one-liveness-truth contract rows (design §5.5, D-20) --------------
+
+/// X-13 (d) — **instance #0's death lets every restart attempt reach the spawn call.**
+///
+/// The defect this closes: the supervision's death verdict (`Failed` on the deadline /
+/// heartbeat budgets) and the restart's staleness check consulted *different* truths, so
+/// a record the supervisor had already declared dead could still answer the OS-pid probe
+/// and refuse every restart with the 1:1 message until the window exhausted. The contract:
+/// once the budgets have lapsed, each restart reaches `spawn` — never the refusal.
+#[tokio::test]
+async fn instance_zero_death_reaches_spawn_on_every_restart_attempt() {
+    let dir = tempfile::tempdir().expect("temp");
+    let driver = FakeDriver::default();
+    let clock = FixedClock::at_past(0);
+    let adapter = AgentCliAdapter::with_budgets(
+        driver.clone(),
+        dir.path().join("template"),
+        budgets(10),
+        std::sync::Arc::new(clock.clone()),
+        4,
+        16,
+        vec![],
+    );
+    let home = dir.path().join(".athena");
+
+    let first = Runtime::start(&adapter, core_definition(), core_context(&home))
+        .await
+        .expect("instance #0 boots");
+    let spawns_after_boot = driver.spawn_count();
+
+    // The supervision's death verdict without a pid death: the budgets lapse while the
+    // recorded pid still answers the OS probe — exactly the split-truth shape D-20 names.
+    clock.advance(Duration::from_secs(21));
+    assert!(
+        driver.is_alive(adapter.core_record().expect("tracked").pid),
+        "the pid probe still answers alive — the OS truth alone would refuse"
+    );
+
+    // Every restart attempt reaches the spawn call (the §7.5.3 restart is reachable).
+    for attempt in 1..=3 {
+        let restarted = Runtime::start(&adapter, core_definition(), core_context(&home))
+            .await
+            .unwrap_or_else(|error| {
+                panic!("restart attempt {attempt} must reach spawn, not refuse: {error}")
+            });
+        assert_ne!(
+            restarted.runtime_instance_id, first.runtime_instance_id,
+            "a restarted instance #0 is a fresh Runtime Instance"
+        );
+        assert_eq!(
+            driver.spawn_count(),
+            spawns_after_boot + attempt,
+            "attempt {attempt} actually spawned"
+        );
+        // The fresh record starts a fresh budget window.
+        clock.advance(Duration::from_secs(21));
+    }
+}
+
+/// X-13 (d) — **a genuinely *live* instance #0 still refuses** (`ATH-RT-012` intact).
+///
+/// The fix narrows the staleness edge; it never weakens the single-residency rule. A
+/// record whose pid answers and whose budgets are inside their windows is resident, and
+/// a second core-class start is refused.
+#[tokio::test]
+async fn a_live_instance_zero_still_refuses_a_second_start() {
+    let dir = tempfile::tempdir().expect("temp");
+    let driver = FakeDriver::default();
+    let clock = FixedClock::at_past(0);
+    let adapter = AgentCliAdapter::with_budgets(
+        driver,
+        dir.path().join("template"),
+        budgets(10),
+        std::sync::Arc::new(clock.clone()),
+        4,
+        16,
+        vec![],
+    );
+    let home = dir.path().join(".athena");
+
+    Runtime::start(&adapter, core_definition(), core_context(&home))
+        .await
+        .expect("instance #0 boots");
+
+    // Inside the startup window and answering the probe: resident.
+    clock.advance(Duration::from_secs(1));
+    let error = Runtime::start(&adapter, core_definition(), core_context(&home))
+        .await
+        .expect_err("a live instance #0 refuses a second start (ATH-RT-012)");
+    assert!(matches!(error, RuntimeError::Failure(_)), "{error}");
+    assert!(
+        error.to_string().contains("already resident"),
+        "the refusal names the 1:1 rule: {error}"
+    );
+}
+
+/// X-13 (d) / NFR-14 — **the reach/escalation split across the crate boundary.**
+///
+/// The Process Manager's face is *reach*: every restart attempt must spawn (the row
+/// above). The counting lives in the Core Agent Session's sliding window
+/// (`athena-core`, ATH-CORE-045, design §7.5.3) — a crate `runtimes/*` must not depend
+/// on (design §3.2 forbids `runtimes/* -> athena-core`), and the escalation decision is
+/// held by `athena-core::session_tests` (P1-32). This row states the split so the two
+/// faces are never conflated: reach here, escalation there.
+#[tokio::test]
+async fn window_exhaustion_is_the_session_windows_decision_not_the_managers_reach() {
+    // The manager's face is *reach*, and it is unconditional: even past the session
+    // window's ceiling of three (ATH-CORE-045), a fourth restart attempt still reaches
+    // the spawn call. The manager holds no counter — escalation is the Core Agent
+    // Session's decision (`athena-core`, P1-32), which is why this crate never refuses
+    // on window grounds and the two faces cannot be conflated.
+    let dir = tempfile::tempdir().expect("temp");
+    let driver = FakeDriver::default();
+    let clock = FixedClock::at_past(0);
+    let adapter = AgentCliAdapter::with_budgets(
+        driver.clone(),
+        dir.path().join("template"),
+        budgets(10),
+        std::sync::Arc::new(clock.clone()),
+        4,
+        16,
+        vec![],
+    );
+    let home = dir.path().join(".athena");
+
+    Runtime::start(&adapter, core_definition(), core_context(&home))
+        .await
+        .expect("instance #0 boots");
+    let after_boot = driver.spawn_count();
+
+    // Four restarts — one past the three-per-window ceiling.
+    for attempt in 1..=4usize {
+        // Each attempt is preceded by the budget lapse that makes the record stale.
+        clock.advance(Duration::from_secs(21));
+        Runtime::start(&adapter, core_definition(), core_context(&home))
+            .await
+            .unwrap_or_else(|error| {
+                panic!("restart {attempt} must reach spawn; the manager holds no window: {error}")
+            });
+        assert_eq!(
+            driver.spawn_count(),
+            after_boot + attempt,
+            "the manager reaches spawn on attempt {attempt}, past the session ceiling"
+        );
+    }
+}
+
+/// X-13 (e) — **the zombie contract row**: the pid probe answers alive while the budgets
+/// have lapsed, and the record is still stale.
+///
+/// An unreaped detached peer (or a pid-recycled stranger) satisfies `is_alive`; the
+/// supervision's budgets do not. D-20 makes the supervisor's facts the truth, so the
+/// record is released rather than treated as residency — the regression this row holds.
+#[tokio::test]
+async fn a_zombie_pid_is_stale_by_the_supervision_budgets() {
+    let dir = tempfile::tempdir().expect("temp");
+    let driver = FakeDriver::default();
+    let clock = FixedClock::at_past(0);
+    let manager = ProcessManager::new(
+        driver.clone(),
+        budgets(10),
+        std::sync::Arc::new(clock.clone()),
+    );
+    let handle = manager
+        .spawn_core_agent(
+            &core_definition(),
+            &core_context(&dir.path().join(".athena")),
+        )
+        .expect("instance #0 spawns");
+    let record = manager.core_live_record().expect("tracked");
+    assert_eq!(record.runtime_instance_id, handle.runtime_instance_id);
+
+    // The zombie shape: the pid probe says alive, the heartbeat window has lapsed.
+    assert!(driver.is_alive(record.pid), "the pid probe answers alive");
+    clock.advance(Duration::from_secs(21));
+    assert!(
+        driver.is_alive(record.pid),
+        "the pid probe still answers alive — the OS truth alone is the defect"
+    );
+
+    // The restart concedes the record and reaches spawn (never the 1:1 refusal).
+    let restarted = manager
+        .spawn_core_agent(
+            &core_definition(),
+            &core_context(&dir.path().join(".athena")),
+        )
+        .expect("the zombie record does not masquerade as residency");
+    assert_ne!(restarted.runtime_instance_id, handle.runtime_instance_id);
+    assert!(
+        manager
+            .core_live_record()
+            .expect("new residency")
+            .runtime_instance_id
+            == restarted.runtime_instance_id,
+        "the fresh record is the tracked one"
+    );
+}
+
+/// X-13 (c) — **the per-instance `registry_dir` reaches the generated config.**
+///
+/// G-2/D-20 (3): every Instance's `config.toml` pins the peer registry to that Instance,
+/// so two boots (projects or restarts) cannot resolve one shared user-level registry.
+#[test]
+fn the_generated_config_pins_a_per_instance_registry_dir() {
+    let generated = crate::generation::render_config(
+        &definition(),
+        &Deadlines {
+            startup_ms: 10_000,
+            execution_ms: 600_000,
+        },
+        4,
+        16,
+        &crate::generation::ShortTermRender::default(),
+        std::path::Path::new("/ws/instances/ai-1/.agent-cli/registry"),
+    )
+    .expect("renders");
+    assert!(
+        generated
+            .toml
+            .contains("registry_dir = \"/ws/instances/ai-1/.agent-cli/registry\""),
+        "the per-instance registry rides the generated config: {}",
+        generated.toml
+    );
+}
+
+/// X-15 — **multi-boot isolation**: two projects (two `ATHENA_HOME`s) on one host never
+/// share an Instance registry.
+///
+/// The store file is already per-project (`R-PRS-07`); this row holds the second
+/// isolation surface. Each Instance's generated `config.toml` pins `registry_dir` to a
+/// path *under that Instance's own Workspace* (`.agent-cli/registry`), so the same
+/// numeric Instance (instance #0 in both projects) resolves into two distinct
+/// registries. Without the pin, both boots resolve the shared user-level chain and two
+/// peers collide under one display name.
+#[tokio::test]
+async fn two_boots_on_one_host_never_share_a_registry() {
+    let dir_a = tempfile::tempdir().expect("temp a");
+    let dir_b = tempfile::tempdir().expect("temp b");
+
+    let mut registries = Vec::new();
+    for dir in [&dir_a, &dir_b] {
+        let adapter = AgentCliAdapter::new(
+            FakeDriver::default(),
+            dir.path().join("template"),
+            4,
+            16,
+            vec![],
+        );
+        let home = dir.path().join(".athena");
+        Runtime::start(&adapter, core_definition(), core_context(&home))
+            .await
+            .expect("instance #0 boots in its own project");
+
+        let record = adapter.core_record().expect("tracked");
+        // The generated config the Adapter wrote for this Instance.
+        let config =
+            std::fs::read_to_string(record.workspace.join(".agent-cli").join("config.toml"))
+                .expect("the per-instance config exists");
+        let registry = config
+            .lines()
+            .find_map(|line| line.strip_prefix("registry_dir = "))
+            .map(|value| value.trim().trim_matches('"').to_string())
+            .expect("registry_dir is stated");
+        registries.push(registry);
+    }
+
+    assert_ne!(
+        registries[0], registries[1],
+        "two projects must not resolve one registry: {registries:?}"
+    );
+    for registry in &registries {
+        assert!(
+            registry.contains(".agent-cli"),
+            "the registry pins under the Instance's own .agent-cli/: {registry}"
+        );
+    }
 }

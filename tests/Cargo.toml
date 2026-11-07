@@ -66,6 +66,10 @@ path = "phase7_pipeline_check.rs"
 name = "phase7_studio"
 path = "phase7_studio.rs"
 
+[[test]]
+name = "pcb_family_conformance"
+path = "pcb_family_conformance.rs"
+
 [lib]
 name = "athena_conformance"
 path = "lib.rs"
@@ -73,6 +77,7 @@ path = "lib.rs"
 [dependencies]
 serde_json = { workspace = true }
 athena-core = { path = "../crates/athena-core" }
+athena-agent = { path = "../crates/athena-agent" }
 athena-runtime = { path = "../crates/athena-runtime" }
 athena-types = { path = "../crates/athena-types" }
 athena-skills = { path = "../crates/athena-skills" }

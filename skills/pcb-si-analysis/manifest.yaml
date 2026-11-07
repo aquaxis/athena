@@ -1,0 +1,33 @@
+id: pcb-si-analysis
+name: PCB SI（Signal Integrity）解析
+version: "1.0.0"
+description: レイアウト情報に対して反射・クロストーク・タイミング・アイ解析を実行し、定量判定（オーバーシュート・マージン・BER等）とSI解析報告書・修正指示書を作成する検証パッケージ。
+capabilities:
+  - 解析対象ネット選定（クロック→高速→差動→一般）とIBIS/簡易ドライバモデル準備
+  - 反射・クロストーク・タイミング・アイ解析と定量判定（S/A/B/C重大度付与）
+  - 修正指示書（修正方法・再検証条件つき）によるアートワーク設計への差戻し
+required_tools:
+  - fs_read
+  - fs_write
+  - shell
+  - search
+required_permissions:
+  - fs_read
+  - fs_write
+  - shell
+  - search
+supported_agents:
+  - athena-director
+  - athena-lead
+  - athena-worker
+dependencies:
+  - id: pcb-common
+    version: "^1.0.0"
+  - id: pcb-artwork-design
+    version: "^1.0.0"
+runtime:
+  provider: agent-cli
+source: project-local
+publisher: schema_skill
+risk:
+  level: medium

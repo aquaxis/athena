@@ -1,0 +1,41 @@
+id: pcb-orchestrator
+name: PCB開発オーケストレーション
+version: "1.0.0"
+description: PCB Design Agent Skills 全工程（グランドデザイン→システム設計→回路図設計→アートワーク設計→SI/PI解析）を順序制御し、ワークフロー状態の管理・ゲート判定・差戻しループ・完了報告を行う統括パッケージ。
+capabilities:
+  - 工程フローの順序制御と成果物受け渡し（ワークフロー状態ファイル workflow_state.md 管理）
+  - 引き渡しゲート判定（各工程SKILL 第10節＋共通チェックリスト）と差戻し制御
+  - 各工程の判断記録・検証報告・承認記録の集約と完了報告書生成
+required_tools:
+  - fs_read
+  - fs_write
+  - send_to
+required_permissions:
+  - fs_read
+  - fs_write
+  - send_to
+supported_agents:
+  - athena-producer
+  - athena-director
+  - athena-lead
+dependencies:
+  - id: pcb-grand-design
+    version: "^1.0.0"
+  - id: pcb-system-design
+    version: "^1.0.0"
+  - id: pcb-schematic-design
+    version: "^1.0.0"
+  - id: pcb-artwork-design
+    version: "^1.0.0"
+  - id: pcb-si-analysis
+    version: "^1.0.0"
+  - id: pcb-pi-analysis
+    version: "^1.0.0"
+  - id: pcb-common
+    version: "^1.0.0"
+runtime:
+  provider: agent-cli
+source: project-local
+publisher: schema_skill
+risk:
+  level: low

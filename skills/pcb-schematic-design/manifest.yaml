@@ -1,0 +1,31 @@
+id: pcb-schematic-design
+name: PCB回路図設計
+version: "1.0.0"
+description: システム設計の接続定義で回路作図・部品選定・ネット属性設定を行い、ERC/DRC検証とネットリスト・BOM生成までを実行してアートワーク設計へ引き渡す基板開発第3工程パッケージ。
+capabilities:
+  - EDAツール（CLI/スクリプト）連携による回路作図とライブラリ構築
+  - ネット属性設定（信号クラス・トポロジー・インピーダンス・差動ペア）とERC/DRC実行
+  - 部品選定の定量判断（デカップ容量・プルアップ等）とネットリスト・BOM生成
+required_tools:
+  - fs_read
+  - fs_write
+  - shell
+  - search
+required_permissions:
+  - fs_read
+  - fs_write
+  - shell
+  - search
+supported_agents:
+  - athena-director
+  - athena-lead
+  - athena-worker
+dependencies:
+  - id: pcb-common
+    version: "^1.0.0"
+runtime:
+  provider: agent-cli
+source: project-local
+publisher: schema_skill
+risk:
+  level: medium
