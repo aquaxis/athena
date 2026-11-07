@@ -53,7 +53,7 @@ fn a_fresh_init_creates_the_full_athena_and_aiprj_tree() {
     assert_all_present(&dirs, "directory");
 
     let files = vec![
-        home.join("config.yaml"),
+        home.join("config.toml"),
         home.join("agents").join("producer").join("loop.md"),
         home.join("agents")
             .join("producer")
@@ -95,7 +95,7 @@ fn a_re_run_adds_only_missing_elements_and_overwrites_nothing() {
     run_init(&root).expect("first");
 
     // Mutate files an init must never overwrite.
-    let config = root.join(".athena").join("config.yaml");
+    let config = root.join(".athena").join("config.toml");
     fs::write(&config, "operator's configuration").expect("mutate");
     let instructions = root.join(".aiprj").join("instructions.md");
     fs::write(&instructions, "the project's own instructions").expect("mutate");
@@ -106,7 +106,7 @@ fn a_re_run_adds_only_missing_elements_and_overwrites_nothing() {
     assert_eq!(
         read(&config),
         "operator's configuration",
-        "an existing config.yaml is never overwritten (ATH-CLI-009)"
+        "an existing config.toml is never overwritten (ATH-CLI-009)"
     );
     assert_eq!(
         read(&instructions),

@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 |---|---|
-| Version | 1.0（rev. 2026-10-22） |
+| Version | 1.0（rev. 2026-11-07） |
 | Status | System Architecture Specification |
 | Owner | ATHENA Architecture |
 | 実装言語 | Rust |
@@ -18,6 +18,7 @@ Scheduler ではなく、人間の自然言語指示を理解し、計画し、A
 
 | 日付 | 改訂内容 | 根拠 |
 |---|---|---|
+| 2026-11-07 | 設定ファイルの形式を YAML から TOML へ変更（指示ソース 2026-11-07 最優先事項）。第 28.1 節の既定値例を TOML へ全面改訂し、`ATH-CFG-012`（TOML として解釈、混在形式の暗黙受容の禁止）、`ATH-CFG-013`（TOML に null は無いため任意項目はキー不在で表す）、`ATH-CFG-014`（形式変更は意味論を変えない。`manifest.yaml` と Persona front matter は対象外）を追加。`ATH-CFG-011`（既定位置）を `<ATHENA_HOME>/config.toml` へ、第 4.3.4 節ツリー・`ATH-CLI-009`・`ATH-OPS-006`/`008`・`ATH-DEV-020`/`021` のファイル名を整合。設定の意味論（キー名・既定値・相互制約・優先順位・`${athena.home}` 展開）は不変 | `ATH-CFG-011`、`ATH-CFG-012`、`ATH-CFG-013`、`ATH-CFG-014` |
 | 2026-10-22 | 永続化エンジンの確定（open item O-6 の決着）。第 27.2 節を改訂（`ATH-PERS-004` に SQLite 使用禁止、v1 エンジンを純 Rust の埋め込み型トランザクションストア `redb` と明記。`ATH-PERS-005` をエンジン中立の耐久性条項へ改訂）。第 4.3.1 / 4.3.2 / 4.3.4 / 5 / 23.1 / 32.1 節の SQLite 表記をエンジン中立または `redb` へ整合。SQLite 使用禁止の指示（2026-10-18 指示ソース 最優先事項）に基づく。エンジン固有の NFR 計測（NFR-02/03/04/13）は新エンジンで再記録 | `ATH-PERS-004`、`ATH-PERS-005`、`ATH-GEN-006` |
 | 2026-10-18 | Open item O-3 を確定: 第 18.3 節の既定値を v1 の確定値として確定し、`ATH-SCHED-015` を確定後の文言に改訂。根拠は Phase-1 飽和計測(AI_LOG 017)と本改訂セッションの実ランナー計測(NFR-02/03/11/13/14/16)。全項目の設定変更可能性は維持 | ATH-SCHED-015 |
 | 2026-10-18 | 第 32.2 節の依存許可表へ `athena-api → runtimes/*`(構成ルート)を追加。常駐プロセス(athena-api)が Core Host と Adapter 実装を同一プロセスで結線し registry へ登録する役割を明示した(ATH-DEV-023 の不明依存を許可として明記)。`athena-core → runtimes/*` の禁止は不変 | ATH-DEV-023、ATH-RT-008 |
@@ -690,7 +691,7 @@ ATHENA が使用するファイルはその直下の `.athena/` に収める。`
 |
 +-- .athena/                             ATHENA が使用するファイル（= ATHENA_HOME）
 |     |
-|     +-- config.yaml                    設定（第 28 章）
+|     +-- config.toml                    設定（第 28 章）
 |     +-- agents/                        本プロジェクトの Agent 定義
 |     +-- personas/                      Persona（Agent からは読み取り専用：ATH-CORE-043）
 |     +-- skills/                        Skill Package のソース（`skills.local_dir`）
@@ -744,7 +745,7 @@ ATHENA が使用するファイルはその直下の `.athena/` に収める。`
 +-- source / artifacts                   プロジェクトの作業対象と成果物
 ```
 
-`.athena/` の内側は、版管理する設定・定義（`config.yaml`、`agents/`、`personas/`、`skills/`）と、
+`.athena/` の内側は、版管理する設定・定義（`config.toml`、`agents/`、`personas/`、`skills/`）と、
 版管理しない実行時データ（`var/`）に分かれる。`skills/` と `var/skills/` は同名だが別物であり、
 前者は Skill Package のソース、後者は登録済み Skill（`skills.dir`）である（ATH-DEV-020）。
 
@@ -815,7 +816,7 @@ cwd = Agent Workspace                 .athena/var/instances/<instance_id>/
   `.athena/` に収めなければならない。利用者のホームディレクトリ、および
   `<PROJECT_ROOT>/.athena/` の外側へ、ATHENA 用のディレクトリを作成してはならない。
 - **ATH-OPS-006** (MUST) 可変の実行時データは `<PROJECT_ROOT>/.athena/var/` 配下に限定しな
-  ければならない。`config.yaml`、`agents/`、`personas/`、`skills/` へ実行時に書き込んでは
+  ければならない。`config.toml`、`agents/`、`personas/`、`skills/` へ実行時に書き込んでは
   ならない。これにより、版管理対象と実行時データの境界が 1 本のパスで定まる。
 - **ATH-OPS-007** (MUST) 1 つの ATHENA インスタンスは 1 つのプロジェクトのみを担当しなければ
   ならない。複数プロジェクトを 1 インスタンスで扱ってはならない。同一ホストで複数プロジェクトを
@@ -827,7 +828,7 @@ cwd = Agent Workspace                 .athena/var/instances/<instance_id>/
   `AI_PRJ_TASKS.md` と `AI_LOG/` を書き込む必要があるためである（ATH-AIPRJ-009、
   ATH-AIPRJ-010）。当該ディレクトリ内でも制御面（`.agent-cli/`、`skills/`）は
   除外する（ATH-CORE-043）。他 Instance のディレクトリ、`core-agent/`、`athena.db`、
-  `config.yaml`、`agents/`、`personas/`、`skills/` を含めてはならない
+  `config.toml`、`agents/`、`personas/`、`skills/` を含めてはならない
   （ATH-AIPRJ-018、ATH-CORE-027）。
 - **ATH-OPS-009** (MUST) 下位 Agent Instance の cwd は、当該 Instance のディレクトリ
   （`<ATHENA_HOME>/var/instances/<instance_id>/`）としなければならない。Core Agent の cwd は
@@ -3862,7 +3863,7 @@ ATHENA:
 - **ATH-CLI-008** (MUST) 終了コードは成功 0、要求不正 2、権限エラー 3、実行失敗 4、内部エラー 70
   としなければならない。
 - **ATH-CLI-009** (MUST) `athena init` は、カレントディレクトリをプロジェクトルートとして
-  `.athena/` を生成しなければならない。生成物は `config.yaml`（既定値）、`agents/`、
+  `.athena/` を生成しなければならない。生成物は `config.toml`（既定値）、`agents/`、
   `personas/`、`skills/`、`var/` とする。既存の `.athena/` がある場合は上書きせず、不足する
   要素のみを補わなければならない（ATH-AIPRJ-006 と同じ方針）。あわせて Instance の
   `.agent-cli/` を生成する原本 `<ATHENA_HOME>/var/agent-cli-template/`（`config.toml` と
@@ -4420,157 +4421,174 @@ Log 参照
 
 #### 28.1 設定ファイル
 
-設定は YAML を基本とする。
+設定ファイルは **TOML** で記述する（UTF-8）。
 
-```yaml
-athena:
-  home: ./.athena            # ATHENA が使用するファイルの格納先。既定は cwd から上方へ探索
-                             # 環境変数 ATHENA_HOME が対応（ATH-CFG-002、ATH-CFG-010）
-  api:
-    host: 127.0.0.1
-    port: 8080
-    auth:
-      mode: token              # token | none（none は開発時のみ）
-  data:
-    dir: ${athena.home}/var
-    database: ${athena.home}/var/athena.db   # プロジェクト単位
+設定の意味論（キー名・階層・既定値・相互制約・優先順位）は形式に依存しない。以下の例は
+第 28.1 節の既定値全体を TOML で表したものである。
 
-core:
-  max_iterations: 50
-  iteration_timeout: 30m
-  evaluation:
-    require_verification: true
-  agent:                          # Core Agent（agent-cli instance #0）
-    persona: ${athena.home}/personas/producer.md
-    workspace: ${athena.home}/var/core-agent
-    runtime: agent-cli
-    provider: claude
-    model: claude-opus-5
-    skills:
-      - id: athena-orchestration
-        version: "1.0.0"
-    restart:
-      max_attempts: 3
-      on_exhausted: escalate      # escalate のみ許容（ATH-CORE-030）
-    allowed_tools:                  # Core Agent 自身が実行できる Tool（最小：ATH-SEC-025）
-      - fs_read
-      - fs_write
-      - send_to
-    delegable_tools:                # 下位 Agent へ付与できる Tool（ATH-SEC-023）
-      - fs_read
-      - fs_write
-      - shell
-      - git
-      - search
-      - send_to
-      - network
+```toml
+[athena]
+# ATHENA が使用するファイルの格納先。既定は cwd から上方へ探索
+# 環境変数 ATHENA_HOME が対応（ATH-CFG-002、ATH-CFG-010）
+home = "./.athena"
 
-scheduler:
-  max_concurrent_tasks: 8
-  max_concurrent_instances: 16        # WAITING / SUSPENDED は計上外（ATH-SCHED-010）
-  max_instances_per_task: 4
-  max_queue_length: 1000
-  priority_promotion_interval: 30m
-  reserved_core_agent_slots: 2        # 上限の外側に確保（ATH-SCHED-008）
-  max_waiting_approval_ratio: 0.25
-  stall_detection_factor: 2           # iteration_timeout の倍数で TaskStalled
+[athena.api]
+host = "127.0.0.1"
+port = 8080
 
-messaging:
-  max_queue_depth: 1000
-  dedup_retention: 7d
+[athena.api.auth]
+mode = "token"                 # token | none（none は開発時のみ）
 
-timeout:                              # 全 Runtime 共通の既定値（第 20.3 節）
-  startup: 30s
-  execution: 30m
-  message_reply: 45m                  # startup + execution より長いこと（ATH-CFG-008）
-  approval: 1h
-  stop: 60s
-  clarification: 24h
+[athena.data]
+dir = "${athena.home}/var"
+database = "${athena.home}/var/athena.db"   # プロジェクト単位
 
-policy:                               # リスク分類（ATH-HITL-002）
-  rules:
-    - match: { tool: shell, args_pattern: "^git\\s+push" }
-      risk: high
-      requires_approval: true
-    - match: { tool: shell, args_pattern: "^rm\\s+-rf" }
-      risk: high
-      requires_approval: true
-    - match: { tool: network, hosts: ["*"] }
-      risk: high
-      requires_approval: true
-    - match: { tool: fs_write, path_scope: "outside_workspace" }
-      risk: high
-      requires_approval: true
-    - match: { tool: shell }
-      risk: medium
-      requires_approval: false
-    - match: { tool: fs_read }
-      risk: low
-      requires_approval: false
-  approval_scopes:                    # 選択可能な scope（ATH-HITL-012）
-    - operation_only
-    - "tool:shell:same_argv"
-    - "tool:fs_write:same_path"
-  max_approval_ttl: 24h
+[core]
+max_iterations = 50
+iteration_timeout = "30m"
 
-runtime:
-  default: agent-cli
-  agent-cli:
-    max_instances: 16               # Σ runtime.*.max_instances >= scheduler 上限（ATH-CFG-008）
-    command: agent-cli
-    startup_timeout: 30s            # 任意。timeout.startup の Runtime 単位の上書き
-    execution_timeout: 30m          # 任意。timeout.execution の Runtime 単位の上書き
+[core.evaluation]
+require_verification = true
 
-skills:
-  local_dir: ${athena.home}/skills     # プロジェクト内 Package のソース（ATH-SKILL-037）
-  dir: ${athena.home}/var/skills       # 登録済み（ATH-SKILL-038）
-  auto_enable_on_register: false
-  verify_checksum: true
-  allowed_publishers: [aquaxis]        # ATH-SKILL-035
-  allowed_sources: ["https://skills.example.invalid/"]
+# Core Agent（agent-cli instance #0）
+[core.agent]
+persona = "${athena.home}/personas/producer.md"
+workspace = "${athena.home}/var/core-agent"
+runtime = "agent-cli"
+provider = "claude"
+model = "claude-opus-5"
 
-memory:
-  tokenizer: provider-default-claude   # 計数に用いるトークナイザ（ATH-MEM-009）
-  summarizer: memory-summarizer-agent  # 要約を担う Agent 定義（ATH-MEM-008）
-  short_term_max_tokens: 32000
-  working_max_records: 500
-  long_term:
-    enabled: true
-    max_records: 10000
+# Core Agent 自身が実行できる Tool（最小：ATH-SEC-025）
+allowed_tools = ["fs_read", "fs_write", "send_to"]
+# 下位 Agent へ付与できる Tool（ATH-SEC-023）
+delegable_tools = ["fs_read", "fs_write", "shell", "git", "search", "send_to", "network"]
 
-approval:
-  on_timeout: reject                   # 期限は timeout.approval（ATH-HITL-005）
+[core.agent.restart]
+max_attempts = 3
+on_exhausted = "escalate"      # escalate のみ許容（ATH-CORE-030）
 
-core_agent_restart:
-  max_attempts: 3
-  window: 1h                           # スライディングウィンドウ（ATH-CORE-045）
-  exclude_error_classes: [TransientError]
-  heartbeat_interval: 20s
-  heartbeat_timeout: 60s               # ATH-CORE-047
+[[core.agent.skills]]
+id = "athena-orchestration"
+version = "1.0.0"
 
-retry:
-  max_attempts: 3
-  strategy: alternate-agent
-  backoff:
-    initial_ms: 1000
-    multiplier: 2
-    max_ms: 60000
+[scheduler]
+max_concurrent_tasks = 8
+max_concurrent_instances = 16          # WAITING / SUSPENDED は計上外（ATH-SCHED-010）
+max_instances_per_task = 4
+max_queue_length = 1000
+priority_promotion_interval = "30m"
+reserved_core_agent_slots = 2          # 上限の外側に確保（ATH-SCHED-008）
+max_waiting_approval_ratio = 0.25
+stall_detection_factor = 2             # iteration_timeout の倍数で TaskStalled
 
-events:
-  retention_days: 90
+[messaging]
+max_queue_depth = 1000
+dedup_retention = "7d"
 
-observability:
-  log_level: info
-  log_format: json
+# 全 Runtime 共通の既定値（第 20.3 節）
+[timeout]
+startup = "30s"
+execution = "30m"
+message_reply = "45m"                  # startup + execution より長いこと（ATH-CFG-008）
+approval = "1h"
+stop = "60s"
+clarification = "24h"
 
-agents:
-  - id: fpga-director
-    runtime: agent-cli
-  - id: timing-lead
-    runtime: agent-cli
-  - id: research-agent
-    runtime: agent-cli
+# リスク分類（ATH-HITL-002）
+[policy]
+# 選択可能な scope（ATH-HITL-012）
+approval_scopes = ["operation_only", "tool:shell:same_argv", "tool:fs_write:same_path"]
+max_approval_ttl = "24h"
+
+[[policy.rules]]
+risk = "high"
+requires_approval = true
+[policy.rules.match]
+tool = "shell"
+args_pattern = "^git\\s+push"
+
+[[policy.rules]]
+risk = "high"
+requires_approval = true
+[policy.rules.match]
+tool = "shell"
+args_pattern = "^rm\\s+-rf"
+
+[[policy.rules]]
+risk = "high"
+requires_approval = true
+[policy.rules.match]
+tool = "network"
+hosts = ["*"]
+
+[[policy.rules]]
+risk = "high"
+requires_approval = true
+[policy.rules.match]
+tool = "fs_write"
+path_scope = "outside_workspace"
+
+[[policy.rules]]
+risk = "medium"
+requires_approval = false
+[policy.rules.match]
+tool = "shell"
+
+[[policy.rules]]
+risk = "low"
+requires_approval = false
+[policy.rules.match]
+tool = "fs_read"
+
+[runtime]
+default = "agent-cli"
+
+[runtime.agent-cli]
+max_instances = 16             # Σ runtime.*.max_instances >= scheduler 上限（ATH-CFG-008）
+command = "agent-cli"
+startup_timeout = "30s"        # 任意。timeout.startup の Runtime 単位の上書き
+execution_timeout = "30m"      # 任意。timeout.execution の Runtime 単位の上書き
+
+[skills]
+local_dir = "${athena.home}/skills"   # プロジェクト内 Package のソース（ATH-SKILL-037）
+dir = "${athena.home}/var/skills"     # 登録済み（ATH-SKILL-038）
+auto_enable_on_register = false
+verify_checksum = true
+allowed_publishers = ["aquaxis"]      # ATH-SKILL-035
+allowed_sources = ["https://skills.example.invalid/"]
+
+[events]
+retention_days = 90
+
+[observability]
+log_level = "info"
+log_format = "json"
+
+[[agents]]
+id = "fpga-director"
+runtime = "agent-cli"
+
+[[agents]]
+id = "timing-lead"
+runtime = "agent-cli"
+
+[[agents]]
+id = "research-agent"
+runtime = "agent-cli"
 ```
+
+**形式に関する規範:**
+
+- **ATH-CFG-012** (MUST) 設定ファイルは TOML として解釈しなければならない。YAML その他の形式で
+  書かれた設定を、別のパーサへ切り替えて解釈してはならない（混在形式の暗黙受容の禁止）。
+  パースできないファイルは検証エラーであり、起動を中止する（ATH-CFG-003）。
+- **ATH-CFG-013** (MUST) TOML は null を表現できないため、任意項目の不在は「キーの不在」で
+  表す。既定値層はスキーマの既定値から生成されるため、未知キーの拒否（ATH-CFG-003）と
+  組み合わせて、不在キーは既定値のまま、未知キーは起動中止となる。
+- **ATH-CFG-014** (MUST NOT) 本節の形式変更は設定の意味論を変えてはならない。キー名、階層、
+  既定値、相互制約（ATH-CFG-008）、優先順位（ATH-CFG-001）、`${athena.home}` 展開
+  （ATH-CFG-010）は形式に依存しない。Skill Package の `manifest.yaml` および Persona の
+  front matter は本節の対象外であり、それぞれ ATH-SKILL-003、ATH-PER-002 に従う。
 
 #### 28.2 優先順位と検証
 
@@ -4632,7 +4650,7 @@ timeout.message_reply > runtime.<type>.startup_timeout + runtime.<type>.executio
   設定値中の `${athena.home}` は、他の設定の検証（ATH-CFG-003）より**前**に展開しなければ
   ならない。設定値に現れる相対パスは `athena.home` を基準に解決する。`${athena.home}` 以外の
   変数参照を導入してはならない。
-- **ATH-CFG-011** (MUST) 設定ファイルの既定の位置は `<ATHENA_HOME>/config.yaml` としなければ
+- **ATH-CFG-011** (MUST) 設定ファイルの既定の位置は `<ATHENA_HOME>/config.toml` としなければ
   ならない。`--config` による明示指定がない場合はこれを読み込む。
 
 ---
@@ -4956,10 +4974,10 @@ athena/
 
 - **ATH-DEV-009** (MUST) リポジトリは上記構成に従わなければならない。
 - **ATH-DEV-020** (MUST) 導入先プロジェクトでは `.athena/var/` をバージョン管理対象から除外し
-  なければならない。`config.yaml`、`agents/`、`personas/`、`skills/` は版管理対象としてよい
+  なければならない。`config.toml`、`agents/`、`personas/`、`skills/` は版管理対象としてよい
   （プロジェクトの構成情報であるため）。`athena init` は `.athena/.gitignore` に `var/` を
   記載しなければならない。実行時データを版管理へ混入させてはならない（ATH-OPS-006）。
-- **ATH-DEV-021** (MUST NOT) `config.yaml` へ秘密情報を記述してはならない（ATH-CFG-005）。
+- **ATH-DEV-021** (MUST NOT) `config.toml` へ秘密情報を記述してはならない（ATH-CFG-005）。
   版管理対象となりうるため、API トークンおよび LLM Provider の鍵は環境変数または外部の秘密
   管理機構から取得する。
 - **ATH-DEV-010** (MUST) バイナリ crate 名は第 4.3.2 節の実行単位名と一致させなければ

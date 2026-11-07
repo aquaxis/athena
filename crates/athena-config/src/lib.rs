@@ -4,7 +4,7 @@
 //!
 //! 1. Resolve `ATHENA_HOME` by `--home`, `ATHENA_HOME`, then an upward search for `.athena/`.
 //!    Failing all three aborts rather than creating a default (ATH-CFG-010).
-//! 2. Read `<ATHENA_HOME>/config.yaml` unless one was named explicitly (ATH-CFG-011).
+//! 2. Read `<ATHENA_HOME>/config.toml` unless one was named explicitly (ATH-CFG-011).
 //! 3. Layer defaults, file, environment, CLI in that order (ATH-CFG-001).
 //! 4. Expand `${athena.home}` — before validation, so constraints see real paths.
 //! 5. Validate against the typed schema and the section 28.2 cross-constraints, aborting on
@@ -47,7 +47,7 @@ pub struct Loaded {
     /// The effective configuration as a value tree, for the `ConfigurationLoaded` payload.
     ///
     /// Pass through [`redacted_snapshot`] before emitting (ATH-CFG-004).
-    pub effective: serde_yaml::Value,
+    pub effective: toml::Value,
     /// Policy rules with their patterns compiled, so an invalid pattern has already failed.
     pub policy: CompiledPolicy,
 }
@@ -79,15 +79,15 @@ pub fn load(current_dir: PathBuf, cli: &CliInputs) -> Result<Loaded> {
     })?;
 
     let config_file = cli.config.clone().unwrap_or_else(|| home.config_file());
-    let file_yaml = read_config_file(&config_file)?;
+    let file_toml = read_config_file(&config_file)?;
     // Report the path only when a file was actually read, so an error message never points at
     // a file that does not exist.
-    let read_from = file_yaml.as_ref().map(|_| config_file.clone());
+    let read_from = file_toml.as_ref().map(|_| config_file.clone());
 
     let (config, effective) = resolve(
         &home,
         &ResolveInputs {
-            file_yaml,
+            file_toml,
             file_path: read_from.clone(),
             env,
             cli: cli.set.clone(),
@@ -127,8 +127,8 @@ mod tests {
             Self(base)
         }
 
-        fn write_config(&self, yaml: &str) {
-            std::fs::write(self.0.join(".athena/config.yaml"), yaml).expect("write config");
+        fn write_config(&self, toml_text: &str) {
+            std::fs::write(self.0.join(".athena/config.toml"), toml_text).expect("write config");
         }
 
         fn path(&self) -> PathBuf {
@@ -143,13 +143,12 @@ mod tests {
     }
 
     /// The minimum a file must state, since ATHENA supplies no provider, model or ceiling.
-    const MINIMAL: &str = r"
-core:
-  agent:
-    provider: claude
-    model: claude-opus-5
-    delegable_tools: [fs_read, fs_write, shell]
-";
+    const MINIMAL: &str = r#"
+[core.agent]
+provider = "claude"
+model = "claude-opus-5"
+delegable_tools = ["fs_read", "fs_write", "shell"]
+"#;
 
     #[test]
     fn a_minimal_project_loads_and_validates() {
@@ -192,7 +191,7 @@ core:
     fn cli_overrides_win_over_the_file() {
         let project = Project::new("cli");
         project.write_config(&format!(
-            "{MINIMAL}\nscheduler:\n  max_concurrent_tasks: 2\n"
+            "{MINIMAL}\n[scheduler]\nmax_concurrent_tasks = 2\n"
         ));
 
         let loaded = load(
@@ -209,8 +208,8 @@ core:
     #[test]
     fn an_explicit_config_path_replaces_the_default_location() {
         let project = Project::new("explicit");
-        project.write_config("scheduler:\n  max_concurrent_tasks: 99\n");
-        let other = project.path().join("other.yaml");
+        project.write_config("[scheduler]\nmax_concurrent_tasks = 99\n");
+        let other = project.path().join("other.toml");
         std::fs::write(&other, MINIMAL).expect("write");
 
         let loaded = load(
@@ -245,7 +244,7 @@ core:
         // ATH-CFG-003: no partial-default continuation.
         let project = Project::new("invalid");
         project.write_config(&format!(
-            "{MINIMAL}\ntimeout:\n  startup: 30s\n  execution: 30m\n  message_reply: 1m\n"
+            "{MINIMAL}\n[timeout]\nstartup = \"30s\"\nexecution = \"30m\"\nmessage_reply = \"1m\"\n"
         ));
         let err = load(project.path(), &CliInputs::default()).expect_err("must abort");
         assert!(err.to_string().contains("message_reply"), "{err}");
@@ -255,7 +254,7 @@ core:
     fn a_configuration_missing_the_provider_aborts() {
         // ATH-AGENT-008: ATHENA supplies no default, so this cannot be papered over.
         let project = Project::new("noprovider");
-        project.write_config("scheduler:\n  max_concurrent_tasks: 4\n");
+        project.write_config("[scheduler]\nmax_concurrent_tasks = 4\n");
         let err = load(project.path(), &CliInputs::default()).expect_err("must abort");
         assert!(err.to_string().contains("core.agent.provider"), "{err}");
     }
@@ -268,7 +267,7 @@ core:
 
         let loaded = load(project.path(), &CliInputs::default()).expect("loads");
         let redacted = redacted_snapshot(&loaded.effective);
-        let text = serde_yaml::to_string(&redacted).expect("serialize");
+        let text = toml::to_string(&redacted).expect("serialize");
         assert!(text.contains("max_concurrent_tasks"), "{text}");
         assert!(
             !text.contains("${"),

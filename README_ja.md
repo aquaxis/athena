@@ -99,7 +99,7 @@ ATHENA はプロジェクトごとに構成されます。対象としたい作�
 ```sh
 cd ~/projects/my-project
 
-# .athena/ (config.yaml, agents/, personas/, skills/, var/) を生成し、
+# .athena/ (config.toml, agents/, personas/, skills/, var/) を生成し、
 # aiprj (.aiprj/, .agent-cli/) を展開する — プロジェクトに一度だけ実行
 athena init
 
@@ -107,7 +107,7 @@ athena init
 # Store の整合、Core Agent の常駐化、監督、安全な shutdown
 athena-api
 
-# .athena/config.yaml を編集し、運用者が供給する 3 つの値を設定する:
+# .athena/config.toml を編集し、運用者が供給する 3 つの値を設定する:
 #   - core.agent.provider        (既定値なし — ATH-AGENT-008)
 #   - core.agent.model           (既定値なし — ATH-AGENT-008)
 #   - core.agent.delegable_tools (権限上限は明示が必須 — ATH-SEC-024)
@@ -118,18 +118,18 @@ athena-api
 # core.agent.* の記載例(あくまで EXAMPLE — 既定値は存在しない):
 #   プロバイダ・モデル・上限は自分で選ぶこと。
 
-```yaml
-core:
-  agent:
-    provider: "ollama"                                # 例: ランタイムのプロバイダ決定
-    model: "glm-5.3-flash:cloud"                      # 例: プロバイダのモデル
-    allowed_tools: ["fs_read", "fs_write", "send_to"] # 既定は最小構成 (ATH-SEC-025)
-    delegable_tools:
-      - "fs_read"
-      - "fs_write"
-      - "shell"     # 中リスク帯 — rm -rf の承認行は依然として有効
-      - "git"
-      - "send_to"
+```toml
+[core.agent]
+provider = "ollama"                          # 例: ランタイムのプロバイダ決定
+model = "glm-5.3-flash:cloud"                # 例: プロバイダのモデル
+allowed_tools = ["fs_read", "fs_write", "send_to"]  # 既定は最小構成 (ATH-SEC-025)
+delegable_tools = [
+  "fs_read",
+  "fs_write",
+  "shell",   # 中リスク帯 — rm -rf の承認行は依然として有効
+  "git",
+  "send_to",
+]
 ```
 ```
 
@@ -167,7 +167,7 @@ athena update
 実行ディレクトリから `.athena/` プロジェクトが解決できる場合は、さらに
 プロジェクトの `personas/` と `skills/` **のみ**をリポジトリの同梱既定値から
 更新します — 追加は積み上げ式で、ユーザーが改変した定義を上書きすることは
-ありません(`config.yaml`、`agents/`、`var/` には一切触れません)。
+ありません(`config.toml`、`agents/`、`var/` には一切触れません)。
 `.athena/` のないディレクトリではツール更新のみが実行されます。
 
 実装状況の注記: CLI の各動詞は現在、Core API へ発行する要求(method / path / body)を

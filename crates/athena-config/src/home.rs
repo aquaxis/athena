@@ -43,7 +43,7 @@ impl AthenaHome {
     /// The default configuration file location (ATH-CFG-011).
     #[must_use]
     pub fn config_file(&self) -> PathBuf {
-        self.path.join("config.yaml")
+        self.path.join("config.toml")
     }
 
     /// The runtime data directory. The sole writable area (ATH-OPS-006).
@@ -294,7 +294,7 @@ mod tests {
             current_dir: tree.path().to_path_buf(),
         })
         .expect("resolves");
-        assert_eq!(home.config_file(), normalize(&home_dir).join("config.yaml"));
+        assert_eq!(home.config_file(), normalize(&home_dir).join("config.toml"));
         assert_eq!(home.var_dir(), normalize(&home_dir).join("var"));
     }
 

@@ -102,10 +102,10 @@ pub const AIPRJ_AGENT_CLI_CONFIG: &str = include_str!("../vendor/aiprj/agent-cli
 /// The `.gitignore` block `aiprj install.sh` adds at a project root.
 pub const AIPRJ_GITIGNORE_ENTRIES: &str = include_str!("../vendor/aiprj/gitignore-entries");
 
-/// The default `config.yaml` written into `.athena/` (ATH-CLI-009: 既定値).
+/// The default `config.toml` written into `.athena/` (ATH-CLI-009: 既定値).
 ///
 /// Values mirror `athena-config`'s schema defaults (spec section 28.1). The dependency graph
 /// forbids the CLI from reading the schema itself, so the pairing is held by the conformance
 /// drift test (`tests/init_defaults.rs` in `athena-conformance`), which parses and validates
 /// this text through the real schema.
-pub const DEFAULT_CONFIG_YAML: &str = include_str!("default-config.yaml");
+pub const DEFAULT_CONFIG_TOML: &str = include_str!("default-config.toml");

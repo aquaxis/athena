@@ -76,6 +76,7 @@ path = "lib.rs"
 
 [dependencies]
 serde_json = { workspace = true }
+toml = { workspace = true }
 athena-core = { path = "../crates/athena-core" }
 athena-agent = { path = "../crates/athena-agent" }
 athena-runtime = { path = "../crates/athena-runtime" }

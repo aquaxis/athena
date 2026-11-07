@@ -39,7 +39,7 @@ pub enum ConfigError {
         source: std::io::Error,
     },
 
-    /// The configuration file is not valid YAML, or contains unknown or mistyped keys.
+    /// The configuration file is not valid TOML, or contains unknown or mistyped keys.
     ///
     /// Unknown keys are rejected rather than ignored, so a typo fails loudly instead of
     /// silently leaving a default in place.
@@ -48,7 +48,7 @@ pub enum ConfigError {
         /// The file, when the error came from one.
         path: Option<PathBuf>,
         /// Underlying cause.
-        source: serde_yaml::Error,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
 
     /// An environment variable or CLI override did not name a known key.

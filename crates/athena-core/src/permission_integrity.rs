@@ -19,7 +19,7 @@
 //!    `StartContext`'s permission sets (`allowed_tools`, `filesystem_scope`, `model`)
 //!    are minted by Core Host from the AgentDefinition, never read back from the
 //!    process (`ATH-RT-002`, definition-truth re-check at start); the definitions live
-//!    in `<ATHENA_HOME>/agents/` and `config.yaml` — version-controlled zones which
+//!    in `<ATHENA_HOME>/agents/` and `config.toml` — version-controlled zones which
 //!    the scope construction (P3-12's `build_scope`) excludes from every agent, and
 //!    [`athena_tools::PathBoundary`] refuses them (`ATH-SEC-010`, tested with P4-03).
 

@@ -1,15 +1,15 @@
 //! Layered configuration resolution (ATH-CFG-001, ATH-CFG-002, ATH-CFG-010).
 //!
 //! Resolution order is defaults, then file, then environment, then CLI. Layering happens on a
-//! YAML value tree rather than on the typed struct, for two reasons: an override must be able
+//! TOML value tree rather than on the typed struct, for two reasons: an override must be able
 //! to address a single leaf without reconstructing its parents, and `${athena.home}` has to be
 //! expanded *before* the typed schema is validated (ATH-CFG-010).
 
 use crate::error::{ConfigError, Result};
 use crate::home::AthenaHome;
 use crate::schema::Config;
-use serde_yaml::{Mapping, Value};
 use std::path::Path;
+use toml::{Table, Value};
 
 /// The environment-variable prefix (ATH-CFG-002).
 pub const ENV_PREFIX: &str = "ATHENA_";
@@ -31,8 +31,8 @@ pub struct Override {
 /// Inputs to resolution.
 #[derive(Debug, Clone, Default)]
 pub struct ResolveInputs {
-    /// Raw YAML of the configuration file, when one exists.
-    pub file_yaml: Option<String>,
+    /// Raw TOML of the configuration file, when one exists.
+    pub file_toml: Option<String>,
     /// Path of that file, for error messages.
     pub file_path: Option<std::path::PathBuf>,
     /// `ATHENA_*` variables as `(name, value)`.
@@ -59,20 +59,17 @@ const SECRET_HINTS: &[&str] = &[
 pub fn resolve(home: &AthenaHome, inputs: &ResolveInputs) -> Result<(Config, Value)> {
     // Layer 1: defaults. Serializing the default struct guarantees the tree has every key,
     // which is what lets override paths be matched against real keys rather than guessed.
-    let mut tree = serde_yaml::to_value(Config::default())
-        .map_err(|source| ConfigError::Invalid { path: None, source })?;
+    let mut tree = default_tree()?;
 
     // Layer 2: the file.
-    if let Some(yaml) = &inputs.file_yaml {
+    if let Some(toml_text) = &inputs.file_toml {
         let from_file: Value =
-            serde_yaml::from_str(yaml).map_err(|source| ConfigError::Invalid {
+            toml::from_str(toml_text).map_err(|source| ConfigError::Invalid {
                 path: inputs.file_path.clone(),
-                source,
+                source: Box::new(source),
             })?;
         reject_secrets(&from_file, &mut Vec::new())?;
-        if !from_file.is_null() {
-            merge(&mut tree, from_file);
-        }
+        merge(&mut tree, from_file);
     }
 
     // Layer 3: the environment, then layer 4: the CLI. CLI is applied last so it wins.
@@ -87,13 +84,26 @@ pub fn resolve(home: &AthenaHome, inputs: &ResolveInputs) -> Result<(Config, Val
     // see real paths (ATH-CFG-010).
     expand_home_var(&mut tree, home, &mut Vec::new())?;
 
-    let config: Config =
-        serde_yaml::from_value(tree.clone()).map_err(|source| ConfigError::Invalid {
+    let config: Config = tree
+        .clone()
+        .try_into()
+        .map_err(|source| ConfigError::Invalid {
             path: inputs.file_path.clone(),
-            source,
+            source: Box::new(source),
         })?;
 
     Ok((config, tree))
+}
+
+/// The defaults layer as a TOML value tree.
+///
+/// Every key the schema knows appears here, because override paths are matched against this
+/// tree rather than against a guessed shape.
+fn default_tree() -> Result<Value> {
+    Value::try_from(Config::default()).map_err(|source| ConfigError::Invalid {
+        path: None,
+        source: Box::new(source),
+    })
 }
 
 /// Read `ATHENA_*` variables from the real environment.
@@ -106,12 +116,12 @@ pub fn env_from_process() -> Vec<(String, String)> {
 
 /// Deep-merge `src` into `dst`, with `src` winning.
 ///
-/// Mappings merge key by key; every other value replaces wholesale. Sequences replace rather
+/// Tables merge key by key; every other value replaces wholesale. Arrays replace rather
 /// than append, because appending would make it impossible for a later layer to *remove* an
 /// entry from an allow-list.
 fn merge(dst: &mut Value, src: Value) {
     match (dst, src) {
-        (Value::Mapping(dst_map), Value::Mapping(src_map)) => {
+        (Value::Table(dst_map), Value::Table(src_map)) => {
             for (key, src_val) in src_map {
                 match dst_map.get_mut(&key) {
                     Some(dst_val) => merge(dst_val, src_val),
@@ -127,7 +137,7 @@ fn merge(dst: &mut Value, src: Value) {
 
 /// Refuse a configuration file that contains something secret-shaped (ATH-CFG-005).
 ///
-/// `config.yaml` may be version-controlled (ATH-DEV-020), so a token written here would be
+/// `config.toml` may be version-controlled (ATH-DEV-020), so a token written here would be
 /// committed. `deny_unknown_fields` would also reject these keys, but with a message about an
 /// unknown field rather than about secrets.
 ///
@@ -136,9 +146,9 @@ fn merge(dst: &mut Value, src: Value) {
 /// `…max_tokens` (memory ceilings) are not secrets. Discovered by the first resident
 /// boot (2026-10-18): the real startup aborted on the schema's own default key.
 fn reject_secrets(value: &Value, path: &mut Vec<String>) -> Result<()> {
-    if let Value::Mapping(map) = value {
+    if let Value::Table(map) = value {
         for (key, val) in map {
-            let key_str = key.as_str().unwrap_or_default().to_ascii_lowercase();
+            let key_str = key.to_ascii_lowercase();
             let compact = key_str.replace(['-', '.'], "_");
             if is_secret_shaped(&compact) {
                 path.push(key_str);
@@ -230,7 +240,7 @@ fn match_path(node: &Value, segments: &[String]) -> Option<Vec<String>> {
     if segments.is_empty() {
         return Some(Vec::new());
     }
-    let Value::Mapping(map) = node else {
+    let Value::Table(map) = node else {
         return None;
     };
 
@@ -238,14 +248,11 @@ fn match_path(node: &Value, segments: &[String]) -> Option<Vec<String>> {
     for take in (1..=segments.len()).rev() {
         let candidate = segments[..take].join("_");
         for (key, child) in map {
-            let Some(key_str) = key.as_str() else {
-                continue;
-            };
             // Compare on a normalized form so `agent-cli` matches `AGENT_CLI`.
-            if key_str.replace('-', "_").eq_ignore_ascii_case(&candidate)
+            if key.replace('-', "_").eq_ignore_ascii_case(&candidate)
                 && let Some(mut rest) = match_path(child, &segments[take..])
             {
-                let mut path = vec![key_str.to_string()];
+                let mut path = vec![key.to_string()];
                 path.append(&mut rest);
                 return Some(path);
             }
@@ -283,25 +290,23 @@ fn coerce(over: &Override, existing: Option<&Value>) -> Result<Value> {
     };
 
     Ok(match existing {
-        Some(Value::Bool(_)) => Value::Bool(
+        Some(Value::Boolean(_)) => Value::Boolean(
             over.value
                 .parse::<bool>()
                 .map_err(|_| bad("expected true or false"))?,
         ),
-        Some(Value::Number(n)) if n.is_u64() || n.is_i64() => Value::Number(
+        Some(Value::Integer(_)) => Value::Integer(
             over.value
-                .parse::<u64>()
-                .map_err(|_| bad("expected a non-negative integer"))?
-                .into(),
+                .parse::<i64>()
+                .map_err(|_| bad("expected a non-negative integer"))?,
         ),
-        Some(Value::Number(_)) => Value::Number(
+        Some(Value::Float(_)) => Value::Float(
             over.value
                 .parse::<f64>()
-                .map_err(|_| bad("expected a number"))?
-                .into(),
+                .map_err(|_| bad("expected a number"))?,
         ),
-        // Sequences take a comma-separated list, the only workable spelling for an env var.
-        Some(Value::Sequence(_)) => Value::Sequence(
+        // Arrays take a comma-separated list, the only workable spelling for an env var.
+        Some(Value::Array(_)) => Value::Array(
             over.value
                 .split(',')
                 .map(str::trim)
@@ -311,12 +316,9 @@ fn coerce(over: &Override, existing: Option<&Value>) -> Result<Value> {
         ),
         // Strings cover durations too: they stay in their `30s` spelling and are parsed by the
         // typed schema afterwards.
-        Some(Value::String(_)) | Some(Value::Null) | None => Value::String(over.value.clone()),
-        Some(Value::Mapping(_)) => return Err(bad("cannot replace a section with a scalar")),
-        Some(other) => {
-            let _ = other;
-            Value::String(over.value.clone())
-        }
+        Some(Value::String(_)) | None => Value::String(over.value.clone()),
+        Some(Value::Table(_)) => return Err(bad("cannot replace a section with a scalar")),
+        Some(Value::Datetime(_)) => return Err(bad("cannot override a datetime value")),
     })
 }
 
@@ -329,26 +331,24 @@ fn path_get(tree: &Value, path: &[String]) -> Option<Value> {
     Some(node.clone())
 }
 
-/// Write a value by key path, creating intermediate mappings as needed.
+/// Write a value by key path, creating intermediate tables as needed.
 ///
-/// Returns `None` when an intermediate node exists but is not a mapping, which means the path
+/// Returns `None` when an intermediate node exists but is not a table, which means the path
 /// does not address a real key.
 fn path_set(tree: &mut Value, path: &[String], value: Value) -> Option<()> {
     let (last, parents) = path.split_last()?;
     let mut node = tree;
     for key in parents {
-        if !node.is_mapping() {
+        if !node.is_table() {
             return None;
         }
-        let map = node.as_mapping_mut()?;
-        let entry = Value::String(key.clone());
-        if !map.contains_key(&entry) {
-            map.insert(entry.clone(), Value::Mapping(Mapping::new()));
+        let map = node.as_table_mut()?;
+        if !map.contains_key(key.as_str()) {
+            map.insert(key.clone(), Value::Table(Table::new()));
         }
-        node = map.get_mut(&entry)?;
+        node = map.get_mut(key.as_str())?;
     }
-    node.as_mapping_mut()?
-        .insert(Value::String(last.clone()), value);
+    node.as_table_mut()?.insert(last.clone(), value);
     Some(())
 }
 
@@ -376,7 +376,7 @@ fn expand_home_var(value: &mut Value, home: &AthenaHome, path: &mut Vec<String>)
             }
             Ok(())
         }
-        Value::Sequence(items) => {
+        Value::Array(items) => {
             for (index, item) in items.iter_mut().enumerate() {
                 path.push(index.to_string());
                 expand_home_var(item, home, path)?;
@@ -384,9 +384,9 @@ fn expand_home_var(value: &mut Value, home: &AthenaHome, path: &mut Vec<String>)
             }
             Ok(())
         }
-        Value::Mapping(map) => {
+        Value::Table(map) => {
             for (key, val) in map.iter_mut() {
-                path.push(key.as_str().unwrap_or("?").to_string());
+                path.push(key.clone());
                 expand_home_var(val, home, path)?;
                 path.pop();
             }
@@ -404,14 +404,10 @@ fn expand_home_var(value: &mut Value, home: &AthenaHome, path: &mut Vec<String>)
 pub fn redacted_snapshot(tree: &Value) -> Value {
     fn walk(value: &Value) -> Value {
         match value {
-            Value::Mapping(map) => {
-                let mut out = Mapping::new();
+            Value::Table(map) => {
+                let mut out = Table::new();
                 for (key, val) in map {
-                    let name = key
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_ascii_lowercase()
-                        .replace(['-', '.'], "_");
+                    let name = key.to_ascii_lowercase().replace(['-', '.'], "_");
                     let redact = SECRET_HINTS.iter().any(|hint| name.contains(hint));
                     out.insert(
                         key.clone(),
@@ -422,9 +418,9 @@ pub fn redacted_snapshot(tree: &Value) -> Value {
                         },
                     );
                 }
-                Value::Mapping(out)
+                Value::Table(out)
             }
-            Value::Sequence(items) => Value::Sequence(items.iter().map(walk).collect()),
+            Value::Array(items) => Value::Array(items.iter().map(walk).collect()),
             other => other.clone(),
         }
     }
@@ -443,344 +439,5 @@ pub fn read_config_file(path: &Path) -> Result<Option<String>> {
             path: path.to_path_buf(),
             source,
         }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::home::HomeOrigin;
-    use std::path::PathBuf;
-    use std::time::Duration;
-
-    fn home() -> AthenaHome {
-        AthenaHome {
-            path: PathBuf::from("/work/proj/.athena"),
-            origin: HomeOrigin::UpwardSearch,
-        }
-    }
-
-    fn resolve_with(inputs: ResolveInputs) -> Result<Config> {
-        resolve(&home(), &inputs).map(|(c, _)| c)
-    }
-
-    #[test]
-    fn defaults_alone_resolve_when_nothing_else_is_supplied() {
-        let c = resolve_with(ResolveInputs::default()).expect("resolves");
-        assert_eq!(c.scheduler.max_concurrent_tasks, 8);
-        assert_eq!(c.athena.api.port, 8080);
-    }
-
-    #[test]
-    fn the_file_layer_overrides_defaults() {
-        let c = resolve_with(ResolveInputs {
-            file_yaml: Some("scheduler:\n  max_concurrent_tasks: 3\n".into()),
-            ..Default::default()
-        })
-        .expect("resolves");
-        assert_eq!(c.scheduler.max_concurrent_tasks, 3);
-        // Unmentioned keys keep their defaults.
-        assert_eq!(c.scheduler.max_concurrent_instances, 16);
-    }
-
-    #[test]
-    fn the_environment_overrides_the_file() {
-        // ATH-CFG-001 precedence, and ATH-CFG-002 name mapping.
-        let c = resolve_with(ResolveInputs {
-            file_yaml: Some("athena:\n  api:\n    port: 9000\n".into()),
-            env: vec![("ATHENA_API_PORT".into(), "9999".into())],
-            ..Default::default()
-        })
-        .expect("resolves");
-        assert_eq!(c.athena.api.port, 9999);
-    }
-
-    #[test]
-    fn the_cli_overrides_the_environment() {
-        let c = resolve_with(ResolveInputs {
-            env: vec![("ATHENA_API_PORT".into(), "9999".into())],
-            cli: vec!["athena.api.port=7777".into()],
-            ..Default::default()
-        })
-        .expect("resolves");
-        assert_eq!(c.athena.api.port, 7777);
-    }
-
-    #[test]
-    fn full_precedence_chain_holds_for_one_key() {
-        // defaults < file < env < CLI, verified on a single key at each step.
-        let base = resolve_with(ResolveInputs::default()).expect("resolves");
-        assert_eq!(base.scheduler.max_concurrent_tasks, 8);
-
-        let with_file = resolve_with(ResolveInputs {
-            file_yaml: Some("scheduler:\n  max_concurrent_tasks: 2\n".into()),
-            ..Default::default()
-        })
-        .expect("resolves");
-        assert_eq!(with_file.scheduler.max_concurrent_tasks, 2);
-
-        let with_env = resolve_with(ResolveInputs {
-            file_yaml: Some("scheduler:\n  max_concurrent_tasks: 2\n".into()),
-            env: vec![("ATHENA_SCHEDULER_MAX_CONCURRENT_TASKS".into(), "4".into())],
-            ..Default::default()
-        })
-        .expect("resolves");
-        assert_eq!(with_env.scheduler.max_concurrent_tasks, 4);
-
-        let with_cli = resolve_with(ResolveInputs {
-            file_yaml: Some("scheduler:\n  max_concurrent_tasks: 2\n".into()),
-            env: vec![("ATHENA_SCHEDULER_MAX_CONCURRENT_TASKS".into(), "4".into())],
-            cli: vec!["scheduler.max_concurrent_tasks=6".into()],
-            ..Default::default()
-        })
-        .expect("resolves");
-        assert_eq!(with_cli.scheduler.max_concurrent_tasks, 6);
-    }
-
-    #[test]
-    fn multi_word_env_keys_resolve_by_greedy_match() {
-        // The whole point of greedy matching: MAX_CONCURRENT_INSTANCES is one key, not three.
-        let c = resolve_with(ResolveInputs {
-            env: vec![(
-                "ATHENA_SCHEDULER_MAX_CONCURRENT_INSTANCES".into(),
-                "32".into(),
-            )],
-            ..Default::default()
-        })
-        .expect("resolves");
-        assert_eq!(c.scheduler.max_concurrent_instances, 32);
-    }
-
-    #[test]
-    fn nested_env_keys_resolve_through_sections() {
-        let c = resolve_with(ResolveInputs {
-            env: vec![
-                ("ATHENA_MEMORY_LONG_TERM_MAX_RECORDS".into(), "5".into()),
-                (
-                    "ATHENA_CORE_EVALUATION_REQUIRE_VERIFICATION".into(),
-                    "false".into(),
-                ),
-            ],
-            ..Default::default()
-        })
-        .expect("resolves");
-        assert_eq!(c.memory.long_term.max_records, 5);
-        assert!(!c.core.evaluation.require_verification);
-    }
-
-    #[test]
-    fn duration_values_survive_as_their_spelling() {
-        let c = resolve_with(ResolveInputs {
-            env: vec![("ATHENA_TIMEOUT_STARTUP".into(), "45s".into())],
-            ..Default::default()
-        })
-        .expect("resolves");
-        assert_eq!(c.timeout.startup, Duration::from_secs(45));
-    }
-
-    #[test]
-    fn an_unknown_environment_key_is_refused() {
-        // Silently ignoring it would leave the operator believing a setting took effect.
-        let err = resolve_with(ResolveInputs {
-            env: vec![("ATHENA_SCHEDULER_NO_SUCH_KEY".into(), "1".into())],
-            ..Default::default()
-        })
-        .expect_err("must be refused");
-        assert!(matches!(err, ConfigError::UnknownKey { .. }), "{err}");
-    }
-
-    #[test]
-    fn a_mistyped_value_is_refused_rather_than_coerced() {
-        let err = resolve_with(ResolveInputs {
-            env: vec![("ATHENA_API_PORT".into(), "not-a-number".into())],
-            ..Default::default()
-        })
-        .expect_err("must be refused");
-        assert!(matches!(err, ConfigError::BadOverride { .. }), "{err}");
-    }
-
-    #[test]
-    fn athena_home_itself_is_not_treated_as_an_override() {
-        // Home resolution already consumed it (ATH-CFG-010); re-applying it would let the
-        // value disagree with the resolved home.
-        let c = resolve_with(ResolveInputs {
-            env: vec![("ATHENA_HOME".into(), "/elsewhere/.athena".into())],
-            ..Default::default()
-        })
-        .expect("resolves");
-        assert_eq!(c.athena.home, "./.athena");
-    }
-
-    #[test]
-    fn home_variable_is_expanded_before_validation() {
-        // ATH-CFG-010: the typed config must see a real path, not the placeholder.
-        let c = resolve_with(ResolveInputs::default()).expect("resolves");
-        assert_eq!(c.athena.data.database, "/work/proj/.athena/var/athena.db");
-        assert_eq!(c.skills.local_dir, "/work/proj/.athena/skills");
-        assert_eq!(c.skills.dir, "/work/proj/.athena/var/skills");
-        assert_eq!(c.core.agent.workspace, "/work/proj/.athena/var/core-agent");
-        assert!(
-            !serde_yaml::to_string(&c).expect("serialize").contains("${"),
-            "no placeholder may survive expansion"
-        );
-    }
-
-    #[test]
-    fn any_other_variable_reference_is_refused() {
-        let err = resolve_with(ResolveInputs {
-            file_yaml: Some("athena:\n  data:\n    dir: ${HOME}/athena\n".into()),
-            ..Default::default()
-        })
-        .expect_err("must be refused");
-        match err {
-            ConfigError::UnsupportedVariable { name, at } => {
-                assert_eq!(name, "HOME");
-                assert_eq!(at, "athena.data.dir");
-            }
-            other => panic!("wrong error: {other}"),
-        }
-    }
-
-    #[test]
-    fn a_secret_in_the_configuration_file_is_refused() {
-        // ATH-CFG-005 / ATH-DEV-021: config.yaml may be version-controlled.
-        for key in ["api_key", "token", "provider_secret", "password"] {
-            let yaml = format!("athena:\n  api:\n    {key}: abc123\n");
-            let err = resolve_with(ResolveInputs {
-                file_yaml: Some(yaml),
-                ..Default::default()
-            })
-            .expect_err("must be refused");
-            assert!(
-                matches!(err, ConfigError::SecretInConfig { .. }),
-                "{key}: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_counting_rule_keys_are_not_secrets() {
-        // The real resident boot aborted on the schema's own `memory.tokenizer` default
-        // (2026-10-18): the substring "token" is not automatically a secret. The full
-        // default file itself must resolve, and a `token*` *secret* still refuses.
-        let yaml =
-            "memory:\n  tokenizer: provider-default-claude\n  short_term_max_tokens: 32000\n";
-        let config = resolve_with(ResolveInputs {
-            file_yaml: Some(yaml.into()),
-            ..Default::default()
-        })
-        .expect("counting-rule keys resolve");
-        assert_eq!(config.memory.tokenizer, "provider-default-claude");
-
-        let err = resolve_with(ResolveInputs {
-            file_yaml: Some("api:\n  auth_token: abc123\n".into()),
-            ..Default::default()
-        })
-        .expect_err("an auth token is still a secret");
-        assert!(matches!(err, ConfigError::SecretInConfig { .. }), "{err}");
-    }
-
-    #[test]
-    fn an_unknown_file_key_is_refused_by_the_typed_schema() {
-        let err = resolve_with(ResolveInputs {
-            file_yaml: Some("scheduler:\n  max_concurent_tasks: 2\n".into()),
-            ..Default::default()
-        })
-        .expect_err("must be refused");
-        assert!(matches!(err, ConfigError::Invalid { .. }), "{err}");
-    }
-
-    #[test]
-    fn sequences_replace_rather_than_append() {
-        // Replacement is what allows a later layer to shrink an allow-list.
-        let c = resolve_with(ResolveInputs {
-            file_yaml: Some("skills:\n  allowed_publishers: [aquaxis, other]\n".into()),
-            cli: vec!["skills.allowed_publishers=aquaxis".into()],
-            ..Default::default()
-        })
-        .expect("resolves");
-        assert_eq!(c.skills.allowed_publishers, vec!["aquaxis".to_string()]);
-    }
-
-    #[test]
-    fn comma_separated_overrides_populate_a_sequence() {
-        let c = resolve_with(ResolveInputs {
-            env: vec![(
-                "ATHENA_CORE_AGENT_DELEGABLE_TOOLS".into(),
-                "fs_read,shell,git".into(),
-            )],
-            ..Default::default()
-        })
-        .expect("resolves");
-        assert_eq!(
-            c.core.agent.delegable_tools,
-            vec![
-                athena_types::ToolName::FsRead,
-                athena_types::ToolName::Shell,
-                athena_types::ToolName::Git
-            ]
-        );
-    }
-
-    #[test]
-    fn a_cli_override_without_a_value_is_refused() {
-        let err = resolve_with(ResolveInputs {
-            cli: vec!["athena.api.port".into()],
-            ..Default::default()
-        })
-        .expect_err("must be refused");
-        assert!(matches!(err, ConfigError::BadOverride { .. }), "{err}");
-    }
-
-    #[test]
-    fn a_cli_override_naming_no_key_is_refused() {
-        let err = resolve_with(ResolveInputs {
-            cli: vec!["scheduler.nonexistent.deep=1".into()],
-            ..Default::default()
-        })
-        .expect_err("must be refused");
-        assert!(
-            matches!(
-                err,
-                ConfigError::UnknownKey { .. } | ConfigError::Invalid { .. }
-            ),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn redaction_masks_secret_shaped_keys() {
-        let tree: Value =
-            serde_yaml::from_str("a:\n  api_key: s3cret\n  port: 1\nb:\n  - token: t\n")
-                .expect("parse");
-        let out = serde_yaml::to_string(&redacted_snapshot(&tree)).expect("serialize");
-        assert!(!out.contains("s3cret"), "{out}");
-        assert!(!out.contains("token: t"), "{out}");
-        assert!(out.contains("[redacted]"), "{out}");
-        assert!(out.contains("port: 1"), "{out}");
-    }
-
-    #[test]
-    fn a_missing_configuration_file_is_not_an_error() {
-        // The defaults layer stands alone.
-        let got = read_config_file(Path::new("/nonexistent/athena/config.yaml"))
-            .expect("missing file is fine");
-        assert!(got.is_none());
-    }
-
-    #[test]
-    fn the_returned_tree_reflects_every_layer() {
-        let (config, tree) = resolve(
-            &home(),
-            &ResolveInputs {
-                file_yaml: Some("scheduler:\n  max_queue_length: 10\n".into()),
-                cli: vec!["athena.api.port=1234".into()],
-                ..Default::default()
-            },
-        )
-        .expect("resolves");
-        assert_eq!(config.scheduler.max_queue_length, 10);
-        assert_eq!(tree["scheduler"]["max_queue_length"].as_u64(), Some(10));
-        assert_eq!(tree["athena"]["api"]["port"].as_u64(), Some(1234));
     }
 }

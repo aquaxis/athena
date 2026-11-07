@@ -1,6 +1,6 @@
 //! Configuration schema (spec section 28.1).
 //!
-//! Every section of the specification's `config.yaml` is represented. `deny_unknown_fields` is
+//! Every section of the specification's `config.toml` is represented. `deny_unknown_fields` is
 //! set throughout: a mistyped key must abort startup rather than silently leave a default in
 //! place (ATH-CFG-003).
 //!
@@ -921,18 +921,19 @@ mod tests {
 
     #[test]
     fn durations_parse_from_the_specification_spellings() {
-        let yaml = r"
-timeout:
-  startup: 30s
-  execution: 30m
-  message_reply: 45m
-  approval: 1h
-  stop: 60s
-  clarification: 24h
-messaging:
-  dedup_retention: 7d
-";
-        let c: Config = serde_yaml::from_str(yaml).expect("parse");
+        let toml_text = r#"
+[timeout]
+startup = "30s"
+execution = "30m"
+message_reply = "45m"
+approval = "1h"
+stop = "60s"
+clarification = "24h"
+
+[messaging]
+dedup_retention = "7d"
+"#;
+        let c: Config = toml::from_str(toml_text).expect("parse");
         assert_eq!(c.timeout.startup, secs(30));
         assert_eq!(c.timeout.execution, secs(1800));
         assert_eq!(c.timeout.message_reply, secs(2700));
@@ -944,7 +945,7 @@ messaging:
     #[test]
     fn an_unknown_key_is_rejected_rather_than_ignored() {
         // ATH-CFG-003: a typo must abort startup, not silently leave a default in place.
-        let err = serde_yaml::from_str::<Config>("scheduler:\n  max_concurent_tasks: 4\n")
+        let err = toml::from_str::<Config>("[scheduler]\nmax_concurent_tasks = 4\n")
             .expect_err("typo must be refused");
         assert!(
             err.to_string().contains("max_concurent_tasks")
@@ -955,7 +956,7 @@ messaging:
 
     #[test]
     fn an_unknown_top_level_section_is_rejected() {
-        let err = serde_yaml::from_str::<Config>("scheduling:\n  foo: 1\n")
+        let err = toml::from_str::<Config>("[scheduling]\nfoo = 1\n")
             .expect_err("unknown section must be refused");
         assert!(err.to_string().contains("unknown field"), "{err}");
     }
@@ -964,8 +965,7 @@ messaging:
     fn a_partial_file_keeps_defaults_for_unmentioned_keys() {
         // The defaults layer (ATH-CFG-001) still applies to keys the file omits; what must not
         // happen is defaulting around an *invalid* value.
-        let c: Config =
-            serde_yaml::from_str("scheduler:\n  max_concurrent_tasks: 3\n").expect("parse");
+        let c: Config = toml::from_str("[scheduler]\nmax_concurrent_tasks = 3\n").expect("parse");
         assert_eq!(c.scheduler.max_concurrent_tasks, 3);
         assert_eq!(c.scheduler.max_concurrent_instances, 16);
         assert_eq!(c.timeout.startup, secs(30));
@@ -974,30 +974,31 @@ messaging:
     #[test]
     fn runtime_entries_are_an_open_map_so_adding_a_runtime_needs_no_core_change() {
         // ATH-RT-008.
-        let yaml = r#"
-runtime:
-  default: agent-cli
-  agent-cli:
-    max_instances: 16
-    command: agent-cli
-  docker:
-    max_instances: 4
-    command: docker
+        let toml_text = r#"
+[runtime]
+default = "agent-cli"
+
+[runtime.agent-cli]
+max_instances = 16
+command = "agent-cli"
+
+[runtime.docker]
+max_instances = 4
+command = "docker"
 "#;
-        let c: Config = serde_yaml::from_str(yaml).expect("parse");
+        let c: Config = toml::from_str(toml_text).expect("parse");
         assert_eq!(c.runtime.entries.len(), 2);
         assert_eq!(c.runtime.entries["docker"].max_instances, 4);
     }
 
     #[test]
     fn per_runtime_timeout_overrides_are_optional() {
-        let yaml = r"
-runtime:
-  agent-cli:
-    startup_timeout: 45s
-    execution_timeout: 20m
-";
-        let c: Config = serde_yaml::from_str(yaml).expect("parse");
+        let toml_text = r#"
+[runtime.agent-cli]
+startup_timeout = "45s"
+execution_timeout = "20m"
+"#;
+        let c: Config = toml::from_str(toml_text).expect("parse");
         let entry = &c.runtime.entries["agent-cli"];
         assert_eq!(entry.startup_timeout, Some(secs(45)));
         assert_eq!(entry.execution_timeout, Some(secs(1200)));
@@ -1008,24 +1009,43 @@ runtime:
     }
 
     #[test]
-    fn config_round_trips_through_yaml() {
+    fn config_round_trips_through_toml() {
         let original = Config::default();
-        let yaml = serde_yaml::to_string(&original).expect("serialize");
-        let back: Config = serde_yaml::from_str(&yaml).expect("deserialize");
+        let toml_text = toml::to_string(&original).expect("serialize");
+        let back: Config = toml::from_str(&toml_text).expect("deserialize");
         assert_eq!(back, original);
     }
 
     #[test]
     fn on_exhausted_admits_only_escalation() {
         // ATH-CORE-030: Core Host must not take over deciding.
-        assert!(serde_yaml::from_str::<OnExhausted>("escalate").is_ok());
-        assert!(serde_yaml::from_str::<OnExhausted>("continue").is_err());
+        assert_eq!(
+            toml::from_str::<Config>("[core.agent.restart]\non_exhausted = \"escalate\"\n")
+                .map(|c| c.core.agent.restart.on_exhausted)
+                .expect("escalate parses"),
+            OnExhausted::Escalate
+        );
+        assert!(
+            toml::from_str::<Config>("[core.agent.restart]\non_exhausted = \"continue\"\n")
+                .is_err(),
+            "continue must be refused (ATH-CORE-030)"
+        );
     }
 
     #[test]
     fn approval_timeout_admits_only_rejection() {
         // ATH-HITL-005: silence is never consent.
-        assert!(serde_yaml::from_str::<OnApprovalTimeout>("reject").is_ok());
-        assert!(serde_yaml::from_str::<OnApprovalTimeout>("approve").is_err());
+        assert_eq!(
+            toml::from_str::<toml::Value>("value = \"reject\"")
+                .and_then(|v| v["value"].clone().try_into::<OnApprovalTimeout>())
+                .expect("reject parses"),
+            OnApprovalTimeout::Reject
+        );
+        assert!(
+            toml::from_str::<toml::Value>("value = \"approve\"")
+                .and_then(|v| v["value"].clone().try_into::<OnApprovalTimeout>())
+                .is_err(),
+            "approve must be refused (ATH-HITL-005)"
+        );
     }
 }

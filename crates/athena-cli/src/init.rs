@@ -3,7 +3,7 @@
 //! What init does, in the specification's terms:
 //!
 //! 1. Treats the current directory as the project root and generates `.athena/` with
-//!    `config.yaml` (the section-28 defaults), `agents/`, `personas/`, `skills/`, `var/`, and
+//!    `config.toml` (the section-28 defaults), `agents/`, `personas/`, `skills/`, `var/`, and
 //!    the template origin `<ATHENA_HOME>/var/agent-cli-template/` (`config.toml` and
 //!    `commands/`, ATH-ACLI-013). Only *missing* elements are added to an existing tree; an
 //!    existing one is never overwritten (ATH-AIPRJ-006's policy).
@@ -129,8 +129,8 @@ pub fn run_init(project_root: &Path) -> Result<InitReport, InitFault> {
         ensure_dir(&dir, &mut report)?;
     }
     ensure_file(
-        &home.join("config.yaml"),
-        template::DEFAULT_CONFIG_YAML,
+        &home.join("config.toml"),
+        template::DEFAULT_CONFIG_TOML,
         &mut report,
     )?;
 

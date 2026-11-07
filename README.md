@@ -100,7 +100,7 @@ ATHENA is built per project: its files live inside the project directory you wan
 ```sh
 cd ~/projects/my-project
 
-# Generates .athena/ (config.yaml, agents/, personas/, skills/, var/)
+# Generates .athena/ (config.toml, agents/, personas/, skills/, var/)
 # and expands aiprj (.aiprj/, .agent-cli/); initialize the project once
 athena init
 
@@ -108,7 +108,7 @@ athena init
 # root: store integrity, Core Agent residency, supervision, safe shutdown
 athena-api
 
-# Edit .athena/config.yaml and set the three operator-supplied values:
+# Edit .athena/config.toml and set the three operator-supplied values:
 #   - core.agent.provider        (no default — ATH-AGENT-008)
 #   - core.agent.model           (no default — ATH-AGENT-008)
 #   - core.agent.delegable_tools (the permission ceiling must be explicit — ATH-SEC-024)
@@ -119,18 +119,18 @@ athena-api
 # Example core.agent values (an EXAMPLE only — nothing is pre-configured; pick your own
 # provider, model, and ceiling):
 
-```yaml
-core:
-  agent:
-    provider: "ollama"                                # example: the runtime's provider decision
-    model: "glm-5.3-flash:cloud"                      # example: the provider's model
-    allowed_tools: ["fs_read", "fs_write", "send_to"] # minimal by default (ATH-SEC-025)
-    delegable_tools:
-      - "fs_read"
-      - "fs_write"
-      - "shell"     # medium-risk band — the rm -rf line still asks for approval
-      - "git"
-      - "send_to"
+```toml
+[core.agent]
+provider = "ollama"                          # example: the runtime's provider decision
+model = "glm-5.3-flash:cloud"                # example: the provider's model
+allowed_tools = ["fs_read", "fs_write", "send_to"]  # minimal by default (ATH-SEC-025)
+delegable_tools = [
+  "fs_read",
+  "fs_write",
+  "shell",   # medium-risk band — the rm -rf line still asks for approval
+  "git",
+  "send_to",
+]
 ```
 ```
 
@@ -166,7 +166,7 @@ it fetches the published repository, builds it in release mode, and re-installs
 the `athena` and `athena-api` binaries onto PATH. When a `.athena/` project resolves
 from the invocation directory, it additionally updates **only** the project's
 `personas/` and `skills/` from the repository's shipped defaults — additively, never
-overwriting a definition you have modified (`config.yaml`, `agents/`, and `var/` are
+overwriting a definition you have modified (`config.toml`, `agents/`, and `var/` are
 never touched). In a directory without a `.athena/`, only the tool refresh runs.
 
 Implementation-status note: the CLI verbs currently compose and print the request they would

@@ -58,7 +58,7 @@ echo
 echo "ATHENA installed: athena, athena-api"
 echo "Next steps:"
 echo "  1. cd to your project and run:          athena init"
-echo "  2. edit .athena/config.yaml and set:    core.agent.provider,"
+echo "  2. edit .athena/config.toml and set:    core.agent.provider,"
 echo "                                          core.agent.model,"
 echo "                                          core.agent.delegable_tools"
 echo "     (secrets come from the environment or a secret manager, never the file)"

@@ -16,7 +16,7 @@
 //!    directory by the upward search, `ATH-CFG-010`): refresh **only** the project's
 //!    `personas/` and `skills/` from the *published* repository's shipped definitions (the
 //!    freshly fetched source tree of the tool refresh — the published state, not this binary's
-//!    build-time snapshot), never `config.yaml`, `agents/`, or `var/` (`ATH-OPS-02`).
+//!    build-time snapshot), never `config.toml`, `agents/`, or `var/` (`ATH-OPS-02`).
 //!
 //! **The refresh discipline is additive-only** (D-21): a definition file the project does not
 //! have is added; an already-present file is left untouched unless it is provably in shipped
@@ -28,7 +28,7 @@
 //! manifest (pre-manifest init) only gains missing files, and its present files stay
 //! operator-owned until an update run can prove them shipped. The manifest lives under `var/`
 //! because ATHENA's run-time write authority is exactly that directory (`ATH-OPS-002`);
-//! `config.yaml`, `agents/`, `personas/`, and `skills/` receive writes only through an
+//! `config.toml`, `agents/`, `personas/`, and `skills/` receive writes only through an
 //! install/update face.
 //!
 //! Every project-side publication is **atomic and durably proven** (design D-25): a
