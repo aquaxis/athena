@@ -24,17 +24,37 @@ fn the_build_plan_and_the_script_agree() {
             other => panic!("unplanned command face: {other}"),
         }
     }
-    // The artifacts: the wasm module at the target's release area.
-    for artifact in plan.artifacts {
-        let text = artifact.display().to_string();
+    // The artifacts: the module is named after the binary (`athena-studio`, hyphenated
+    // — the `wasm::MODULE_FILE` face); the glue script rides its §25 name
+    // (`athena_studio.js`, underscored). The served URL face (`/athena_studio.wasm`)
+    // is a separate surface from the artifact path.
+    let artifacts: Vec<String> = plan
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.display().to_string())
+        .collect();
+    assert!(
+        artifacts
+            .iter()
+            .any(|text| text.ends_with("/athena-studio.wasm")),
+        "the wasm artifact must ride the toolchain's output name: {artifacts:?}"
+    );
+    assert!(
+        artifacts
+            .iter()
+            .any(|text| text.ends_with("/athena_studio.js")),
+        "the glue artifact must ride its §25 name: {artifacts:?}"
+    );
+    for text in &artifacts {
+        let file = text.rsplit('/').next().expect("the file name");
         assert!(
-            text.contains("athena_studio.wasm") || text.contains("athena_studio.js"),
-            "{text}"
+            file == athena_studio::wasm::MODULE_FILE || file == "athena_studio.js",
+            "an artifact outside the pipeline's two faces: {text}"
         );
     }
     // The lib's wasm path helper agrees.
     assert_eq!(
         athena_studio::wasm::module_path(std::path::Path::new("/root")),
-        std::path::PathBuf::from("/root/target/wasm32-unknown-unknown/release/athena_studio.wasm")
+        std::path::PathBuf::from("/root/target/wasm32-unknown-unknown/release/athena-studio.wasm")
     );
 }

@@ -30,6 +30,11 @@ impl StudioApp {
 
     /// The named asset's body (the static set the server emits).
     ///
+    /// The wasm module and the glue script ride the build pipeline's outputs
+    /// (`target/wasm32-unknown-unknown/release/…`); while the pipeline has not run in a
+    /// checkout, the placeholder answers in their place (the placeholder is the honest
+    /// `not built yet` face — never a fabricated module).
+    ///
     /// # Errors
     /// An unknown asset name.
     pub fn asset(&self, name: Asset) -> Result<AssetBody, String> {
@@ -40,7 +45,14 @@ impl StudioApp {
             },
             Asset::AppWasm => AssetBody {
                 content_type: "application/wasm",
-                bytes: app_wasm_placeholder(),
+                bytes: wasm_artifact().unwrap_or_else(app_wasm_placeholder),
+            },
+            Asset::AppGlue => AssetBody {
+                content_type: "text/javascript; charset=utf-8",
+                bytes: built_or_placeholder(
+                    "athena_studio.js",
+                    include_bytes!("../assets/athena_studio.js").to_vec(),
+                ),
             },
         })
     }
@@ -53,6 +65,8 @@ pub enum Asset {
     IndexHtml,
     /// The wasm module.
     AppWasm,
+    /// The browser glue the page loads (the DOM / fetch / SSE concern owner).
+    AppGlue,
 }
 
 /// One asset's body.
@@ -70,11 +84,39 @@ fn app_wasm_placeholder() -> Vec<u8> {
     b"athena-studio wasm module (built by the Rust -> wasm pipeline)".to_vec()
 }
 
+fn wasm_artifact() -> Option<Vec<u8>> {
+    // The URL face is `/athena_studio.wasm` (the §25 name, underscored); the artifact
+    // file the wasm toolchain emits carries the binary's own name (`athena-studio`,
+    // hyphenated, spec §4.3.2). The mapping is explicit here — the URL stays stable and
+    // the pipeline's output is served under it once `scripts/build-studio.sh` has run.
+    std::fs::read(wasm::module_path(&workspace_root()?)).ok()
+}
+
+/// The workspace root the artifact paths resolve from: the store of the pipeline's
+/// outputs is `target/`, anchored at the current directory the server booted in (the
+/// pipeline runs there too, `scripts/build-studio.sh`).
+fn workspace_root() -> Option<std::path::PathBuf> {
+    std::env::current_dir().ok()
+}
+
+/// The pipeline's output when present, otherwise the placeholder. The outputs live at
+/// `target/wasm32-unknown-unknown/release/<name>` in a checkout the pipeline has run in;
+/// the runner is `scripts/build-studio.sh` (P7-01), and `BuildPlan::phase7` is the
+/// command face CI asserts against.
+fn built_or_placeholder(name: &str, placeholder: Vec<u8>) -> Vec<u8> {
+    std::env::current_dir()
+        .ok()
+        .map(|cwd| cwd.join("target/wasm32-unknown-unknown/release").join(name))
+        .and_then(|path| std::fs::read(path).ok())
+        .unwrap_or(placeholder)
+}
+
 fn index_html(api_root: &str) -> String {
     format!(
         "<!doctype html><title>ATHENA Studio</title>\n\
-         <script type=\"module\">\n  const API_ROOT = \"{api_root}\";\n  \
-         import init from './athena_studio.js';\n  init().then(() => {{}});\n</script>\n\
+         <script>window.ATHENA_STUDIO_API_ROOT = \"{api_root}\";</script>\n\
+         <script type=\"module\" src=\"/athena_studio.js\"></script>\n\
+         <nav id=\"tabs\"></nav>\n\
          <div id=\"app-root\"></div>\n"
     )
 }
@@ -103,7 +145,7 @@ impl BuildPlan {
                 "cargo build -p athena-studio --target wasm32-unknown-unknown --release",
             ],
             artifacts: vec![
-                PathBuf::from("target/wasm32-unknown-unknown/release/athena_studio.wasm"),
+                PathBuf::from("target/wasm32-unknown-unknown/release/athena-studio.wasm"),
                 PathBuf::from("target/wasm32-unknown-unknown/release/athena_studio.js"),
             ],
         }
@@ -121,6 +163,7 @@ pub fn answer(app: &StudioApp, path: &str) -> Option<(&'static str, Vec<u8>)> {
     let asset = match path {
         "/" | "/index.html" => Asset::IndexHtml,
         "/athena_studio.wasm" => Asset::AppWasm,
+        "/athena_studio.js" => Asset::AppGlue,
         _ => return None,
     };
     let body = app.asset(asset).ok()?;
@@ -162,10 +205,17 @@ pub mod client;
 pub mod detail_views;
 pub mod live;
 pub mod views;
+pub mod wasm_exports;
 pub mod wasm {
+    /// The wasm module artifact's file name — the toolchain names it after the binary
+    /// (`athena-studio`, hyphenated, spec §4.3.2), unlike the served URL's face.
+    pub const MODULE_FILE: &str = "athena-studio.wasm";
+
     /// The wasm module artifact path (relative to the workspace root).
     #[must_use]
     pub fn module_path(workspace_root: &std::path::Path) -> std::path::PathBuf {
-        workspace_root.join("target/wasm32-unknown-unknown/release/athena_studio.wasm")
+        workspace_root
+            .join("target/wasm32-unknown-unknown/release")
+            .join(MODULE_FILE)
     }
 }

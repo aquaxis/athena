@@ -38,6 +38,8 @@ pub mod standing;
 pub mod tasks;
 
 #[cfg(test)]
+mod cors_tests;
+#[cfg(test)]
 mod routes_tests;
 
 pub use auth::{ApiCaller, AuthMode, TokenRegistry};

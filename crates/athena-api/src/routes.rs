@@ -147,6 +147,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(endpoint_layer(&state, Role::Viewer, viewer))
         .merge(endpoint_layer(&state, Role::Operator, operator))
         .merge(endpoint_layer(&state, Role::Admin, admin))
+        .layer(axum::middleware::from_fn(cors_layer))
         .with_state(state.clone())
 }
 
@@ -217,6 +218,78 @@ async fn healthz() -> impl IntoResponse {
 
 fn forbidden(required: Role, correlation_id: &str) -> crate::errors::ApiError {
     crate::errors::ApiError::role_insufficient(required.as_str(), correlation_id)
+}
+
+/// The CORS preface for one response (X-30): the Studio's page (origin
+/// `http://127.0.0.1:5173`, spec §4.3.2) fetches the API on another port, so a browser
+/// needs the cross-origin permission read of its screen. The layer is confined to the
+/// same loopback rule the API binds under (`ATH-OPS-004`, `ATH-CFG-006`): only a
+/// `127.0.0.1` / `localhost` origin is answered, everything else is left un-permitted.
+///
+/// Non-browser callers (the CLI, the token verb) stay unaffected: their requests carry
+/// no `Origin` header and the preface simply does not apply.
+fn cors_preface(origin: Option<&str>, request_method: &str) -> Vec<(&'static str, String)> {
+    let Some(origin) = origin else {
+        return Vec::new();
+    };
+    let permitted = origin == "http://127.0.0.1:5173"
+        || origin == "http://localhost:5173"
+        || origin == "http://127.0.0.1:5174";
+    if !permitted {
+        return Vec::new();
+    }
+    let mut headers = vec![
+        ("access-control-allow-origin", origin.to_string()),
+        (
+            "access-control-allow-methods",
+            "GET, POST, DELETE, OPTIONS".to_string(),
+        ),
+        (
+            "access-control-allow-headers",
+            "authorization, content-type, idempotency-key".to_string(),
+        ),
+        ("vary", "origin".to_string()),
+    ];
+    if request_method.eq_ignore_ascii_case("OPTIONS") {
+        headers.push(("access-control-max-age", "600".to_string()));
+    }
+    headers
+}
+
+/// The CORS middleware (X-30): stamps the preface on every answer and answers the
+/// browser's preflight (`OPTIONS`) itself — 204 with the allow headers, no handler run.
+/// Registered outermost so `healthz` and every role-gated route answer uniformly, and
+/// so a preflight never needs a token (the browser asks before the credential exists).
+async fn cors_layer(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::Response as AxumResponse;
+    let origin = request
+        .headers()
+        .get(axum::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let method = request.method().as_str().to_string();
+    if method.eq_ignore_ascii_case("OPTIONS") && origin.is_some() {
+        let mut response = AxumResponse::builder()
+            .status(axum::http::StatusCode::NO_CONTENT)
+            .body(axum::body::Body::empty())
+            .expect("a bodyless 204 builds");
+        for (name, value) in cors_preface(origin.as_deref(), &method) {
+            if let Ok(parsed) = axum::http::HeaderValue::from_str(&value) {
+                response.headers_mut().insert(name, parsed);
+            }
+        }
+        return response;
+    }
+    let mut response = next.run(request).await;
+    for (name, value) in cors_preface(origin.as_deref(), &method) {
+        if let Ok(parsed) = axum::http::HeaderValue::from_str(&value) {
+            response.headers_mut().insert(name, parsed);
+        }
+    }
+    response
 }
 
 /// The status counters (X-29; spec §22): the daemon's standing, read from the store.

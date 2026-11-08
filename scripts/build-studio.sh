@@ -16,5 +16,5 @@ fi
 cargo build -p athena-studio --target "$target" --release
 
 out="target/$target/release"
-echo "build-studio: artifacts at $out/athena_studio.wasm and $out/athena_studio.js"
+echo "build-studio: artifacts at $out/athena-studio.wasm and $out/athena_studio.js"
 ls -l "$out" | head -20

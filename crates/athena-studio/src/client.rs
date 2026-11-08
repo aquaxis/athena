@@ -39,7 +39,7 @@ pub enum Response {
 }
 
 /// One Task's render row (`GET /api/v1/tasks/{id}`'s face).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct TaskRow {
     /// The Task's identifier.
     pub id: String,
@@ -52,7 +52,7 @@ pub struct TaskRow {
 }
 
 /// One Plan's render row (`GET /api/v1/tasks/{id}/plan`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct PlanRow {
     /// The Plan id.
     pub id: String,
@@ -63,7 +63,7 @@ pub struct PlanRow {
 }
 
 /// One PlanStep's render row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct PlanStepRow {
     /// The step id.
     pub id: String,
@@ -76,7 +76,7 @@ pub struct PlanStepRow {
 }
 
 /// One Event's render row (the SSE payload's deserialized face).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct EventRow {
     /// The Event's type name.
     pub event_type: String,
@@ -87,7 +87,7 @@ pub struct EventRow {
 }
 
 /// One Approval's render row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct ApprovalRow {
     /// The approval id.
     pub id: String,
