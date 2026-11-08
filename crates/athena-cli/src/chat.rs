@@ -5,6 +5,8 @@
 //! decision contract each chat leg resolves against (deterministic, Core-API-only —
 //! `ATH-CLI-001`).
 
+pub mod session;
+
 use serde::Deserialize;
 
 /// The Task's state as the chat face reads it (a local wire-form copy — `athena-cli`

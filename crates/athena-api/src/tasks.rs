@@ -294,6 +294,54 @@ pub fn task_events(
         .into_response())
 }
 
+/// The Task's pending clarification rendered for the conversation (X-27's chat leg):
+/// the question text the chat presents and the deadline it names. Reading only —
+/// the answering write stays `POST /tasks/{id}/answer` (`ATH-HITL-020`).
+///
+/// # Errors
+/// Absent Task ⇒ 404; no open clarification ⇒ 404 (`CLARIFICATION_NONE`); store faults ⇒ 500.
+pub fn read_clarification(
+    store: &SharedStore,
+    task: &TaskId,
+    correlation_id: &str,
+) -> Result<Response, crate::errors::ApiError> {
+    let guard = store.lock().expect("store");
+    let _ = TaskRepository::get(&*guard, task)
+        .map_err(|e| store_fault(e, correlation_id))?
+        .ok_or_else(|| {
+            crate::errors::ApiError::of_status(
+                athena_core::protocol::ErrorClass::ValidationError,
+                StatusCode::NOT_FOUND,
+                "TASK_NOT_FOUND",
+                format!("the task {task} does not exist"),
+                serde_json::json!({}),
+                correlation_id,
+            )
+        })?;
+    let pending = athena_core::ClarificationRepository::pending_for_task(&*guard, task)
+        .map_err(|e| store_fault(e, correlation_id))?;
+    let Some(row) = pending.last() else {
+        return Err(crate::errors::ApiError::of_status(
+            athena_core::protocol::ErrorClass::ValidationError,
+            StatusCode::NOT_FOUND,
+            "CLARIFICATION_NONE",
+            "the task has no open clarification to answer",
+            serde_json::json!({}),
+            correlation_id,
+        ));
+    };
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "task_id": task.as_str(),
+            "clarification_id": row.id.as_str(),
+            "question": row.question,
+            "expires_at": row.expires_at,
+            "created_at": row.created_at,
+        })),
+    )
+        .into_response())
+}
 /// Clarification answer (POST /tasks/{id}/answer): routes through
 /// `athena_core::clarifications` — the row goes `answered` and the Task transitions
 /// (`WAITING_INPUT → RUNNING`, or `REPLANNING` when the answer forces a plan change).

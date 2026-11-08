@@ -18,6 +18,7 @@ fn the_cli_never_spawns_a_process() {
         "skill.rs",
         "init.rs",
         "resolve.rs",
+        "token.rs",
     ] {
         let path = format!("../crates/athena-cli/src/{file}");
         let text =
