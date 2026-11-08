@@ -169,11 +169,18 @@ from the invocation directory, it additionally updates **only** the project's
 overwriting a definition you have modified (`config.toml`, `agents/`, and `var/` are
 never touched). In a directory without a `.athena/`, only the tool refresh runs.
 
-Implementation-status note: the CLI verbs currently compose and print the request they would
-send to the Core API (method / path / body). Tokens are recorded only as SHA-256 hashes under
-`<ATHENA_HOME>/var/api-tokens.json` (`ATH-SEC-005`). The Studio UI builds to WebAssembly via
-`scripts/build-studio.sh` and serves on port 5173
-(`athena-studio --api http://127.0.0.1:8080`).
+Implementation-status note: the CLI verbs send the requests to the Core API and render the
+responses — the plan face stays available with `` `--dry-run` ``, and `` `--json` `` carries the
+API's own response body (`athena status` reads `GET /api/v1/status` — store counters plus the
+Core Agent's standing — and `athena chat` runs its session loop: it posts the Task, polls the
+state, and presents a clarification or an approval inline). `athena token issue --name <name>
+--role <viewer|operator|admin>` (or `` `--json` ``) issues a token — the plaintext is shown once
+and the registry stores the SHA-256 hash only (`ATH-SEC-005`, under
+`<ATHENA_HOME>/var/api-tokens.json`) — and `athena token list` prints the records. The Studio
+builds to WebAssembly via `scripts/build-studio.sh` and serves the built module on port 5173
+(`athena-studio --api http://127.0.0.1:8080`); a page on the Studio origin reads the
+CORS-restricted API (loopback Studio origins only), authenticating with a pasted token kept in
+`sessionStorage`.
 
 ## Licence
 

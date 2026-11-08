@@ -170,11 +170,18 @@ athena update
 ありません(`config.toml`、`agents/`、`var/` には一切触れません)。
 `.athena/` のないディレクトリではツール更新のみが実行されます。
 
-実装状況の注記: CLI の各動詞は現在、Core API へ発行する要求(method / path / body)を
-決定論的に組んで出力する。トークンは `<ATHENA_HOME>/var/api-tokens.json` に SHA-256
-ハッシュのみ記録される(`ATH-SEC-005`)。Studio は `scripts/build-studio.sh` で
-WebAssembly へビルドし、5173 番ポートから提供する
-(`athena-studio --api http://127.0.0.1:8080`)。
+実装状況の注記: CLI の各動詞は Core API へ要求を実際に送り、応答を描画します。
+計画面は `` `--dry-run` `` で残り、`` `--json` `` は API 自身の応答本文をそのまま返します
+(`athena status` は `GET /api/v1/status` — ストアのカウンタと Core Agent の状態 — を読み、
+`athena chat` はセッションループで Task を投稿し状態を追跡し、確認質問や承認を
+インラインで提示します)。`athena token issue --name <名前> --role <viewer|operator|admin>`
+(`--json` 対応) はトークンを発行します — 平文は 1 回だけ表示され、registry には SHA-256
+ハッシュのみが記録されます (`ATH-SEC-005`、`<ATHENA_HOME>/var/api-tokens.json`)。
+`athena token list` は記録を一覧表示します。Studio は `scripts/build-studio.sh` で
+WebAssembly へビルドし、ビルド済みモジュールを 5173 番ポートから提供します
+(`athena-studio --api http://127.0.0.1:8080`)。Studio オリジンのページは CORS 制限付きの
+API (ループバックの Studio オリジンのみ許可) を読み、`sessionStorage` に保持した
+貼り付けトークンで認証します。
 
 ## ライセンス
 
