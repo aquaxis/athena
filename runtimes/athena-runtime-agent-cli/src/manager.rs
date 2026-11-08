@@ -205,6 +205,13 @@ impl<D: ProcessDriver + 'static> ProcessManager<D> {
             )));
         }
         if let Some(stale) = self.core_stale() {
+            // A restart **replaces**, never accumulates (`R-DIAG-03`): the stale record's
+            // process is terminated before the successor spawns, so the 1:1 rule
+            // (ATH-RT-012) holds in the process table as well as the record table and
+            // `ATH-RT-010`'s resource release is honoured. Releasing the record alone
+            // would leak one untracked `agent-cli serve` per restart — unreachable by
+            // `stop_all`'s record walk.
+            self.terminate_process(&stale);
             self.live
                 .lock()
                 .expect("manager live")
@@ -248,6 +255,33 @@ impl<D: ProcessDriver + 'static> ProcessManager<D> {
         })
     }
 
+    /// Terminate a record's OS process without waiting on the graceful grace period
+    /// (`R-DIAG-03`; `ATH-RT-010`'s resource release).
+    ///
+    /// The restart path's predecessor has already been judged dead (or outlived its
+    /// execution deadline), so the graceful-stop semantics of [`Self::stop`] do not
+    /// apply: this asks the driver to end the process and, when it is still present,
+    /// escalates to the force-kill (`ATH-FAIL-015`). A pid the driver no longer knows is
+    /// not an error — the process is gone, which is what the caller wanted.
+    fn terminate_process(&self, record: &Record) {
+        if let Err(error) = self.driver.terminate(record.pid) {
+            eprintln!(
+                "athena-runtime-agent-cli: terminating the replaced instance {} ({}) failed: {error}",
+                record.runtime_instance_id.as_str(),
+                record.pid
+            );
+        }
+        if self.driver.is_alive(record.pid)
+            && let Err(error) = self.driver.force_kill(record.pid)
+        {
+            eprintln!(
+                "athena-runtime-agent-cli: force-killing the replaced instance {} ({}) failed: {error}",
+                record.runtime_instance_id.as_str(),
+                record.pid
+            );
+        }
+    }
+
     /// The live Core Agent record, when instance #0 is tracked.
     #[must_use]
     pub fn core_live_record(&self) -> Option<Record> {
@@ -262,15 +296,17 @@ impl<D: ProcessDriver + 'static> ProcessManager<D> {
 
     /// The stale Core Agent record: role-tagged, and dead by **one liveness truth**
     /// (design §5.5, D-20). The truth is the same facts [`Self::status`] answers from —
-    /// the process probe plus the deadline/heartbeat budgets — not the OS-pid probe
-    /// alone: an unreaped detached peer (or an unheld zombie under a recycled pid) must
-    /// not masquerade as residency and block the §7.5.3 restart reach. The record is
+    /// the process probe plus the execution deadline — not the OS-pid probe alone: an
+    /// unreaped detached peer (or an unheld zombie under a recycled pid) must not
+    /// masquerade as residency and block the §7.5.3 restart reach. The record is
     /// *released* as the first face of the fix: the caller drops it before spawning.
     ///
-    /// A record this method returns is dead by both verdicts; the budget-shaped deaths
-    /// (deadline/heartbeat) that `status` reports count here as well, because the
-    /// supervision's own death verdict is what must concede the record — never a probe
-    /// a dead detached child can satisfy.
+    /// A record this method returns is dead by both verdicts. The **heartbeat budget is
+    /// deliberately not consulted** (`R-DIAG-02`, `R-DIAG-03`): silence is not death, so
+    /// a resident-but-idle Core Agent is stale only when its process is gone or its
+    /// execution deadline has passed. Consulting the heartbeat here would resurrect the
+    /// restart loop this method exists to end — the manager would concede a healthy
+    /// instance #0, and the spawn would leak a predecessor per restart.
     fn core_stale(&self) -> Option<Record> {
         let record = self.core_live_record()?;
         // Truth 1 — the process probe, the original face (kept so a vanished pid still
@@ -278,19 +314,14 @@ impl<D: ProcessDriver + 'static> ProcessManager<D> {
         if !self.driver.is_alive(record.pid) {
             return Some(record);
         }
-        // Truth 2 — the supervision-shaped deaths: the record's own started/beat facts
-        // against the same budgets `status` enforces. A process that answers the probe
-        // while its budgets have lapsed is exactly the split-truth defect D-20 closes.
+        // Truth 2 — the execution-deadline death: a process that answers the probe but has
+        // outlived its execution budget is exactly the split-truth defect D-20 closes.
+        // The heartbeat budget is not a death verdict here (`R-DIAG-02`).
         let now = self.clock.now();
         let elapsed = now
             .duration_since(record.started_at)
             .unwrap_or(Duration::ZERO);
-        let past_execution = elapsed >= self.budgets.execution;
-        let silence = now
-            .duration_since(record.last_beat)
-            .unwrap_or(Duration::ZERO);
-        let past_heartbeat = silence >= self.budgets.heartbeat;
-        if past_execution || past_heartbeat {
+        if elapsed >= self.budgets.execution {
             return Some(record);
         }
         None
@@ -324,6 +355,26 @@ impl<D: ProcessDriver + 'static> ProcessManager<D> {
         {
             record.workspace_initialized = initialized;
         }
+    }
+
+    /// How long the record has been silent — the *observation* the heartbeat budget feeds,
+    /// never a death verdict (`R-DIAG-02`).
+    ///
+    /// A caller that wants to report "this instance has not reported progress for N s"
+    /// (the `CoreAgentHeartbeat` absence detector, `ATH-OBS-004`) reads it here; nothing
+    /// that decides residency may.
+    ///
+    /// # Errors
+    /// `UnknownInstance` when nothing is recorded.
+    pub fn heartbeat_age(&self, runtime_instance_id: &str) -> Result<Duration, RuntimeError> {
+        let record = self
+            .record(runtime_instance_id)
+            .ok_or_else(|| RuntimeError::UnknownInstance(runtime_instance_id.to_string()))?;
+        Ok(self
+            .clock
+            .now()
+            .duration_since(record.last_beat)
+            .unwrap_or(Duration::ZERO))
     }
 
     /// Record activity: the heartbeat fact (P3-02) — refreshed on outbound and inbound
@@ -381,7 +432,15 @@ impl<D: ProcessDriver + 'static> ProcessManager<D> {
     /// - process gone with code 0 → `Stopped`; nonzero/absent → `Failed` (ATH-ACLI-005);
     /// - startup window not yet elapsed → `Starting`;
     /// - execution deadline passed → `Failed` with the deadline detail;
-    /// - heartbeat silence past the budget → `Failed` (the supervision contract broke).
+    /// - otherwise the process is alive and inside its deadline → `Running`.
+    ///
+    /// **The death verdict is the process probe and the execution deadline, never the
+    /// absence of traffic** (`R-DIAG-02`). A heartbeat is evidence of *progress*, not a
+    /// precondition for *residency*: instance #0 is a resident, IPC-driven session that
+    /// produces no traffic until it is asked something, so reading a `Failed` off
+    /// `last_beat` silence would declare every idle-but-healthy Core Agent dead — the
+    /// observed restart loop. The heartbeat budget remains a fact the caller may observe
+    /// ([`Self::heartbeat_age`]) but it no longer manufactures a death.
     ///
     /// # Errors
     /// `UnknownInstance` when nothing is recorded.
@@ -413,14 +472,6 @@ impl<D: ProcessDriver + 'static> ProcessManager<D> {
         if elapsed >= self.budgets.execution {
             return Ok(RuntimeInstanceStatus::Failed {
                 detail: format!("execution deadline passed (ATH-RT-006, {elapsed:?})"),
-            });
-        }
-        let silence = now
-            .duration_since(record.last_beat)
-            .unwrap_or(Duration::ZERO);
-        if silence >= self.budgets.heartbeat {
-            return Ok(RuntimeInstanceStatus::Failed {
-                detail: format!("heartbeat lost for {silence:?}"),
             });
         }
         Ok(RuntimeInstanceStatus::Running)

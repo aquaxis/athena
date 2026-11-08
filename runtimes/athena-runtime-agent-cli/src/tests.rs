@@ -446,8 +446,14 @@ async fn an_execution_deadline_marks_the_instance_failed() {
     assert!(detail.contains("execution deadline"), "{detail}");
 }
 
+/// `R-DIAG-02` — **a heartbeat is evidence of progress, never a precondition for
+/// residency.** Silence past the heartbeat budget must not manufacture a `Failed`: a
+/// resident, IPC-driven agent (instance #0 is the canonical case) produces no traffic
+/// until it is asked something, so inferring death from silence declares every
+/// idle-but-healthy agent dead — the observed restart loop. The silence stays
+/// *observable* (as the heartbeat age) without ever being a death verdict.
 #[tokio::test]
-async fn a_lost_heartbeat_fails_the_supervision_contract() {
+async fn heartbeat_silence_never_manufactures_a_death() {
     let (manager, _driver, clock) = manager_with(1);
     let dir = tempfile::tempdir().expect("temp");
     let handle = manager
@@ -455,15 +461,29 @@ async fn a_lost_heartbeat_fails_the_supervision_contract() {
         .expect("spawned");
     clock.advance(Duration::from_secs(11)); // past startup, inside execution (10s)
     manager.beat(handle.runtime_instance_id.as_str()); // activity resets the clock
-    clock.advance(Duration::from_secs(60)); // silence past the heartbeat budget (2s)
+    clock.advance(Duration::from_secs(60)); // silence well past the heartbeat budget (2s)
+
+    // The silence is a fact the caller can observe...
+    let age = manager
+        .heartbeat_age(handle.runtime_instance_id.as_str())
+        .expect("the record is tracked");
+    assert!(
+        age >= Duration::from_secs(60),
+        "the silence is reported: {age:?}"
+    );
+
+    // ...but it is not a death: the process answers its probe and is inside its
+    // execution deadline, so the instance is alive.
     let state = manager
         .status(handle.runtime_instance_id.as_str())
         .await
         .expect("status");
-    let athena_runtime::RuntimeInstanceStatus::Failed { detail } = state else {
-        panic!("expected the heartbeat failure, got {state:?}");
-    };
-    assert!(detail.contains("heartbeat lost"), "{detail}");
+    assert_eq!(
+        state,
+        athena_runtime::RuntimeInstanceStatus::Running,
+        "silence must not read as a failure (R-DIAG-02): {state:?}"
+    );
+    assert!(state.is_alive(), "an idle-but-healthy instance is alive");
 }
 
 #[tokio::test]
@@ -1333,11 +1353,12 @@ async fn instance_zero_collects_no_task_result() {
 
 /// X-13 (d) — **instance #0's death lets every restart attempt reach the spawn call.**
 ///
-/// The defect this closes: the supervision's death verdict (`Failed` on the deadline /
-/// heartbeat budgets) and the restart's staleness check consulted *different* truths, so
-/// a record the supervisor had already declared dead could still answer the OS-pid probe
-/// and refuse every restart with the 1:1 message until the window exhausted. The contract:
-/// once the budgets have lapsed, each restart reaches `spawn` — never the refusal.
+/// The defect this closes: the supervision's death verdict and the restart's staleness
+/// check consulted *different* truths, so a record the supervisor had already declared
+/// dead could still answer the OS-pid probe and refuse every restart with the 1:1 message
+/// until the window exhausted. The contract: once the process-level death verdict holds
+/// (the execution deadline, `R-DIAG-02`'s only budget-shaped death), each restart reaches
+/// `spawn` — never the refusal.
 #[tokio::test]
 async fn instance_zero_death_reaches_spawn_on_every_restart_attempt() {
     let dir = tempfile::tempdir().expect("temp");
@@ -1359,12 +1380,20 @@ async fn instance_zero_death_reaches_spawn_on_every_restart_attempt() {
         .expect("instance #0 boots");
     let spawns_after_boot = driver.spawn_count();
 
-    // The supervision's death verdict without a pid death: the budgets lapse while the
-    // recorded pid still answers the OS probe — exactly the split-truth shape D-20 names.
-    clock.advance(Duration::from_secs(21));
+    // The supervision's death verdict without a pid death: the execution deadline lapses
+    // while the recorded pid still answers the OS probe — exactly the split-truth shape
+    // D-20 names (silence alone is *not* a death, `R-DIAG-02`; the deadline is).
+    clock.advance(Duration::from_secs(121));
     assert!(
         driver.is_alive(adapter.core_record().expect("tracked").pid),
         "the pid probe still answers alive — the OS truth alone would refuse"
+    );
+    assert!(
+        !Runtime::status(&adapter, &first)
+            .await
+            .expect("status")
+            .is_alive(),
+        "the execution deadline is the death verdict (R-DIAG-02)"
     );
 
     // Every restart attempt reaches the spawn call (the §7.5.3 restart is reachable).
@@ -1383,8 +1412,8 @@ async fn instance_zero_death_reaches_spawn_on_every_restart_attempt() {
             spawns_after_boot + attempt,
             "attempt {attempt} actually spawned"
         );
-        // The fresh record starts a fresh budget window.
-        clock.advance(Duration::from_secs(21));
+        // The fresh record starts a fresh execution window.
+        clock.advance(Duration::from_secs(121));
     }
 }
 
@@ -1461,8 +1490,9 @@ async fn window_exhaustion_is_the_session_windows_decision_not_the_managers_reac
 
     // Four restarts — one past the three-per-window ceiling.
     for attempt in 1..=4usize {
-        // Each attempt is preceded by the budget lapse that makes the record stale.
-        clock.advance(Duration::from_secs(21));
+        // Each attempt is preceded by the execution-deadline lapse that makes the record
+        // stale (the only budget-shaped death, `R-DIAG-02` — silence alone is not one).
+        clock.advance(Duration::from_secs(121));
         Runtime::start(&adapter, core_definition(), core_context(&home))
             .await
             .unwrap_or_else(|error| {
@@ -1476,14 +1506,16 @@ async fn window_exhaustion_is_the_session_windows_decision_not_the_managers_reac
     }
 }
 
-/// X-13 (e) — **the zombie contract row**: the pid probe answers alive while the budgets
-/// have lapsed, and the record is still stale.
+/// X-13 (e) / `R-DIAG-02`/`03` — **the zombie contract row**: the pid probe answers alive
+/// while the execution deadline has passed, and the record is still stale.
 ///
 /// An unreaped detached peer (or a pid-recycled stranger) satisfies `is_alive`; the
-/// supervision's budgets do not. D-20 makes the supervisor's facts the truth, so the
-/// record is released rather than treated as residency — the regression this row holds.
+/// execution deadline does not. The deadline is the one budget-shaped death
+/// (`R-DIAG-02` — silence alone is never one), so the record is released rather than
+/// treated as residency, and the restart **terminates the predecessor before spawning**
+/// (`R-DIAG-03`): one process in the table, one record, per restart.
 #[tokio::test]
-async fn a_zombie_pid_is_stale_by_the_supervision_budgets() {
+async fn a_zombie_pid_is_stale_by_the_execution_deadline() {
     let dir = tempfile::tempdir().expect("temp");
     let driver = FakeDriver::default();
     let clock = FixedClock::at_past(0);
@@ -1501,15 +1533,16 @@ async fn a_zombie_pid_is_stale_by_the_supervision_budgets() {
     let record = manager.core_live_record().expect("tracked");
     assert_eq!(record.runtime_instance_id, handle.runtime_instance_id);
 
-    // The zombie shape: the pid probe says alive, the heartbeat window has lapsed.
+    // The zombie shape: the pid probe says alive, the execution deadline has passed.
     assert!(driver.is_alive(record.pid), "the pid probe answers alive");
-    clock.advance(Duration::from_secs(21));
+    clock.advance(Duration::from_secs(121));
     assert!(
         driver.is_alive(record.pid),
         "the pid probe still answers alive — the OS truth alone is the defect"
     );
 
-    // The restart concedes the record and reaches spawn (never the 1:1 refusal).
+    // The restart concedes the record and reaches spawn (never the 1:1 refusal), and the
+    // predecessor's process is terminated rather than leaked (`R-DIAG-03`).
     let restarted = manager
         .spawn_core_agent(
             &core_definition(),
@@ -1518,12 +1551,62 @@ async fn a_zombie_pid_is_stale_by_the_supervision_budgets() {
         .expect("the zombie record does not masquerade as residency");
     assert_ne!(restarted.runtime_instance_id, handle.runtime_instance_id);
     assert!(
+        !driver.is_alive(record.pid),
+        "the replaced predecessor is terminated, never leaked (R-DIAG-03)"
+    );
+    assert!(
         manager
             .core_live_record()
             .expect("new residency")
             .runtime_instance_id
             == restarted.runtime_instance_id,
         "the fresh record is the tracked one"
+    );
+}
+
+/// `R-DIAG-02` — **a resident-but-silent instance #0 is not stale.**
+///
+/// The complement of the row above, and the regression the restart loop needs: a Core
+/// Agent that has been alive for a while without being addressed is healthy. Its record
+/// must stay residency, so a second core-class start refuses with the 1:1 message rather
+/// than silently replacing a live agent.
+#[tokio::test]
+async fn a_silent_but_live_instance_zero_stays_resident() {
+    let dir = tempfile::tempdir().expect("temp");
+    let driver = FakeDriver::default();
+    let clock = FixedClock::at_past(0);
+    let manager = ProcessManager::new(
+        driver.clone(),
+        budgets(10),
+        std::sync::Arc::new(clock.clone()),
+    );
+    manager
+        .spawn_core_agent(
+            &core_definition(),
+            &core_context(&dir.path().join(".athena")),
+        )
+        .expect("instance #0 spawns");
+    let record = manager.core_live_record().expect("tracked");
+
+    // Well past the heartbeat budget, well inside the execution deadline: no traffic ever
+    // occurred (nothing addressed instance #0), which is the observed loop's setup.
+    clock.advance(Duration::from_secs(60));
+    assert!(
+        manager
+            .heartbeat_age(record.runtime_instance_id.as_str())
+            .expect("tracked")
+            >= Duration::from_secs(60),
+        "the silence is a fact"
+    );
+    let error = manager
+        .spawn_core_agent(
+            &core_definition(),
+            &core_context(&dir.path().join(".athena")),
+        )
+        .expect_err("a silent-but-live instance #0 is still resident (R-DIAG-02)");
+    assert!(
+        error.to_string().contains("already resident"),
+        "the refusal is the 1:1 rule, not a restart: {error}"
     );
 }
 

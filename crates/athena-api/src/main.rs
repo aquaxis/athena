@@ -33,6 +33,11 @@ use athena_types::{
 /// The supervision poll's cadence: death detection inside the NFR-14 budget.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
+/// The execution loop's cadence: how often a queued Task is dispatched or an in-flight
+/// answer collected. Fast enough to feel responsive, slow enough that an idle resident
+/// process costs nothing.
+const EXECUTION_POLL: Duration = Duration::from_secs(2);
+
 /// The command line: exactly the configuration inputs the config layer resolves
 /// (`ATH-CFG-001`'s CLI layer) and nothing more.
 struct Args {
@@ -234,11 +239,15 @@ async fn main() {
         Err(error) => fail(&format!("token registry unreadable: {error}")),
     };
 
+    // The standing cell (X-29): the supervision poll publishes what it observes, the
+    // `/status` route reads it — one writer, one reader, facts only (ATH-CORE-038).
+    let standing: athena_api::StandingCell = athena_api::standing::new_cell();
     let state = AppState {
         registry: registry.shared(),
         mode,
         host: host.clone(),
         rows: Some(rows.clone()),
+        standing: standing.clone(),
     };
 
     // 6. The composition root's Adapter link: the real process driver, the template
@@ -253,7 +262,11 @@ async fn main() {
                 config.timeout.startup,
                 config.timeout.execution,
                 config.timeout.stop,
-                Duration::from_secs(60),
+                // The silence budget is the operator's stated tolerance, not a literal
+                // (R-DIAG-04): `core_agent_restart.heartbeat_timeout` is validated against
+                // `heartbeat_interval` (R-CFG-05) and read here so raising it in
+                // `config.toml` actually takes effect.
+                config.core_agent_restart.heartbeat_timeout,
             ),
             Arc::new(athena_runtime_agent_cli::WallClock),
             4,
@@ -319,7 +332,24 @@ async fn main() {
     //    truth observed every few seconds; a dead instance #0 walks the deterministic
     //    recovery — checksum verify, context rebuild, restart with re-injection — and
     //    the sliding window (3 / h) escalates beyond it (ATH-CORE-030).
-    let supervision = core_supervision(adapter.clone(), rows.clone(), control_surface);
+    let supervision = core_supervision(
+        adapter.clone(),
+        rows.clone(),
+        control_surface,
+        standing.clone(),
+    );
+
+    // 9b. The execution loop (X-26, R-DIAG-06): the queue a created Task lands in is
+    //     drained here. Without this the resident process accepts work and never runs it
+    //     — the gap the survey named first. The loop's semantics live in
+    //     `athena_core::core_loop` (testable without a resident server); this task
+    //     supplies only the cadence and the instance #0 handle it delivers to.
+    let execution = core_execution(
+        adapter.clone(),
+        rows.clone(),
+        athena_core::scheduler::SchedulerLimits::from_config(&config.scheduler),
+        clarification_ttl_secs(&config),
+    );
 
     // 10. Serve until the signal; then the safe-shutdown sequence (NFR-13).
     let server = axum::serve(listener, build_router(state)).with_graceful_shutdown(async {
@@ -344,6 +374,7 @@ async fn main() {
         fail(&format!("server fault: {error}"));
     }
     supervision.abort();
+    execution.abort();
     stop_all(adapter.as_ref());
     eprintln!("athena-api: stopped");
 }
@@ -385,6 +416,331 @@ fn control_surface_checksum(agent_cli_dir: &Path) -> athena_core::ControlSurface
     athena_core::ControlSurfaceChecksum::of(&borrowed)
 }
 
+/// The clarification deadline, from the configuration (`timeout.clarification`, validated
+/// `R-CFG-05`): an `ask_human` route opens its row with this TTL — silence never answers,
+/// and the deadline's expiry fails the Task (`ATH-HITL-018`).
+fn clarification_ttl_secs(config: &Config) -> u64 {
+    config.timeout.clarification.as_secs()
+}
+
+/// The execution loop (X-26, `R-DIAG-06`): drain the `QUEUED` Tasks into instance #0 and
+/// carry each answer back as the Task's Result.
+///
+/// This is the cadence only — every semantic step is `athena_core::core_loop`'s, so the
+/// loop is testable without a resident server and the binary stays free of state-machine
+/// knowledge. The store lock is never held across an `await`: each poll takes the lock to
+/// reserve work (or to record an answer), releases it for the agent round trip, and takes
+/// it again to persist — so a slow agent never blocks the API's request handling.
+fn core_execution<D>(
+    adapter: Arc<AgentCliAdapter<D>>,
+    rows: Arc<Mutex<AthenaStore>>,
+    limits: athena_core::scheduler::SchedulerLimits,
+    clarification_ttl_secs: u64,
+) -> tokio::task::JoinHandle<()>
+where
+    D: ProcessDriver + 'static,
+{
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(EXECUTION_POLL).await;
+
+            // Instance #0 must be resident before anything can be delegated to it. Its
+            // absence is not this task's problem — the supervision poll owns restarting it.
+            let Some(record) = adapter.core_record() else {
+                continue;
+            };
+            let instance = RuntimeInstanceRef {
+                runtime_type: RuntimeType::AgentCli,
+                runtime_instance_id: record.runtime_instance_id.clone(),
+                instance_id: record.instance_id.clone(),
+            };
+            let now = athena_types::now_rfc3339();
+
+            // 1. Reserve one unit of work under the lock, then release it. The reservation
+            //    passes the Scheduler first (X-26's survey face 1-6): the queue is drained
+            //    through `tick_tasks`' admission decision — the §18.3 ceilings
+            //    (`max_concurrent_tasks` / `max_concurrent_instances` /
+            //    `max_instances_per_task`, ATH-SCHED-003/009/010) shape the drain, a
+            //    refusal is observed and logged (ATH-SCHED-014) and the Task stays
+            //    queued — instead of an unconditional `first()`.
+            enum Step {
+                Deliver(Box<athena_core::core_loop::PendingDelivery>),
+                Intake(athena_types::TaskId),
+                Idle,
+            }
+            let step = {
+                let Ok(mut guard) = rows.lock() else {
+                    continue;
+                };
+                let queued = athena_core::core_loop::queued_tasks(&guard).unwrap_or_default();
+                // The admission facts, read from the store under the lock: every instance
+                // row the inventory can count (Repository trait method through
+                // `athena-core`'s re-export edge — the §32.2 boundary keeps
+                // `athena-api → athena-core` only), and the running numerator. The Core
+                // Agent's own Instance row carries no Task (`ATH-STATE-012`) and its slots
+                // live outside the instance ceiling (ATH-SCHED-008), so a `task_id: None`
+                // row is dropped from the projection instead of being inventoried against
+                // a Task it does not belong to.
+                let instances: Vec<athena_core::scheduler::InventoryInstance> =
+                    athena_core::AgentRepository::list_all_instances(&*guard)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(|row| {
+                            row.task_id
+                                .map(|task_id| athena_core::scheduler::InventoryInstance {
+                                    task_id,
+                                    state: row.state,
+                                })
+                        })
+                        .collect();
+                let running_ids: Vec<athena_types::TaskId> =
+                    athena_core::core_loop::running_tasks(&guard)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|task| task.id.clone())
+                        .collect();
+                // `queued_tasks` returns oldest submission first (created_at, id), so the
+                // position in it *is* the FIFO rank the Scheduler ties on (ATH-SCHED-005).
+                let request: Vec<athena_core::scheduler::QueuedTask> = queued
+                    .iter()
+                    .enumerate()
+                    .map(|(order, task)| athena_core::scheduler::QueuedTask {
+                        task_id: task.id.clone(),
+                        priority: task.priority,
+                        enqueue_order: order as u64,
+                    })
+                    .collect();
+                let decision =
+                    athena_core::scheduler::tick_tasks(&request, &running_ids, &instances, limits);
+                // The observed-block face (ATH-SCHED-014): a ready Task a limit refused
+                // is named, never silently held.
+                if decision.admitted.is_empty() && !decision.blocked.is_empty() {
+                    let (task, limit) = decision.blocked[0].clone();
+                    eprintln!(
+                        "athena-api: task {} held at {} (a scheduler limit); stays queued",
+                        task.as_str(),
+                        limit.wire()
+                    );
+                }
+                match decision.admitted.first() {
+                    // The admitted face is a Task the loop must now reserve. The admitted
+                    // list is decision order, so the first entry is the one admission.
+                    Some(admitted) => {
+                        let task_id = admitted.clone();
+                        let queued_row = queued.iter().find(|task| task.id == task_id);
+                        let Some(task) = queued_row else {
+                            // Unreachable by construction (the admitted id comes from the
+                            // queue just read), but the honest diverge is the loop's own.
+                            continue;
+                        };
+                        let correlation =
+                            athena_core::digest(&format!("deliver-{}-{now}", task.id.as_str()));
+                        match athena_core::core_loop::prepare_delivery(
+                            &mut guard,
+                            &task.id,
+                            &instance.instance_id,
+                            &now,
+                            &correlation,
+                        ) {
+                            Ok(pending) => Step::Deliver(Box::new(pending)),
+                            Err(fault) => {
+                                eprintln!(
+                                    "athena-api: reserving {} failed: {fault}",
+                                    task.id.as_str()
+                                );
+                                Step::Idle
+                            }
+                        }
+                    }
+                    None => match athena_core::core_loop::running_tasks(&guard)
+                        .unwrap_or_default()
+                        .first()
+                    {
+                        // An admitted-but-not-yet-answered reserve: intake of the
+                        // delegation that is still in flight.
+                        Some(task) => Step::Intake(task.id.clone()),
+                        None => Step::Idle,
+                    },
+                }
+            };
+
+            match step {
+                Step::Idle => {}
+                // 2a. Deliver: the agent round trip runs with no store lock held.
+                Step::Deliver(pending) => {
+                    match athena_core::core_loop::deliver(adapter.as_ref(), &instance, &pending)
+                        .await
+                    {
+                        Ok(()) => eprintln!(
+                            "athena-api: task {} dispatched to the Core Agent",
+                            pending.task_id.as_str()
+                        ),
+                        Err(fault) => {
+                            eprintln!(
+                                "athena-api: task {} delivery failed: {fault}",
+                                pending.task_id.as_str()
+                            );
+                            let correlation = athena_core::digest(&format!(
+                                "deliver-failed-{}-{now}",
+                                pending.task_id.as_str()
+                            ));
+                            if let Ok(mut guard) = rows.lock() {
+                                let _ = athena_core::core_loop::fail_task(
+                                    &mut guard,
+                                    &pending.task_id,
+                                    &fault.to_string(),
+                                    &now,
+                                    &correlation,
+                                );
+                            }
+                        }
+                    }
+                }
+                // 2b. Intake: read the answer off the stream with no lock held, then
+                //     interpret it against the Core Control Protocol and persist under
+                //     the lock (X-26's survey face 1-2: the twelve `CoreRequest` kinds are
+                //     received and routed, not just recorded).
+                Step::Intake(task_id) => {
+                    let answer =
+                        athena_core::core_loop::next_answer(adapter.as_ref(), &instance).await;
+                    let Ok(answer) = answer else {
+                        // No answer yet: the delegation is still in flight.
+                        continue;
+                    };
+                    // The protocol face (ATH-CORE-033): a completion product, a human
+                    // question, or one of the ten routed requests. A parse refusal is
+                    // still an answer — it is recorded as the Result, and the Task's
+                    // settlement then reflects the unmet protocol, never a silent drop.
+                    let interpreted = match athena_core::core_loop::interpret_answer(&answer) {
+                        Ok(value) => value,
+                        Err(fault) => {
+                            eprintln!(
+                                "athena-api: answer of {} failed the protocol gate: {fault}",
+                                task_id.as_str()
+                            );
+                            continue;
+                        }
+                    };
+                    let Ok(mut guard) = rows.lock() else {
+                        continue;
+                    };
+                    let correlation =
+                        athena_core::digest(&format!("intake-{}-{now}", task_id.as_str()));
+                    match &interpreted {
+                        // `ask_human`: open the clarification (RUNNING → WAITING_INPUT);
+                        // the Task does not settle while a question waits — the answer
+                        // endpoint resumes it, and a later intake records the settled
+                        // product (`ATH-HITL-017..020`).
+                        athena_core::core_loop::Interpreted::AskHuman { question, .. } => {
+                            let deadline = athena_types::clock::format_rfc3339(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|age| age.as_secs() + clarification_ttl_secs)
+                                    .unwrap_or(clarification_ttl_secs),
+                                0,
+                            );
+                            match athena_core::core_loop::open_clarification(
+                                &mut guard,
+                                &task_id,
+                                question,
+                                &deadline,
+                                &now,
+                                &correlation,
+                            ) {
+                                Ok(id) => eprintln!(
+                                    "athena-api: task {} asks a human (clarification {id})",
+                                    task_id.as_str()
+                                ),
+                                Err(fault) => eprintln!(
+                                    "athena-api: clarifying {} failed: {fault}",
+                                    task_id.as_str()
+                                ),
+                            }
+                        }
+                        // Any completion face — a `complete_task` request or the v1 bare
+                        // prose product: record the Result and settle.
+                        athena_core::core_loop::Interpreted::Completed { .. } => {
+                            match athena_core::core_loop::ingest_answer(
+                                &mut guard,
+                                &task_id,
+                                &instance,
+                                &answer,
+                                &now,
+                                &correlation,
+                            ) {
+                                Ok(received) => {
+                                    let status = received.status;
+                                    match athena_core::core_loop::settle_task(
+                                        &mut guard,
+                                        &task_id,
+                                        status,
+                                        &now,
+                                        &correlation,
+                                    ) {
+                                        Ok(outcome) => eprintln!(
+                                            "athena-api: task {} settled ({outcome:?}, result {})",
+                                            task_id.as_str(),
+                                            received.result_id.as_str()
+                                        ),
+                                        Err(fault) => eprintln!(
+                                            "athena-api: settling {} failed: {fault}",
+                                            task_id.as_str()
+                                        ),
+                                    }
+                                }
+                                Err(fault) => eprintln!(
+                                    "athena-api: recording the answer of {} failed: {fault}",
+                                    task_id.as_str()
+                                ),
+                            }
+                        }
+                        // One of the ten routed `CoreRequest` kinds: observed and named —
+                        // the v1 execution model gives the answer itself as the product
+                        // (`ATH-DATA-004`), and the Task completes on the answer rather
+                        // than spawning side paths behind the caller's back.
+                        athena_core::core_loop::Interpreted::Requested { kind } => {
+                            match athena_core::core_loop::ingest_answer(
+                                &mut guard,
+                                &task_id,
+                                &instance,
+                                &answer,
+                                &now,
+                                &correlation,
+                            ) {
+                                Ok(received) => {
+                                    let status = received.status;
+                                    match athena_core::core_loop::settle_task(
+                                        &mut guard,
+                                        &task_id,
+                                        status,
+                                        &now,
+                                        &correlation,
+                                    ) {
+                                        Ok(outcome) => eprintln!(
+                                            "athena-api: task {} settled ({outcome:?}, \
+                                             result {}, request {kind} observed)",
+                                            task_id.as_str(),
+                                            received.result_id.as_str()
+                                        ),
+                                        Err(fault) => eprintln!(
+                                            "athena-api: settling {} failed: {fault}",
+                                            task_id.as_str()
+                                        ),
+                                    }
+                                }
+                                Err(fault) => eprintln!(
+                                    "athena-api: recording the answer of {} failed: {fault}",
+                                    task_id.as_str()
+                                ),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
 /// The supervision poll: detect instance #0's death, run the deterministic recovery
 /// (checksum → rebuild → restart with re-injection), count the sliding window, escalate
 /// on exhaustion. The *procedure* is deterministic; the restarted agent's behaviour is
@@ -393,6 +749,7 @@ fn core_supervision<D>(
     adapter: Arc<AgentCliAdapter<D>>,
     rows: Arc<Mutex<AthenaStore>>,
     control_surface: Option<athena_core::ControlSurfaceChecksum>,
+    standing: athena_api::StandingCell,
 ) -> tokio::task::JoinHandle<()>
 where
     D: ProcessDriver + 'static,
@@ -402,6 +759,16 @@ where
         loop {
             tokio::time::sleep(POLL_INTERVAL).await;
             let Some(record) = adapter.core_record() else {
+                athena_api::CoreAgentStanding::publish(
+                    &standing,
+                    athena_api::CoreAgentStanding {
+                        alive: false,
+                        restarts: window.counted(u64_ms()) as u64,
+                        restart_limit: window.limit(),
+                        runtime_instance_id: String::new(),
+                        observed_at: athena_types::now_rfc3339(),
+                    },
+                );
                 continue;
             };
             let reference = RuntimeInstanceRef {
@@ -413,6 +780,19 @@ where
                 Ok(status) => !status.is_alive(),
                 Err(_) => true,
             };
+            // The poll publishes what it observed — the standing `GET /api/v1/status`
+            // renders (X-29's Core-Agent standing face): the liveness verdict, the
+            // window's consumed budget and its ceiling, and the resident instance id.
+            athena_api::CoreAgentStanding::publish(
+                &standing,
+                athena_api::CoreAgentStanding {
+                    alive: !dead,
+                    restarts: window.counted(u64_ms()) as u64,
+                    restart_limit: window.limit(),
+                    runtime_instance_id: record.runtime_instance_id.as_str().to_string(),
+                    observed_at: athena_types::now_rfc3339(),
+                },
+            );
             if !dead {
                 continue;
             }
@@ -483,14 +863,25 @@ where
                     );
                 }
                 athena_core::Recovery::Escalate(reason) => {
-                    eprintln!(
-                        "athena-api: CoreAgentEscalated — {reason}; autonomous execution halts (ATH-CORE-030)"
-                    );
+                    // The recovery reason already states the halt ("restart window
+                    // exhausted; autonomous execution halts"), so the note appends nothing
+                    // to it — the earlier doubled clause came from repeating it here
+                    // (R-DIAG-01 finding (d)).
+                    let reason = reason.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+                    eprintln!("athena-api: CoreAgentEscalated — {reason} (ATH-CORE-030)");
                     return;
                 }
             }
         }
     })
+}
+
+/// The current time in Unix milliseconds (the window's clock argument).
+fn u64_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(u64::MAX)
 }
 
 /// The configuration slice a restart rebuilds from: the record carries the definition's

@@ -1,7 +1,8 @@
 //! Scheduler engine behaviour (ATH-SCHED-001…015).
 
 use crate::scheduler::{
-    BlockingLimit, Inventory, InventoryInstance, QueuedStep, RetryBudget, SchedulerLimits, tick,
+    BlockingLimit, Inventory, InventoryInstance, QueuedStep, QueuedTask, RetryBudget,
+    SchedulerLimits, tick, tick_tasks,
 };
 use athena_config::schema::{BackoffSection, SchedulerSection};
 use athena_types::{
@@ -392,4 +393,144 @@ mod approval_cap_tests {
         assert_eq!(disabled.ceiling(16), 0);
         assert!(!disabled.holds(99, 10), "a disabled cap never holds");
     }
+}
+
+// --- Task-level admission ([`tick_tasks`], the Core Agent loop's 1-6 face) --------------------
+
+fn queued_task(task: &TaskId, order: u64) -> QueuedTask {
+    QueuedTask {
+        task_id: task.clone(),
+        priority: Priority::Normal,
+        enqueue_order: order,
+    }
+}
+
+#[test]
+fn task_admission_is_priority_then_fifo() {
+    // ATH-SCHED-005 at the Task level: `high` runs before `normal`, FIFO inside a rank.
+    let first = TaskId::new();
+    let second = TaskId::new();
+    let urgent = TaskId::new();
+    let mut low_first = queued_task(&first, 0);
+    low_first.priority = Priority::Normal;
+    let mut high = queued_task(&urgent, 1);
+    high.priority = Priority::High;
+    let mut low_second = queued_task(&second, 2);
+    low_second.priority = Priority::Normal;
+
+    let decision = tick_tasks(
+        &[low_first, high, low_second],
+        &[],
+        &busy_inventory(0),
+        limits(),
+    );
+    assert_eq!(decision.admitted, vec![urgent, first, second]);
+    assert!(decision.blocked.is_empty());
+}
+
+#[test]
+fn task_admission_respects_the_running_task_ceiling() {
+    // ATH-SCHED-009's running numerator at the Task level: a full ceiling refuses the
+    // next Task, naming the limit — while Tasks already running are not re-blocked.
+    let limits = local_limits(1, 16, 4);
+    let running = TaskId::new();
+    let queued = TaskId::new();
+    let decision = tick_tasks(
+        &[queued_task(&queued, 0)],
+        std::slice::from_ref(&running),
+        &[InventoryInstance {
+            task_id: running.clone(),
+            state: InstanceState::Busy,
+        }],
+        limits,
+    );
+    assert!(decision.admitted.is_empty());
+    assert_eq!(
+        decision.blocked,
+        vec![(queued, BlockingLimit::RunningTasks)],
+        "a held Task names the limit that refused it (ATH-SCHED-014)"
+    );
+}
+
+#[test]
+fn task_admission_refuses_at_the_instance_ceiling_and_core_agent_rows_stay_outside() {
+    // ATH-SCHED-008: the Core Agent's own slots are outside the ceiling — a `task_id:
+    // None` row never reaches this inventory (the projection drops it), so the ceiling
+    // counts user instances only.
+    let limits = local_limits(8, 1, 4);
+    let core = TaskId::new();
+    let queued = TaskId::new();
+    // A Busy user instance fills the ceiling; the Core Agent row (as the loop projects
+    // it) is absent, so the single-slot ceiling admits nobody more.
+    let decision = tick_tasks(
+        &[queued_task(&queued, 0)],
+        &[],
+        &[InventoryInstance {
+            task_id: core,
+            state: InstanceState::Busy,
+        }],
+        limits,
+    );
+    assert!(decision.admitted.is_empty());
+    assert_eq!(decision.blocked[0].1, BlockingLimit::ConcurrentInstances);
+}
+
+#[test]
+fn task_admission_holds_the_per_task_ceiling() {
+    // ATH-SCHED-003/009: `max_instances_per_task` — a queued Task whose **own** instance
+    // load already sits at the per-Task ceiling (a recovered row re-queued while its
+    // instance still holds a slot) is refused this cycle: the admission itself would take
+    // one instance over the line (the same "load + 1" claim the PlanStep engine makes). A
+    // different Task's load never binds another Task's admission.
+    let limits = local_limits(8, 16, 1);
+    let same = TaskId::new();
+    let other = TaskId::new();
+    let decision = tick_tasks(
+        &[queued_task(&other, 0)],
+        &[],
+        &[InventoryInstance {
+            task_id: same.clone(),
+            state: InstanceState::Busy,
+        }],
+        limits,
+    );
+    assert!(
+        !decision.admitted.is_empty(),
+        "another Task's load does not bind this admission"
+    );
+    // Now the queued Task itself carries the ceiling's row.
+    let held = TaskId::new();
+    let held_decision = tick_tasks(
+        &[queued_task(&held, 0)],
+        &[],
+        &[InventoryInstance {
+            task_id: held.clone(),
+            state: InstanceState::Busy,
+        }],
+        limits,
+    );
+    assert!(held_decision.admitted.is_empty());
+    assert_eq!(
+        held_decision.blocked[0].1,
+        BlockingLimit::InstancesPerTask,
+        "the refusal names the per-Task ceiling"
+    );
+}
+
+#[test]
+fn task_admission_admits_to_the_free_running_slots_in_order() {
+    // One cycle admits at most the free slots, in decision order: with two free slots on
+    // a two-Task ceiling, both ready Tasks are admitted; the third stays queued.
+    let limits = local_limits(2, 16, 4);
+    let a = TaskId::new();
+    let b = TaskId::new();
+    let c = TaskId::new();
+    let decision = tick_tasks(
+        &[queued_task(&a, 0), queued_task(&b, 1), queued_task(&c, 2)],
+        &[],
+        &busy_inventory(0),
+        limits,
+    );
+    assert_eq!(decision.admitted, vec![a, b]);
+    assert_eq!(decision.blocked, vec![(c, BlockingLimit::RunningTasks)]);
 }

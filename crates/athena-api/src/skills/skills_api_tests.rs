@@ -17,6 +17,7 @@ fn state() -> AppState {
         mode: AuthMode::Token,
         host: "127.0.0.1".into(),
         rows: None,
+        standing: crate::standing::new_cell(),
     }
 }
 

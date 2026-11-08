@@ -18,6 +18,7 @@ fn state() -> (AppState, String, String, String) {
         mode: AuthMode::Token,
         host: "127.0.0.1".into(),
         rows: None,
+        standing: crate::standing::new_cell(),
     };
     (st, viewer_token, operator_token, admin_token)
 }
@@ -208,6 +209,7 @@ async fn task_api_router() -> (axum::Router, String) {
         mode: AuthMode::Token,
         host: "127.0.0.1".into(),
         rows: Some(Arc::new(Mutex::new(store))),
+        standing: crate::standing::new_cell(),
     });
     (router, operator)
 }
@@ -450,6 +452,7 @@ async fn memory_api_router() -> (
         mode: AuthMode::Token,
         host: "127.0.0.1".into(),
         rows: Some(store.clone()),
+        standing: crate::standing::new_cell(),
     });
     (router, operator, store)
 }
@@ -596,6 +599,7 @@ async fn clarify_router() -> (
         mode: AuthMode::Token,
         host: "127.0.0.1".into(),
         rows: Some(store.clone()),
+        standing: crate::standing::new_cell(),
     });
     (router, operator, store)
 }
@@ -752,6 +756,7 @@ async fn approvals_router() -> (
         mode: AuthMode::Token,
         host: "127.0.0.1".into(),
         rows: Some(store.clone()),
+        standing: crate::standing::new_cell(),
     });
     (router, operator, store)
 }
@@ -888,4 +893,81 @@ async fn the_approval_api_lists_reads_and_answers_with_the_audit_trail() {
         "{}",
         body_text(again).await
     );
+}
+
+#[tokio::test]
+async fn the_status_answer_carries_the_core_agents_standing() {
+    // X-29's Core-Agent standing face: an observed standing renders its facts — the
+    // liveness verdict, the consumed restart budget and its ceiling — and the answer is
+    // still the same Task/instance counter payload the row demands.
+    let mut registry = TokenRegistry::default();
+    let admin = registry.issue("status-standing", Role::Admin);
+    let standing = crate::standing::new_cell();
+    crate::standing::CoreAgentStanding::publish(
+        &standing,
+        crate::standing::CoreAgentStanding {
+            alive: true,
+            restarts: 2,
+            restart_limit: 3,
+            runtime_instance_id: "ri-01M6STATUS".to_string(),
+            observed_at: "2026-11-08T09:00:00Z".to_string(),
+        },
+    );
+    let st = AppState {
+        registry: Arc::new(registry),
+        mode: AuthMode::Token,
+        host: "127.0.0.1".into(),
+        rows: None,
+        standing,
+    };
+    let router = build_router(st);
+    let mut request = Request::builder()
+        .uri("/api/v1/status")
+        .body(Body::empty())
+        .expect("request");
+    bearer(&mut request, &admin);
+    let response = router.oneshot(request).await.expect("answered");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .expect("body");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    let agent = value.get("core_agent").expect("core_agent").clone();
+    assert_eq!(agent["alive"], true, "{agent}");
+    assert_eq!(agent["restarts"], 2, "{agent}");
+    assert_eq!(agent["restart_limit"], 3, "{agent}");
+    assert_eq!(agent["runtime_instance_id"], "ri-01M6STATUS", "{agent}");
+    // No store is attached to this state, so the Task/instance counters are absent —
+    // the never-invent discipline (ATH-CORE-038) keeps them absent rather than zeroed,
+    // while the store-independent standing renders beside them.
+    assert!(value.get("tasks").is_none(), "{value}");
+    assert!(value.get("instances").is_none(), "{value}");
+}
+
+#[tokio::test]
+async fn the_status_answer_names_an_unobserved_core_agent_as_unobserved() {
+    // Before the supervision poll's first observation the standing is rendered as its
+    // own face, never as a fabricated zero (ATH-CORE-038).
+    let mut registry = TokenRegistry::default();
+    let admin = registry.issue("status-unobserved", Role::Admin);
+    let st = AppState {
+        registry: Arc::new(registry),
+        mode: AuthMode::Token,
+        host: "127.0.0.1".into(),
+        rows: None,
+        standing: crate::standing::new_cell(),
+    };
+    let router = build_router(st);
+    let mut request = Request::builder()
+        .uri("/api/v1/status")
+        .body(Body::empty())
+        .expect("request");
+    bearer(&mut request, &admin);
+    let response = router.oneshot(request).await.expect("answered");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .expect("body");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(value["core_agent"]["liveness"], "unobserved", "{value}");
 }

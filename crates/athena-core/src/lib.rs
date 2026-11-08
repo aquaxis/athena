@@ -34,6 +34,9 @@ pub mod broker;
 pub mod budgets;
 pub mod clarifications;
 pub mod core_agent_session;
+pub mod core_loop;
+#[cfg(test)]
+mod core_loop_tests;
 pub mod event_manager;
 pub mod failure;
 pub mod hierarchy_manager;
@@ -78,6 +81,11 @@ pub use core_agent_session::{
     ContextDocument, ControlSurfaceChecksum, Recovery, RestartWindow, StartFailureKind,
     SurfaceMismatch, recovery_decision, start_core_agent, verify_surface,
 };
+pub use core_loop::{
+    Interpreted, LoopFault, PendingDelivery, Received, Settled, core_thread, deliver, fail_task,
+    ingest_answer, interpret_answer, next_answer, open_clarification, prepare_delivery,
+    queued_tasks, reported_status, running_tasks, settle_task,
+};
 pub use inspection::{Inspection, InspectionFacts, Inspector, Reason, deny_envelope};
 pub use issuance::{IssuedPlan, PlanRefusal, PlanSubmission, submit_plan};
 
@@ -117,8 +125,8 @@ pub use athena_runtime::Runtime;
 pub use athena_runtime::{FilesystemScope, RuntimeError, RuntimeInstanceRef, StartContext};
 pub use protocol::{CoreRequest, CoreResponse, ErrorClass, ErrorEnvelope, WritableMemoryTier};
 pub use scheduler::{
-    BlockingLimit, Inventory, InventoryInstance, QueuedStep, RetryBudget, SchedulerLimits, Tick,
-    tick,
+    BlockingLimit, Inventory, InventoryInstance, QueuedStep, QueuedTask, RetryBudget,
+    SchedulerLimits, TaskTick, Tick, tick, tick_tasks,
 };
 pub use schema::{
     GateOutcome, ValidationGate, committed_schema_path, core_request_schema,

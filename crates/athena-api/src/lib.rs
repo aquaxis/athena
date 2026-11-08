@@ -33,6 +33,8 @@ pub mod pagination;
 pub mod roles;
 pub mod routes;
 pub mod skills;
+/// The Core Agent's standing facts (X-29): the supervision poll's published observations.
+pub mod standing;
 pub mod tasks;
 
 #[cfg(test)]
@@ -42,6 +44,7 @@ pub use auth::{ApiCaller, AuthMode, TokenRegistry};
 pub use errors::{ApiError, CORRELATION_HEADER};
 pub use roles::Role;
 pub use routes::{AppState, build_router};
+pub use standing::{CoreAgentStanding, StandingCell};
 
 /// The API's config surface, handed in by the orchestrating process (ATH-CFG-006).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

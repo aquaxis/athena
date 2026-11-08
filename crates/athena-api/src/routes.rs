@@ -41,6 +41,11 @@ pub struct AppState {
     pub host: String,
     /// The open store the Task API reads and writes (the Core Host opened it at boot).
     pub rows: Option<Arc<Mutex<athena_core::AthenaStore>>>,
+    /// The Core Agent's standing (X-29): the supervision poll's facts, published every
+    /// poll so `/status` names instance #0's liveness, its restart count and the
+    /// restart-window head-room (the never-invent discipline: `None` until the poll has
+    /// observed once, and the route renders its absence rather than a fabricated zero).
+    pub standing: crate::standing::StandingCell,
 }
 
 /// A call-time seed for the correlation mint (locked monotonicity is fine here: the
@@ -86,6 +91,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/tasks", get(list_task_rows))
         .route("/api/v1/tasks/{task_id}", get(read_task_row))
         .route("/api/v1/tasks/{task_id}/events", get(task_events_row))
+        .route(
+            "/api/v1/tasks/{task_id}/clarification",
+            get(task_clarification_row),
+        )
         .route("/api/v1/metrics", get(metrics_row))
         .route("/api/v1/events/stream", get(events_stream_row));
     let operator: Router<AppState> = Router::new()
@@ -210,13 +219,107 @@ fn forbidden(required: Role, correlation_id: &str) -> crate::errors::ApiError {
     crate::errors::ApiError::role_insufficient(required.as_str(), correlation_id)
 }
 
-/// The status stub: the skeleton's liveliness record before the counters land.
+/// The status counters (X-29; spec §22): the daemon's standing, read from the store.
 ///
-/// The skeleton serves a constant; it deliberately reads no build metadata (design §2.7's
-/// no built-in version string discipline) — the release identity is the git tag.
-async fn status_stub(State(_state): State<AppState>) -> Json<Value> {
+/// The answer carries the facts an operator needs to see whether the system is doing
+/// work — the Task population by state, the queue length, the instances that exist, and
+/// the approvals waiting for a human. Every value is counted from the store, so it is the
+/// same truth the API serves elsewhere; when no store is attached the counters are absent
+/// rather than invented (a skeleton that reports fabricated zeros would hide a boot
+/// fault). No build metadata is read (design §2.7's no built-in version string
+/// discipline) — the release identity is the git tag.
+async fn status_stub(State(state): State<AppState>) -> Json<Value> {
+    // The Core Agent's standing (X-29) is store-independent: the supervision poll's
+    // facts render even when no store is attached, while the Task / instance counters —
+    // which read the store — stay absent rather than invented (ATH-CORE-038).
+    let core_agent = match state.standing.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(observed) => json!({
+                "alive": observed.alive,
+                "restarts": observed.restarts,
+                "restart_limit": observed.restart_limit,
+                "runtime_instance_id": observed.runtime_instance_id,
+                "observed_at": observed.observed_at,
+            }),
+            None => json!({ "liveness": "unobserved" }),
+        },
+        Err(_) => json!({ "liveness": "unobservable" }),
+    };
+    let Some(rows) = task_rows(&state) else {
+        return Json(json!({ "status": "ready", "core_agent": core_agent }));
+    };
+    let Ok(guard) = rows.lock() else {
+        return Json(json!({
+            "status": "degraded",
+            "detail": "store lock unavailable",
+            "core_agent": core_agent,
+        }));
+    };
+
+    // The Task population, by state. A store fault is reported as such rather than
+    // silently rendered as zero.
+    let mut tasks_by_state = serde_json::Map::new();
+    let mut total_tasks: u64 = 0;
+    for task_state in athena_core::TaskState::ALL {
+        match athena_core::TaskRepository::list_by_state(&*guard, *task_state, u64::MAX) {
+            Ok(found) => {
+                total_tasks += found.len() as u64;
+                tasks_by_state.insert(task_state.as_str().to_string(), json!(found.len() as u64));
+            }
+            Err(error) => {
+                return Json(json!({
+                    "status": "degraded",
+                    "detail": format!("counting tasks failed: {error}"),
+                    "core_agent": core_agent,
+                }));
+            }
+        }
+    }
+    let queued = tasks_by_state
+        .get(athena_core::TaskState::Queued.as_str())
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let running = tasks_by_state
+        .get(athena_core::TaskState::Running.as_str())
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
+    // The instances, and how many are working (BUSY) or waiting on a human.
+    let instances = athena_core::AgentRepository::list_all_instances(&*guard).unwrap_or_default();
+    let mut instances_busy: u64 = 0;
+    let mut instances_waiting: u64 = 0;
+    for instance in &instances {
+        match instance.state {
+            athena_types::AgentInstanceState::Busy => instances_busy += 1,
+            athena_types::AgentInstanceState::Waiting
+            | athena_types::AgentInstanceState::Suspended => instances_waiting += 1,
+            _ => {}
+        }
+    }
+
+    // The approvals still awaiting an answer (the human-facing backlog).
+    let approvals_pending = athena_core::ApprovalRepository::list_by_state(
+        &*guard,
+        athena_types::ApprovalState::Requested,
+    )
+    .map(|found| found.len() as u64)
+    .unwrap_or(0);
+
     Json(json!({
         "status": "ready",
+        "core_agent": core_agent,
+        "tasks": {
+            "total": total_tasks,
+            "queued": queued,
+            "running": running,
+            "by_state": tasks_by_state,
+        },
+        "instances": {
+            "total": instances.len() as u64,
+            "busy": instances_busy,
+            "waiting": instances_waiting,
+        },
+        "approvals_pending": approvals_pending,
     }))
 }
 
@@ -224,6 +327,38 @@ async fn status_stub(State(_state): State<AppState>) -> Json<Value> {
 /// process opens the real database at boot — the tests use in-memory stores).
 pub(crate) fn task_rows(state: &AppState) -> Option<Arc<Mutex<athena_core::AthenaStore>>> {
     state.rows.clone()
+}
+
+/// The Task's pending clarification (X-27's `athena chat` leg): the question text the
+/// conversation renders, with its deadline — the same row `POST …/answer` consumes, so
+/// reading it is read-only (`viewer`) and answering stays the operator write.
+///
+/// No open clarification ⇒ 404 (`CLARIFICATION_NONE`); store faults ⇒ 500.
+async fn task_clarification_row(
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    let Some(task) = athena_types::TaskId::parse(task_id) else {
+        return crate::errors::ApiError::of_status(
+            athena_core::protocol::ErrorClass::ValidationError,
+            StatusCode::NOT_FOUND,
+            "TASK_NOT_FOUND",
+            "malformed task id on the path",
+            json!({}),
+            "",
+        )
+        .into_response();
+    };
+    let correlation = crate::errors::correlation_of(&headers, request_wall_clock_seed());
+    crate::tasks::read_clarification(&rows, &task, &correlation).into_response()
 }
 
 async fn answer_task_row(

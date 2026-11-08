@@ -385,3 +385,123 @@ impl ApprovalWaitCap {
 const fn terminal(state: &InstanceState) -> bool {
     matches!(state, InstanceState::Stopped | InstanceState::Failed)
 }
+
+// --- Task-level admission (1-6, the Core Agent loop's scheduling face) ------------------------
+
+/// One Task execution request as the Core Agent loop queues it (the Task-level projection
+/// of ATH-SCHED-009).
+///
+/// The v1 execution model is PlanStep-less (`ATH-DATA-004`: the human's natural-language
+/// instruction *is* the delegation body; `create_task` writes `plan_id: None`), so the
+/// loop's work items are Tasks, not PlanStep execution requests. Projecting them as fake
+/// `PlanStepId`s would mint agent-unissuable identifiers (`ATH-CORE-041`); the honest
+/// projection is this row: the admission decision needs only the facts below.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedTask {
+    /// The Task requesting execution.
+    pub task_id: TaskId,
+    /// The Task's priority.
+    pub priority: Priority,
+    /// Enqueue order inside its priority — the FIFO tie-breaker (ATH-SCHED-005); the loop
+    /// uses the Task's submission order (`created_at` rank).
+    pub enqueue_order: u64,
+}
+
+/// What one Task-admission cycle decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskTick {
+    /// Tasks admitted in decision order: the caller may reserve each into `RUNNING`.
+    pub admitted: Vec<TaskId>,
+    /// Ready Tasks a limit refused **this cycle** — they stay queued (ATH-SCHED-014's
+    /// observable-block face, at the Task level).
+    pub blocked: Vec<(TaskId, BlockingLimit)>,
+}
+
+/// The Task admission decision over the same §18.3 limits as [`tick`].
+///
+/// This is the loop's scheduling face (1-6 of the implementation survey): the Core Agent
+/// loop consumes it so queued Tasks pass the configured ceilings — `max_running_tasks`
+/// (ATH-SCHED-009, the running numerator at the Task level), `max_instances`
+/// (ATH-SCHED-010's exclusions apply), and `max_instances_per_task` — instead of an
+/// unbounded drain. The engine decides only order and ceilings (`ATH-SCHED-007`); the
+/// transitions still ride the Store's atomic transition+Event pair (ATH-PERS-003).
+///
+/// The PlanStep engine's decision row is shared structurally: dependency gating has no
+/// Task-level fact to consult (a Task carries no `depends_on`), so the gate that [`tick`]
+/// applies to `dependencies` collapses to "always satisfied" here — the same place in the
+/// decision order, one fewer dimension. Backoff hold gates do not exist for Tasks yet
+/// (`plan_step_attempts` is the attempt fact): a Task re-queued after failure is gated by
+/// the State Manager's transition table, not by time.
+///
+/// # Determinism
+/// Same shape as [`tick`]: effective priority (promotion applied) then enqueue order,
+/// FIFO inside a priority (ATH-SCHED-005).
+#[must_use]
+pub fn tick_tasks(
+    tasks: &[QueuedTask],
+    running_tasks: &[TaskId],
+    instances: &[InventoryInstance],
+    limits: SchedulerLimits,
+) -> TaskTick {
+    let mut result = TaskTick {
+        admitted: Vec::new(),
+        blocked: Vec::new(),
+    };
+
+    // ATH-SCHED-010 exclusions, verbatim.
+    let mut user_instances = instances
+        .iter()
+        .filter(|inst| !excluded(&inst.state))
+        .count();
+    let mut per_task: std::collections::HashMap<TaskId, u64> = std::collections::HashMap::new();
+    for inst in instances {
+        if excluded(&inst.state) {
+            continue;
+        }
+        *per_task.entry(inst.task_id.clone()).or_insert(0) += 1;
+    }
+
+    // Eligible entries in (effective priority, enqueue order) — the same face as tick's
+    // sort, minus the promotion dimension's queue-side facts (Tasks carry no waited_ms
+    // projection; the promotion interval is a PlanStep-queue refinement, ATH-SCHED-006).
+    let mut ordered: Vec<&QueuedTask> = tasks.iter().collect();
+    ordered.sort_by_key(|entry| (rank(entry.priority), entry.enqueue_order));
+
+    let mut running = running_tasks.to_vec();
+    for entry in &ordered {
+        // The running-task numerator (ATH-SCHED-009) — admissions claim their slot here,
+        // so one cycle admits at most the free slots in order.
+        let task_running = running.iter().any(|task| task == &entry.task_id);
+        if !task_running && running.len() as u64 >= limits.max_running_tasks {
+            result
+                .blocked
+                .push((entry.task_id.clone(), BlockingLimit::RunningTasks));
+            continue;
+        }
+        if user_instances as u64 >= limits.max_instances {
+            result
+                .blocked
+                .push((entry.task_id.clone(), BlockingLimit::ConcurrentInstances));
+            continue;
+        }
+        let task_load = *per_task.get(&entry.task_id).unwrap_or(&0);
+        // The admission itself takes one instance for this Task: refuse at the boundary
+        // (the same "load + 1" claim the PlanStep engine makes).
+        if task_load + 1 > limits.max_instances_per_task {
+            result
+                .blocked
+                .push((entry.task_id.clone(), BlockingLimit::InstancesPerTask));
+            continue;
+        }
+
+        // Consume the resources the start claims.
+        user_instances += 1;
+        *per_task.entry(entry.task_id.clone()).or_insert(0) += 1;
+        if !task_running {
+            running.push(entry.task_id.clone());
+        }
+        result.admitted.push(entry.task_id.clone());
+    }
+
+    result
+}
