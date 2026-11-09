@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "athena-agent"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "athena-types",
  "serde",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "athena-api"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "athena-core",
  "athena-runtime-agent-cli",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "athena-cli"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "athena-config"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "athena-types",
  "humantime-serde",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "athena-conformance"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "athena-agent",
  "athena-cli",
@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "athena-core"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "async-trait",
  "athena-agent",
@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "athena-events"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "athena-types",
  "regex",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "athena-memory"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "athena-types",
  "thiserror",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "athena-messaging"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "athena-types",
  "thiserror",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "athena-persistence"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "athena-types",
  "redb",
@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "athena-runtime"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "async-trait",
  "athena-types",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "athena-runtime-agent-cli"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "async-trait",
  "athena-runtime",
@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "athena-skills"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "athena-types",
  "serde",
@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "athena-state"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "athena-types",
  "thiserror",
@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "athena-studio"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -243,7 +243,7 @@ dependencies = [
 
 [[package]]
 name = "athena-tools"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "athena-types",
  "thiserror",
@@ -251,7 +251,7 @@ dependencies = [
 
 [[package]]
 name = "athena-types"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "schemars",
  "serde",

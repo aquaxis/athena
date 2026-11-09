@@ -176,7 +176,11 @@ Core Agent's standing — and `athena chat` runs its session loop: it posts the 
 state, and presents a clarification or an approval inline). `athena token issue --name <name>
 --role <viewer|operator|admin>` (or `` `--json` ``) issues a token — the plaintext is shown once
 and the registry stores the SHA-256 hash only (`ATH-SEC-005`, under
-`<ATHENA_HOME>/var/api-tokens.json`) — and `athena token list` prints the records. The Studio
+`<ATHENA_HOME>/var/api-tokens.json`) — and `athena token list` prints the records. The API's
+read surface is served (`R-API-09`): agent definitions, agent instances (plus the admin
+emergency stop on `/instances/{id}/stop`), runtime instances, tool executions, evaluations,
+events, hierarchies, and each task's plan/results/messages are all real store rows,
+cursor-paginated (`ATH-API-005`). The Studio
 builds to WebAssembly via `scripts/build-studio.sh` and serves the built module on port 5173
 (`athena-studio --api http://127.0.0.1:8080`); a page on the Studio origin reads the
 CORS-restricted API (loopback Studio origins only), authenticating with a pasted token kept in

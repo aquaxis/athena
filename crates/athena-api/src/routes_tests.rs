@@ -971,3 +971,223 @@ async fn the_status_answer_names_an_unobserved_core_agent_as_unobserved() {
     let value: serde_json::Value = serde_json::from_slice(&body).expect("json");
     assert_eq!(value["core_agent"]["liveness"], "unobserved", "{value}");
 }
+
+// --- X-31: the §22.5/§22.6/§22.9 read faces and the admin emergency stop --------------------
+
+type SharedTestStore = std::sync::Arc<std::sync::Mutex<athena_core::AthenaStore>>;
+
+async fn agent_surface_router() -> (axum::Router, String, SharedTestStore) {
+    let mut registry = TokenRegistry::default();
+    let admin = registry.issue("agent-surface-test", Role::Admin);
+    let store = std::sync::Arc::new(std::sync::Mutex::new(
+        athena_core::AthenaStore::in_memory().expect("store"),
+    ));
+    let router = crate::build_router(crate::AppState {
+        registry: std::sync::Arc::new(registry),
+        mode: AuthMode::Token,
+        host: "127.0.0.1".into(),
+        rows: Some(store.clone()),
+        standing: crate::standing::new_cell(),
+    });
+    (router, admin, store)
+}
+
+fn seed_definition(agent_id: &str) -> athena_types::AgentDefinition {
+    athena_types::AgentDefinition {
+        id: athena_types::AgentId::new(agent_id),
+        name: "the seeded worker".into(),
+        level: athena_types::AgentLevel::Worker,
+        description: "seeded for the X-31 surface".into(),
+        capabilities: vec!["rust".into()],
+        persona_ref: "personas/worker.md".into(),
+        persona_version: "1".into(),
+        allowed_tools: Vec::new(),
+        delegable_tools: Vec::new(),
+        default_skills: Vec::new(),
+        runtime: athena_types::RuntimeType::AgentCli,
+        model: athena_types::ModelRef {
+            provider: "claude".into(),
+            name: "claude-cli".into(),
+        },
+        max_delegation_depth: 2,
+        dynamic: false,
+    }
+}
+
+async fn seed_agent_fixtures(store: &SharedTestStore) -> (String, String, String, String) {
+    use athena_core::{AgentRepository, RuntimeInstanceRepository};
+    let definition = seed_definition("x31-worker");
+    let instance = athena_types::AgentInstance {
+        id: athena_types::InstanceId::parse("ai-01HX31TESTINSTANCE000000000A")
+            .expect("instance id"),
+        agent_id: definition.id.clone(),
+        task_id: None,
+        plan_step_id: None,
+        superior_instance_id: None,
+        delegation_depth: 0,
+        state: athena_types::AgentInstanceState::Idle,
+        runtime_instance_id: Some(
+            athena_types::RuntimeInstanceId::parse("ri-01HX31TESTRUNTIME00000000000")
+                .expect("runtime id"),
+        ),
+        workspace: "/repo/x31".into(),
+        skill_set: Vec::new(),
+        aiprj_log_ref: None,
+        attempt: 1,
+        started_at: Some(athena_core::now_rfc3339()),
+        finished_at: None,
+    };
+    let runtime = athena_types::RuntimeInstance {
+        id: athena_types::RuntimeInstanceId::parse("ri-01HX31TESTRUNTIME00000000000")
+            .expect("runtime id"),
+        runtime_type: athena_types::RuntimeType::AgentCli,
+        instance_id: instance.id.clone(),
+        state: athena_types::AgentInstanceState::Idle,
+        pid: Some(4242),
+        last_heartbeat_at: Some(athena_core::now_rfc3339()),
+        started_at: athena_core::now_rfc3339(),
+        stopped_at: None,
+        stop_reason: None,
+        exit_code: None,
+        side_effects: athena_types::SideEffects::Unknown,
+    };
+    {
+        let mut guard = store.lock().expect("store");
+        AgentRepository::upsert_definition(&mut *guard, &definition).expect("definition");
+        AgentRepository::insert_instance(&mut *guard, &instance).expect("instance");
+        RuntimeInstanceRepository::insert(&mut *guard, &runtime).expect("runtime");
+    }
+    (
+        definition.id.as_str().to_string(),
+        instance.id.as_str().to_string(),
+        runtime.id.as_str().to_string(),
+        String::new(),
+    )
+}
+
+async fn admin_get(router: &axum::Router, token: &str, uri: &str) -> (StatusCode, String) {
+    let request = Request::builder()
+        .uri(uri)
+        .body(Body::empty())
+        .expect("request");
+    let mut request = request;
+    bearer(&mut request, token);
+    let response = router.clone().oneshot(request).await.expect("answered");
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 65_536)
+        .await
+        .expect("body");
+    (status, String::from_utf8_lossy(&body).to_string())
+}
+
+#[tokio::test]
+async fn the_agent_surface_serves_definitions_instances_and_runtimes() {
+    // §22.5/§22.6 (X-31, R-API-09): the definitions, the instances and the runtime rows
+    // the store already keeps answer through their own field maps — 404 is gone.
+    let (router, token, store) = agent_surface_router().await;
+    let (agent, instance, runtime, _) = seed_agent_fixtures(&store).await;
+
+    let (status, body) = admin_get(&router, &token, "/api/v1/agents").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains(agent.as_str()), "{body}");
+
+    let (status, body) = admin_get(&router, &token, "/api/v1/agents/x31-worker").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("the seeded worker"), "{body}");
+
+    let (status, body) = admin_get(&router, &token, "/api/v1/instances").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains(instance.as_str()), "{body}");
+
+    let (status, body) = admin_get(&router, &token, &format!("/api/v1/instances/{instance}")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = admin_get(&router, &token, "/api/v1/runtimes").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains(runtime.as_str()), "{body}");
+
+    let (status, body) = admin_get(&router, &token, &format!("/api/v1/runtimes/{runtime}")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // An absent definition is the honest 404, never a fabrication.
+    let (status, body) = admin_get(&router, &token, "/api/v1/agents/no-such-agent").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert!(body.contains("AGENT_NOT_FOUND"), "{body}");
+}
+
+#[tokio::test]
+async fn the_event_list_serves_the_stream_rows_cursor_paginated() {
+    // §22.9's list face (X-31): the append-only rows the stream serves frame by frame
+    // also serve as a paginated list; payload contents never ride the wire (ATH-EVENT-007).
+    let (router, token, store) = agent_surface_router().await;
+    {
+        use athena_core::EventRepository;
+        let mut guard = store.lock().expect("store");
+        for index in 0..7 {
+            let event = athena_core::NewEvent {
+                event_id: athena_types::EventId::new(),
+                schema_version: 1,
+                event_type: "ConfigurationLoaded".into(),
+                occurred_at: athena_core::now_rfc3339(),
+                task_id: None,
+                plan_step_id: None,
+                agent_id: None,
+                instance_id: None,
+                skill_id: None,
+                correlation_id: format!("cor-x31-{index}"),
+                causation_id: None,
+                actor: "system".into(),
+                payload_json: serde_json::json!({ "note": format!("row {index}") }).to_string(),
+            };
+            EventRepository::append(&mut *guard, &event).expect("event");
+        }
+    }
+    let (status, body) = admin_get(&router, &token, "/api/v1/events?limit=3").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("\"items\""), "{body}");
+    assert!(body.contains("next_cursor"), "{body}");
+    assert!(
+        !body.contains("row 6") || body.contains("next_cursor"),
+        "{body}"
+    );
+    // The payload's raw note never renders (`ATH-EVENT-007`: names and stamps only).
+    assert!(!body.contains("row 6"), "{body}");
+}
+
+#[tokio::test]
+async fn the_instance_stop_refuses_terminal_and_moves_live_states_to_stopping() {
+    // §22.5's only write face (ATH-API-024, admin): `StopRequested` through the §17.2
+    // table — a live state moves to `Stopping`, a terminal one refuses 409.
+    let (router, token, store) = agent_surface_router().await;
+    let (_, instance, _, _) = seed_agent_fixtures(&store).await;
+    let stop_uri = format!("/api/v1/instances/{instance}/stop");
+
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(&stop_uri)
+        .body(Body::empty())
+        .expect("request");
+    bearer(&mut request, &token);
+    let response = router.clone().oneshot(request).await.expect("answered");
+    assert_eq!(response.status(), StatusCode::ACCEPTED, "{}", {
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("body");
+        String::from_utf8_lossy(&body).to_string()
+    });
+    {
+        use athena_core::AgentRepository;
+        let guard = store.lock().expect("store");
+        let row = AgentRepository::get_instance(
+            &*guard,
+            &athena_types::InstanceId::parse(&instance).expect("id"),
+        )
+        .expect("read")
+        .expect("row");
+        assert!(
+            matches!(row.state, athena_types::AgentInstanceState::Stopping),
+            "{:?}",
+            row.state
+        );
+    }
+}

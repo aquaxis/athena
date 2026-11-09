@@ -74,7 +74,10 @@ pub use athena_persistence::now_rfc3339;
 pub use athena_persistence::{NewEvent, WorkspaceLeaseRepository};
 /// Task transition tables re-exported for the API's run / cancel handlers; the state
 /// type and the lease manager follow the same need.
-pub use athena_state::{TaskTransition, TaskTrigger, task_transition};
+pub use athena_state::{
+    InstanceTransition, InstanceTrigger, TaskTransition, TaskTrigger, instance_transition,
+    task_transition,
+};
 pub use athena_types::TaskState;
 pub use budgets::{BudgetSignal, Budgets, IterationEffect};
 pub use core_agent_session::{
@@ -100,8 +103,10 @@ pub use ownership::{Entity, ModuleRole, OWNERSHIP};
 /// `athena-persistence` edge (spec §32.2 allows `athena-api → athena-core` only).
 pub use athena_persistence::{
     AgentRepository, ApprovalRepository, AthenaStore, ClarificationRepository,
-    ConversationRepository, EventRepository, IdempotencyRepository, MemoryRepository, Page,
-    PersistenceError, SkillRepository, StoredEvent, TaskRepository,
+    ConversationRepository, EventRepository, HierarchyRepository, IdempotencyRepository,
+    MemoryRepository, MessageRepository, Page, PersistenceError, PlanRepository, ResultRepository,
+    RuntimeInstanceRepository, SkillRepository, StoredEvent, TaskRepository,
+    ToolExecutionRepository,
 };
 
 /// Wrap a plain-text failure into the store's error face (the API's fault mapping does

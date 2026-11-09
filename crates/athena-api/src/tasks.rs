@@ -10,10 +10,14 @@
 //! - **Events** replay per Task through the store, cursor-paginated (P1-39).
 //! - **Idempotency**: a `POST /tasks` presenting `Idempotency-Key` replays its recorded
 //!   body identically (P1-39's `apply`).
-//! - The other §22.3–§22.9 groups (Conversation, Plan read-only, agents / instances,
-//!   Runtime, Skill, approvals, `/events/stream`) follow the same shape; their *write*
-//!   halves belong to their phase owners per D-1, so those handlers answer 501 visibly
-//!   rather than pretending.
+//! - The other §22.3–§22.9 groups are served on this crate's read faces (the agent /
+//!   runtime / event / task-side surfaces in [`crate::agents`], cursor-paginated per
+//!   ATH-API-005); their write halves exist only where the spec names one —
+//!   `POST /api/v1/instances/{id}/stop` (admin, ATH-API-024). Routes this crate does not
+//!   carry answer 404 (the router's honest miss), never a fabricated 501. (Corrected by
+//!   X-31: this doc used to claim the unimplemented handlers answer 501 — no such
+//!   handlers exist; the absent endpoints answered 404 with an empty body, which is what
+//!   the first survey's live probe recorded.)
 
 use athena_core::protocol::ErrorClass;
 use athena_core::{NewEvent, TaskRepository, TaskState, TaskTrigger, WorkspaceLeaseRepository};

@@ -177,7 +177,10 @@ athena update
 インラインで提示します)。`athena token issue --name <名前> --role <viewer|operator|admin>`
 (`--json` 対応) はトークンを発行します — 平文は 1 回だけ表示され、registry には SHA-256
 ハッシュのみが記録されます (`ATH-SEC-005`、`<ATHENA_HOME>/var/api-tokens.json`)。
-`athena token list` は記録を一覧表示します。Studio は `scripts/build-studio.sh` で
+`athena token list` は記録を一覧表示します。API の読み取り面も提供されます (`R-API-09`):
+エージェント定義、エージェントインスタンス（`/instances/{id}/stop` の admin 緊急停止を含む）、
+ランタイムインスタンス、ツール実行、評価、イベント、階層、各タスクの plan/results/messages は
+すべてストアの実行で、カーソルページ分割 (`ATH-API-005`) で応答します。Studio は `scripts/build-studio.sh` で
 WebAssembly へビルドし、ビルド済みモジュールを 5173 番ポートから提供します
 (`athena-studio --api http://127.0.0.1:8080`)。Studio オリジンのページは CORS 制限付きの
 API (ループバックの Studio オリジンのみ許可) を読み、`sessionStorage` に保持した

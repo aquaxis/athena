@@ -91,6 +91,23 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/tasks", get(list_task_rows))
         .route("/api/v1/tasks/{task_id}", get(read_task_row))
         .route("/api/v1/tasks/{task_id}/events", get(task_events_row))
+        .route("/api/v1/tasks/{task_id}/plan", get(task_plan_row))
+        .route("/api/v1/tasks/{task_id}/results", get(task_results_row))
+        .route("/api/v1/tasks/{task_id}/messages", get(task_messages_row))
+        .route("/api/v1/agents", get(agents_list_row))
+        .route("/api/v1/agents/{agent_id}", get(agent_read_row))
+        .route("/api/v1/instances", get(instances_list_row))
+        .route("/api/v1/instances/{instance_id}", get(instance_read_row))
+        .route(
+            "/api/v1/instances/{instance_id}/messages",
+            get(instance_messages_row),
+        )
+        .route("/api/v1/hierarchies/{task_id}", get(hierarchy_read_row))
+        .route("/api/v1/tool-executions", get(tool_executions_row))
+        .route("/api/v1/evaluations", get(evaluations_row))
+        .route("/api/v1/runtimes", get(runtimes_list_row))
+        .route("/api/v1/runtimes/{runtime_id}", get(runtime_read_row))
+        .route("/api/v1/events", get(events_list_row))
         .route(
             "/api/v1/tasks/{task_id}/clarification",
             get(task_clarification_row),
@@ -142,6 +159,12 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/skills/{skill_id}/decision",
             axum::routing::post(crate::skills::enable_disable_skill),
+        )
+        .route(
+            // The spec's only write face on the instance group (ATH-API-024): the admin
+            // emergency stop, never an instance *start*.
+            "/api/v1/instances/{instance_id}/stop",
+            axum::routing::post(stop_instance_row),
         );
     health
         .merge(endpoint_layer(&state, Role::Viewer, viewer))
@@ -761,7 +784,6 @@ pub(crate) fn now_text() -> String {
     athena_core::now_rfc3339().to_string()
 }
 
-/// Approve placeholder.
 async fn list_approvals_row(
     axum::extract::RawQuery(query): axum::extract::RawQuery,
     State(state): State<AppState>,
@@ -773,22 +795,12 @@ async fn list_approvals_row(
         )
             .into_response();
     };
-    let query = query.as_deref().unwrap_or("");
-    let params: Vec<(String, String)> = query
-        .split('&')
-        .filter_map(|pair| {
-            let mut parts = pair.split('=');
-            Some((
-                parts.next()?.to_string(),
-                parts.next().unwrap_or("").to_string(),
-            ))
-        })
-        .collect();
-    let state = params
-        .iter()
+    let state_filter = crate::routes::form_urlencoded_pairs(query.as_deref().unwrap_or(""))
+        .into_iter()
         .find(|(key, _)| key == "state")
-        .map(|(_, value)| value.as_str());
-    crate::approvals::list(&rows, state).unwrap_or_else(|error| error.into_response())
+        .map(|(_, value)| value);
+    crate::approvals::list(&rows, state_filter.as_deref())
+        .unwrap_or_else(|error| error.into_response())
 }
 
 async fn read_approval_row(
@@ -835,6 +847,251 @@ async fn approve_or_reject_row(
     };
     let approver = format!("{}:{}", caller.name, caller.role.as_str());
     crate::approvals::answer(&rows, &id, approve, &approver, &now, &correlation)
+        .unwrap_or_else(|error| error.into_response())
+}
+
+/// The shared query-pair face the §22.5/§22.9 read handlers ride: `RawQuery` is the raw
+/// string, so the pairs are split here once (the same shape `list_approvals_row` uses).
+async fn agents_list_row(
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    let page = crate::pagination::Query::parse(query.as_deref().unwrap_or(""));
+    crate::agents::list_definitions(&rows, &page).unwrap_or_else(|error| error.into_response())
+}
+
+async fn agent_read_row(
+    axum::extract::Path(agent_id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    crate::agents::read_definition(&rows, &agent_id).unwrap_or_else(|error| error.into_response())
+}
+
+async fn instances_list_row(
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    let page = crate::pagination::Query::parse(query.as_deref().unwrap_or(""));
+    crate::agents::list_instances(&rows, &page).unwrap_or_else(|error| error.into_response())
+}
+
+async fn instance_read_row(
+    axum::extract::Path(instance_id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    crate::agents::read_instance(&rows, &instance_id).unwrap_or_else(|error| error.into_response())
+}
+
+async fn instance_messages_row(
+    axum::extract::Path(instance_id): axum::extract::Path<String>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    let page = crate::pagination::Query::parse(query.as_deref().unwrap_or(""));
+    crate::agents::list_instance_messages(&rows, &instance_id, &page)
+        .unwrap_or_else(|error| error.into_response())
+}
+
+async fn hierarchy_read_row(
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    crate::agents::read_hierarchy(&rows, &task_id).unwrap_or_else(|error| error.into_response())
+}
+
+async fn tool_executions_row(
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    let page = crate::pagination::Query::parse(query.as_deref().unwrap_or(""));
+    crate::agents::list_tool_executions(&rows, &page).unwrap_or_else(|error| error.into_response())
+}
+
+async fn evaluations_row(
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    let page = crate::pagination::Query::parse(query.as_deref().unwrap_or(""));
+    crate::agents::list_evaluations(&rows, &page).unwrap_or_else(|error| error.into_response())
+}
+
+async fn runtimes_list_row(
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    let page = crate::pagination::Query::parse(query.as_deref().unwrap_or(""));
+    crate::agents::list_runtimes(&rows, &page).unwrap_or_else(|error| error.into_response())
+}
+
+async fn runtime_read_row(
+    axum::extract::Path(runtime_id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    crate::agents::read_runtime(&rows, &runtime_id).unwrap_or_else(|error| error.into_response())
+}
+
+async fn events_list_row(
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    let raw = query.as_deref().unwrap_or("");
+    let page = crate::pagination::Query::parse(raw);
+    let pairs = form_urlencoded_pairs(raw);
+    let task_id = pairs
+        .iter()
+        .find(|(key, _)| key == "task_id")
+        .map(|(_, value)| value.as_str());
+    crate::agents::list_events(&rows, &page, task_id, None)
+        .unwrap_or_else(|error| error.into_response())
+}
+
+async fn task_plan_row(
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    let raw = query.as_deref().unwrap_or("");
+    let revision = form_urlencoded_pairs(raw)
+        .iter()
+        .find(|(key, _)| key == "revision")
+        .and_then(|(_, value)| value.parse::<u64>().ok());
+    crate::agents::read_task_plan(&rows, &task_id, revision)
+        .unwrap_or_else(|error| error.into_response())
+}
+
+async fn task_results_row(
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    let page = crate::pagination::Query::parse(query.as_deref().unwrap_or(""));
+    crate::agents::list_task_results(&rows, &task_id, &page)
+        .unwrap_or_else(|error| error.into_response())
+}
+
+async fn task_messages_row(
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    let page = crate::pagination::Query::parse(query.as_deref().unwrap_or(""));
+    crate::agents::list_task_messages(&rows, &task_id, &page)
+        .unwrap_or_else(|error| error.into_response())
+}
+
+async fn stop_instance_row(
+    axum::extract::Path(instance_id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    let correlation = crate::errors::correlation_of(&headers, request_wall_clock_seed());
+    let now = crate::routes::now_text();
+    crate::agents::stop_instance(&rows, &instance_id, &now, &correlation)
         .unwrap_or_else(|error| error.into_response())
 }
 
