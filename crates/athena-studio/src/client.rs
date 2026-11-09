@@ -225,6 +225,10 @@ pub enum View {
 /// API's event stream publishes; the Studio slashes its own decoration (`no chain of
 /// thought, no secret display` — `ATH-MEM-004` / `ATH-EVENT-007`).
 ///
+/// The Event-type name rides both vocabularies the §23.1 envelope publishes — the frame's
+/// `"type"` (the envelope's own key) and the legacy `"event_type"` spelling (X-30's SSE
+/// vocabulary repair; the API's frame uses the envelope's `"type"`).
+///
 /// # Errors
 /// A malformed chunk's rows are skipped, not invented; an absent chunk renders empty.
 #[must_use]
@@ -236,6 +240,7 @@ pub fn parse_stream_chunk(chunk: &str) -> Vec<EventRow> {
         .map(|face| EventRow {
             event_type: face
                 .get("event_type")
+                .or_else(|| face.get("type"))
                 .and_then(|row| row.as_str())
                 .unwrap_or_default()
                 .to_string(),

@@ -93,20 +93,38 @@ fn wasm_artifact() -> Option<Vec<u8>> {
 }
 
 /// The workspace root the artifact paths resolve from: the store of the pipeline's
-/// outputs is `target/`, anchored at the current directory the server booted in (the
-/// pipeline runs there too, `scripts/build-studio.sh`).
+/// outputs is `target/`, and it is found by ascending from the process's current
+/// directory to the nearest directory that carries a `Cargo.toml` (X-30 defect face
+/// (b)'s repair — the server may legitimately boot from a subdirectory of the
+/// workspace, e.g. an instance workspace under `.athena/var/`,
+/// `scripts/build-studio.sh`'s `cd "$root"` is not the caller's concern, and hard-coding
+/// `../..` would guess the crate's depth). Walk until `Cargo.toml` holds or the
+/// filesystem root is reached; when nothing matches, output `None`, and the asset set
+/// answers its honest placeholder (the not-built / not-found face — never a fabricated
+/// module).
 fn workspace_root() -> Option<std::path::PathBuf> {
-    std::env::current_dir().ok()
+    let mut current = std::env::current_dir().ok()?;
+    loop {
+        if current.join("Cargo.toml").is_file() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
 }
 
 /// The pipeline's output when present, otherwise the placeholder. The outputs live at
-/// `target/wasm32-unknown-unknown/release/<name>` in a checkout the pipeline has run in;
-/// the runner is `scripts/build-studio.sh` (P7-01), and `BuildPlan::phase7` is the
-/// command face CI asserts against.
+/// `target/wasm32-unknown-unknown/release/<name>` under the workspace root the same way
+/// the wasm artifact does ([`workspace_root`]'s walk — one root face for both outputs,
+/// not a per-asset `current_dir` read); the runner is `scripts/build-studio.sh` (P7-01),
+/// and `BuildPlan::phase7` is the command face CI asserts against.
 fn built_or_placeholder(name: &str, placeholder: Vec<u8>) -> Vec<u8> {
-    std::env::current_dir()
-        .ok()
-        .map(|cwd| cwd.join("target/wasm32-unknown-unknown/release").join(name))
+    workspace_root()
+        .map(|root| {
+            root.join("target/wasm32-unknown-unknown/release")
+                .join(name)
+        })
         .and_then(|path| std::fs::read(path).ok())
         .unwrap_or(placeholder)
 }
@@ -156,10 +174,16 @@ impl BuildPlan {
 /// type plus the bytes — resolved by the app's asset set. `main.rs` runs the socket
 /// loop around this face.
 ///
+/// The target is matched on the *path* only: the query string is stripped before the
+/// route read (X-30 defect face (a)'s repair — the §25 screens live on one page and the
+/// view is the query's answer, so `/?view=…` and `/?task=…` are the document's own deep
+/// links, and a browser navigating one must meet the app, not a 404).
+///
 /// # Errors
 /// An unknown path returns `None` (the caller renders 404).
 #[must_use]
-pub fn answer(app: &StudioApp, path: &str) -> Option<(&'static str, Vec<u8>)> {
+pub fn answer(app: &StudioApp, target: &str) -> Option<(&'static str, Vec<u8>)> {
+    let path = target.split('?').next().unwrap_or(target);
     let asset = match path {
         "/" | "/index.html" => Asset::IndexHtml,
         "/athena_studio.wasm" => Asset::AppWasm,

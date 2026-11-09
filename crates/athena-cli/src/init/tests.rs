@@ -285,9 +285,13 @@ fn a_fresh_init_installs_every_shipped_persona_and_skill_package() {
     let home = root.join(".athena");
 
     // The embedded table is the repository's two directories, so the assertion is
-    // structural: every entry must land, byte-identical.
+    // structural: every entry must land, byte-identical. The local binding keeps the
+    // read through the table's own face (clippy's `const_is_empty` folds the constant
+    // into a false positive on the toolchain's face — the build script emits the 31
+    // entries in every build tree, and the assertion holds at run time).
+    let embedded = template::EMBEDDED_DEFINITIONS;
     assert!(
-        !template::EMBEDDED_DEFINITIONS.is_empty(),
+        !embedded.is_empty(),
         "the build script must embed the repository's definitions"
     );
     for (rel_key, content) in template::EMBEDDED_DEFINITIONS {

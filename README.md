@@ -180,7 +180,11 @@ and the registry stores the SHA-256 hash only (`ATH-SEC-005`, under
 builds to WebAssembly via `scripts/build-studio.sh` and serves the built module on port 5173
 (`athena-studio --api http://127.0.0.1:8080`); a page on the Studio origin reads the
 CORS-restricted API (loopback Studio origins only), authenticating with a pasted token kept in
-`sessionStorage`.
+`sessionStorage` — adopted at boot, re-pasted once through an in-page panel when the API
+answers 401. Deep links (`/?view=…`, `/?task=…`) land their screen, the tab bar survives every
+screen change, and the Live screen follows the event stream through an authenticated fetch
+replay anchored on `Last-Event-ID`; the page itself creates no tasks — task creation stays
+with the CLI (the API's one-lease discipline).
 
 ## Licence
 

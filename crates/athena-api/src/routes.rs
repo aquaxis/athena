@@ -651,6 +651,7 @@ async fn events_stream_row(
                 serde_json::json!({
                     "event_id": event.event_id.as_str(),
                     "type": event.event_type,
+                    "task_id": event.task_id.as_ref().map(athena_types::TaskId::as_str),
                     "occurred_at": event.occurred_at,
                     "sequence": event.sequence,
                     "correlation_id": event.correlation_id,
