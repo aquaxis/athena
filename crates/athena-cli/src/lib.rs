@@ -6,9 +6,11 @@
 //! - `.athena/` is resolved by an upward search from the current directory and never derived
 //!   from the executable or a configuration location (ATH-CFG-010).
 //! - Every non-init command fails with exit code 2 and prompts for `athena init` when
-//!   `.athena/` cannot be resolved (ATH-CLI-010). Commands other than `init` are a Phase 6
-//!   build; until then a resolvable home reports the command as not implemented (exit 70,
-//!   ATH-CLI-008's internal-error code).
+//!   `.athena/` cannot be resolved (ATH-CLI-010). The §24.3 vocabulary (`chat`, `run`,
+//!   `status`, `task`, `plan`, `agent`, `instance`, `runtime`, `event`, `approval`,
+//!   `skill`, `token`) is implemented and reaches the Core API; a resolvable home with a
+//!   command outside that vocabulary reports the unknown command (exit 70, ATH-CLI-008's
+//!   internal-error code).
 
 pub mod chat;
 pub mod commands;
@@ -172,7 +174,7 @@ pub fn run(args: &[String], cwd: &Path) -> Outcome {
             Some(home) => Outcome::fail(
                 70,
                 format!(
-                    "athena {command} is not implemented yet (Phase 6). ATHENA_HOME: {}",
+                    "athena {command}: unknown command. ATHENA_HOME: {}",
                     home.display()
                 ),
             ),
@@ -301,4 +303,4 @@ fn run_token(args: &[String], cwd: &Path, json_wanted: bool) -> Outcome {
 }
 
 /// The command surface summary the bin prints for `athena help` / no arguments.
-const USAGE: &str = "athena — organize multiple AI agents to carry out one Task                      (spec 1.0)\n\nusage:\n  athena init      introduce this project: create .athena/ and expand aiprj\n                   (ATH-CLI-009)\n  athena update    refresh the tool from the published repository; when a .athena/\n                   project resolves, update only personas/ and skills/ (R-CLI-08)\n  athena token     issue or list the Bearer tokens the API authenticates\n                   (token issue --name <name> --role <viewer|operator|admin>)\n  athena help      this summary\n\nOther commands (chat, run, task, ...) reach the Core API and arrive in Phase 6; they exit\nwith code 2 and prompt `athena init` while no .athena/ can be resolved (ATH-CLI-010).\n";
+const USAGE: &str = "athena — organize multiple AI agents to carry out one Task                      (spec 1.0)\n\nusage:\n  athena init      introduce this project: create .athena/ and expand aiprj\n                   (ATH-CLI-009)\n  athena update    refresh the tool from the published repository; when a .athena/\n                   project resolves, update only personas/ and skills/ (R-CLI-08)\n  athena token     issue or list the Bearer tokens the API authenticates\n                   (token issue --name <name> --role <viewer|operator|admin>)\n  athena help      this summary\n\nThe §24.3 verb families (chat, run, status, task, plan, agent, instance, runtime, event,\napproval, skill, token) are implemented and reach the Core API. The `--dry-run` flag shows\nthe request a verb would make; `--json` carries the API's own response body (ATH-CLI-007).\nA command outside the vocabulary exits 70 with a resolvable .athena/ and prompts\n`athena init` with exit 2 otherwise (ATH-CLI-010).\n";
