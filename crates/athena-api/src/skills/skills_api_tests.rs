@@ -413,3 +413,79 @@ fn the_no_enabled_before_validation_rule_scans_the_payload_state() {
         .unwrap_or(false);
     assert!(state_face, "the refusal fires on the ENABLED state string");
 }
+
+#[tokio::test]
+async fn the_202_update_leg_settles_through_the_lifecycle_semantics() {
+    // X-35's API-glue face: the §22.7 `update` records the request (202, the row in
+    // `UPDATING`), and the §12.5 completion lands through the lifecycle semantics —
+    // here driven in-process against the same store the router holds, exactly what the
+    // resident cadence ticks. The registered copy is absent by design in this fixture —
+    // the pin is unlocatable, which is the honest 取得失敗 face, `SkillValidationFailed`
+    // (UPDATING → FAILED), the §17.3 completion Event with actor `system`.
+    let (router, admin, store) = seeded_router(SkillState::Available);
+    let (status, body) = answer(
+        &router,
+        admin_request(
+            "/api/v1/skills/the-skill/versions/1.2.0/update",
+            "POST",
+            &admin,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert!(body.contains("\"UPDATING\""), "{body}");
+    let mut guard = store.lock().expect("lock");
+    let report = athena_core::skill_lifecycle::run_once(
+        &mut guard,
+        std::path::Path::new("/nonexistent-x35-local"),
+        std::path::Path::new("/nonexistent-x35-registered"),
+        true,
+        "2026-11-10T12:00:00Z",
+        "cor-x35-api",
+    )
+    .expect("the tick ran");
+    assert_eq!(report.update_failures, 1, "{report:?}");
+    let row = athena_core::SkillRepository::get(&*guard, &SkillId::new("the-skill"), "1.2.0")
+        .expect("read")
+        .expect("row");
+    assert_eq!(
+        row.state,
+        SkillState::Failed,
+        "the in-flight row landed FAILED"
+    );
+}
+
+#[tokio::test]
+async fn the_202_validate_leg_settles_from_the_failed_rest_state() {
+    // The revalidation face: `FAILED → VALIDATING` (202, the request recorded), then the
+    // Skill Validator's leg. Unlocatable again → 検証失敗, `VALIDATING → FAILED`.
+    let (router, admin, store) = seeded_router(SkillState::Failed);
+    let (status, body) = answer(
+        &router,
+        admin_request(
+            "/api/v1/skills/the-skill/versions/1.2.0/validate",
+            "POST",
+            &admin,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert!(body.contains("\"VALIDATING\""), "{body}");
+    let mut guard = store.lock().expect("lock");
+    let report = athena_core::skill_lifecycle::run_once(
+        &mut guard,
+        std::path::Path::new("/nonexistent-x35-local"),
+        std::path::Path::new("/nonexistent-x35-registered"),
+        true,
+        "2026-11-10T12:00:00Z",
+        "cor-x35-api-2",
+    )
+    .expect("the tick ran");
+    assert_eq!(report.validation_failures, 1, "{report:?}");
+    let row = athena_core::SkillRepository::get(&*guard, &SkillId::new("the-skill"), "1.2.0")
+        .expect("read")
+        .expect("row");
+    assert_eq!(row.state, SkillState::Failed);
+}

@@ -150,7 +150,9 @@ Further commands: `athena task create/show/cancel`, `athena plan show`, `athena 
 `athena instance list/stop` (admin), `athena runtime list`, `athena event tail`,
 `athena approval list/approve/reject`, and the full §24.3 skill vocabulary —
 `athena skill install/list/show/search/enable/disable/update/remove/validate` (enable/disable/
-update/remove/validate pin `(id, version)`, `ATH-SKILL-020`).
+update/remove/validate pin `(id, version)`, `ATH-SKILL-020`; `update`/`validate` record the
+request — the resident's skill lifecycle settles `UPDATING`/`VALIDATING` rows via the §12.5
+Skill Manager / Skill Validator legs, `SkillUpdated`/`SkillValidated`/`SkillValidationFailed`).
 Every command accepts `--json` for scripting. The CLI talks to the Core API only (`/api/v1`);
 it never launches `agent-cli` directly (`ATH-CLI-001`/`002`).
 

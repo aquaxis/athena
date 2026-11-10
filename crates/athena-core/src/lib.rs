@@ -55,6 +55,10 @@ pub mod runtime_manager;
 pub mod scheduler;
 #[cfg(test)]
 mod scheduler_tests;
+pub mod skill_lifecycle;
+#[cfg(test)]
+#[path = "skill_lifecycle_tests.rs"]
+mod skill_lifecycle_tests;
 pub mod working_memory;
 
 pub mod schema;

@@ -358,6 +358,14 @@ async fn main() {
     //     never the request path (the same cadence/semantics split D-35 keeps).
     maintenance_cadence(rows.clone(), config.clone());
 
+    // 9d. The skill-lifecycle cadence (X-35): the §12.5 async half — UPDATING rows
+    //     complete through the Skill Manager's acquisition+validation leg and
+    //     VALIDATING rows resolve through the Skill Validator's leg. The API's
+    //     update/validate faces record the request (202); this cadence is what the
+    //     record was for — the completion walks its §17.3 edges on the resident's
+    //     own clock (the same cadence/semantics split D-35 keeps).
+    skill_lifecycle_cadence(rows.clone(), config.clone());
+
     // 10. Serve until the signal; then the safe-shutdown sequence (NFR-13).
     let server = axum::serve(listener, build_router(state)).with_graceful_shutdown(async {
         let ctrl_c = tokio::signal::ctrl_c();
@@ -985,6 +993,11 @@ fn recovered_config(record: &athena_runtime_agent_cli::Record) -> Config {
 /// a one-minute cadence — bounded work, never in the request path.
 const MAINTENANCE_POLL: Duration = Duration::from_secs(60);
 
+/// The §12.5 async half's poll spacing: the in-flight completion legs walk every 2 s —
+/// the same spacing as the Core Agent execution loop, since a settlement is one disk
+/// gate away once the material is located.
+const SKILL_LIFECYCLE_POLL: Duration = Duration::from_secs(2);
+
 /// One `duration`-ago RFC 3339 stamp (the cutoff arithmetic): now minus the retention.
 fn cutoff(duration: std::time::Duration) -> String {
     let now = std::time::SystemTime::now()
@@ -1049,6 +1062,56 @@ fn maintenance_cadence(rows: Arc<Mutex<AthenaStore>>, config: athena_core::Confi
                 }
                 Err(fault) => {
                     eprintln!("athena-api: retention sweep faulted: {fault}; retries next tick");
+                }
+            }
+        }
+    });
+}
+
+/// The §17.3 in-flight poll (2 s, same cadence/semantics split D-35 keeps): the Skill
+/// Manager's and the Skill Validator's §12.5 completion legs run on the resident's own
+/// clock through `athena_core::skill_lifecycle::run_once`. A 202 request-recorded row
+/// (`UPDATING`/`VALIDATING`) is settled here — located material, the P5-02 gate, and
+/// the §17.3 completion Event (`SkillUpdated`/`SkillValidated`/`SkillValidationFailed`).
+/// Faults are logged and retried at the next tick; a faulted tick never halts the
+/// resident, and a quiet tick emits nothing.
+fn skill_lifecycle_cadence(rows: Arc<Mutex<AthenaStore>>, config: Config) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(SKILL_LIFECYCLE_POLL).await;
+            let now = athena_types::now_rfc3339();
+            let correlation = athena_core::digest(&format!("skill-lifecycle-{now}"));
+            let local_dir = PathBuf::from(&config.skills.local_dir);
+            let registered_dir = PathBuf::from(&config.skills.dir);
+            let verify_checksum = config.skills.verify_checksum;
+            let Ok(mut guard) = rows.lock() else {
+                continue;
+            };
+            match athena_core::skill_lifecycle::run_once(
+                &mut guard,
+                &local_dir,
+                &registered_dir,
+                verify_checksum,
+                &now,
+                &correlation,
+            ) {
+                Ok(report) => {
+                    if !report.is_quiet() {
+                        for line in &report.faults {
+                            eprintln!("athena-api: skill lifecycle: {line}");
+                        }
+                        eprintln!(
+                            "athena-api: skill lifecycle settled updates {}, update failures {}, \
+                             revalidations {}, validation failures {}",
+                            report.updated,
+                            report.update_failures,
+                            report.validated,
+                            report.validation_failures
+                        );
+                    }
+                }
+                Err(fault) => {
+                    eprintln!("athena-api: skill lifecycle faulted: {fault}; retries next tick");
                 }
             }
         }

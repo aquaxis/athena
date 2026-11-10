@@ -32,7 +32,13 @@
 //!   validation legs belong to the Skill Manager / Skill Validator (§12.5), so the
 //!   answer carries the row's real in-flight state (`UPDATING` / `VALIDATING`) and
 //!   never a fabricated completion — the same request/completion split the instance
-//!   stop face rides (`ATH-API-024`'s `Stopping` + 202 precedent).
+//!   stop face rides (`ATH-API-024`'s `Stopping` + 202 precedent). Since X-35, the
+//!   legs have their Runtime actor: the resident's skill-lifecycle cadence settles
+//!   every in-flight row through `athena_core::skill_lifecycle` (the Skill Manager's
+//!   update completion → `SkillUpdated`/`SkillValidationFailed`, the Skill
+//!   Validator's revalidation resolution → `SkillValidated`/`SkillValidationFailed`),
+//!   so a 202 row is a held request on the way to one §17.3 completion Event, not a
+//!   dead rest state.
 //! - **No `ENABLED` before validation** (`ATH-SKILL-009`, `ATH-API-014`): a
 //!   registration payload whose state is already `ENABLED` refuses.
 

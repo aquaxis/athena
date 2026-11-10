@@ -149,7 +149,10 @@ Task の進行状況を表示し、承認依頼を会話内に表示して回答
 `athena agent list/show`、`athena instance list/stop`(admin)、`athena runtime list`、
 `athena event tail`、`athena approval list/approve/reject`、および spec §24.3 の Skill 語彙 —
 `athena skill install/list/show/search/enable/disable/update/remove/validate`
-(enable/disable/update/remove/validate は `(id, version)` のピンを要求、`ATH-SKILL-020`)。
+(enable/disable/update/remove/validate は `(id, version)` のピンを要求、`ATH-SKILL-020`;
+`update`/`validate` は要求を記録し — 常駐の skill lifecycle が §12.5 の Skill Manager /
+Skill Validator 腿で `UPDATING`/`VALIDATING` 行を確定します —
+`SkillUpdated`/`SkillValidated`/`SkillValidationFailed`)。
 どのコマンドも `--json` を受け付けます。CLI は Core API(`/api/v1`)のみを経由し、
 `agent-cli` を直接起動することはありません(`ATH-CLI-001`/`002`)。
 
