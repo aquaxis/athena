@@ -215,3 +215,161 @@ read-for-product-surfaces 原則。修正は別の変更単位で行う指示に
   いるが、**初回 PATH 配置（無かった場合）の挙動**は直接観察していない（置き換えの形の
   み実測）。パス・所有・メッセージは同一手順であり、結論への影響は構成の所在のみならず
   変わらないと判断する。
+
+---
+
+## 7. `athena init` 後の使用方法（追記）
+
+本節は、`./install.sh` でツールを導入した利用者が `.athena/` を生成した直後から ATHENA を
+動かすまでの手順を、実測に基づいて記録する。バージョン `0.11.0` 時点の挙動である。
+
+### 7.1 生成直後の状態
+
+```
+$ athena init
+athena init: created 71 element(s), kept 0 existing element(s)
+```
+
+生成される構成（`personas` 13 件・`skills` 9 パッケージを含む）は §2 のとおり。加えて
+プロジェクト直下に `.aiprj/` と `.agent-cli/` が展開される（`ATH-AIPRJ-005`）。
+
+### 7.2 必須の編集 — `config.toml` の 3 値
+
+`athena init` が生成する `config.toml` は、**意図的に起動不能な状態**で書かれる
+（`ATH-AGENT-008` により ATHENA はプロバイダ・モデルの既定値を持たない）。次の 3 つを
+運用者が記入しなければ、`athena-api` は起動しない。
+
+```toml
+[core.agent]
+provider = ""          # 空だと起動不可（ATH-AGENT-008）
+model = ""             # 空だと起動不可（ATH-AGENT-008）
+delegable_tools = []   # 空だと起動不可（ATH-SEC-024）
+```
+
+記入例（値は利用者の環境に合わせる。既定値は存在しない）:
+
+```toml
+[core.agent]
+persona = "${athena.home}/personas/producer.md"
+workspace = "${athena.home}/var/core-agent"
+runtime = "agent-cli"
+provider = "ollama"
+model = "glm-5.3-flash:cloud"
+allowed_tools = ["fs_read", "fs_write", "send_to"]      # Core Agent 自身（最小・ATH-SEC-025）
+delegable_tools = [                                      # 下位への権限上限（ATH-SEC-024）
+  "fs_read",
+  "fs_write",
+  "shell",
+  "git",
+  "search",
+  "send_to",
+]
+```
+
+`delegable_tools` に指定できる値は 9 種類の Tool 名のみである（§11.1）:
+`fs_read` / `fs_write` / `shell` / `git` / `search` / `send_to` / `process` /
+`terminal` / `network`。`shell` / `process` / `network` は Core Agent 自身の
+`allowed_tools` には入れられない（`ATH-SEC-025`）が、`delegable_tools` には書ける。
+
+### 7.3 認証の設定
+
+既定は `auth.mode = "token"` であり、トークン未登録の状態では `healthz` 以外の
+全エンドポイントが 401 を返す。開発用途では次の設定で認証を切れる
+（`athena.api.host` が `127.0.0.1` のときのみ許可、`ATH-CFG-006`）。
+
+```toml
+[athena.api.auth]
+mode = "none"
+```
+
+### 7.4 起動
+
+```sh
+athena-api
+```
+
+```
+athena-api: ready on 127.0.0.1:8080 (store: <PROJECT_ROOT>/.athena/var/athena.db)
+athena-api: Core Agent resident (instance #0, runtime ri-...)
+```
+
+`SIGTERM` / `Ctrl-C` で安全に停止する（全 Instance 停止 + 永続化、`NFR-13`）。
+
+### 7.5 動作確認
+
+`GET /api/v1/healthz` は唯一の無認証エンドポイントである（`R-API-03`）。
+
+```sh
+curl http://127.0.0.1:8080/api/v1/healthz          # → ok
+curl http://127.0.0.1:8080/api/v1/status           # mode = none のとき
+```
+
+### 7.6 仕事の依頼（HTTP API 経由）
+
+```sh
+curl -X POST http://127.0.0.1:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"instruction":"TODO API を実装して","workspace":"/path/to/project","auto_run":true}'
+```
+
+Core Agent（instance #0）が指示を受け、`agent-cli` 経由で下位 Agent へ委任する。
+
+### 7.7 CLI の実装状況（重要）
+
+`athena` の各 verb は、本バージョンでは**まだ HTTP リクエストを送信しない**。実測:
+
+```
+$ athena run "hello"
+planned: POST /api/v1/tasks --data '{"instruction":"INSTRUCTION_TEXT","workspace":"CWD","auto_run":true}'
+exit=0
+
+$ athena status
+planned: GET /api/v1/status
+exit=0
+```
+
+| コマンド | 実装状況 |
+|---|---|
+| `athena init` | 動作する |
+| `athena update` | 動作する（ツール更新 + プロジェクト定義の追加更新） |
+| `athena help` | 動作する |
+| `athena skill *` | リクエスト計画を表示（HTTP 送信は未実装） |
+| `athena run` / `status` / `task` / `plan` / `agent` / `instance` / `runtime` / `event` / `approval` | リクエスト計画を表示（Phase 6 未実装） |
+
+したがって現時点では、実際の操作は `curl` による HTTP 直叩きとなる。トークン発行の CLI
+コマンドも未実装であり、認証を使う場合は `var/api-tokens.json` を用意するか、
+`auth.mode = "none"` を選ぶ必要がある。
+
+### 7.8 ブラウザ UI について
+
+`athena-api` は JSON API のみを提供し、HTML は配信しない。ブラウザ UI は別バイナリ
+`athena-studio`（既定ポート 5173）であるが、本バージョンでは wasm モジュールが
+プレースホルダであり、グルーコード（`athena_studio.js`）も生成されない。さらに
+`athena-api` は CORS ヘッダを返さないため、`athena-studio`（:5173）から
+`athena-api`（:8080）へのブラウザからの呼び出しは成立しない。**現時点でブラウザから
+操作することはできない。**
+
+### 7.9 手順の要約
+
+```sh
+athena init                     # 1. 初期化
+$EDITOR .athena/config.toml     # 2. provider / model / delegable_tools を記入
+                                # 3.（開発時）[athena.api.auth] mode = "none"
+athena-api                      # 4. 起動
+curl http://127.0.0.1:8080/api/v1/healthz               # 5. 確認
+curl -X POST http://127.0.0.1:8080/api/v1/tasks \       # 6. 依頼
+  -H "Content-Type: application/json" \
+  -d '{"instruction":"...","workspace":"...","auto_run":true}'
+```
+
+### 方法上の限定
+
+- 本節の手順は、空ディレクトリでの `athena init` → `config.toml` 編集 → `athena-api`
+  起動という一連の実行を再現して確認した。ただし `provider` / `model` は実プロバイダへの
+  接続を伴わない値（`ollama` / モデル名）で起動確認のみ行っており、実際の LLM 推論を
+  伴う作業完了までは確認していない。
+- CLI の「リクエスト計画を表示する」挙動は、`athena run` と `athena status` の 2 例で
+  実測した。他の verb は同一の `commands::run_command` 経路であることをコードで確認した。
+- ブラウザ UI の不可は、`athena-studio` のソース（wasm プレースホルダ、`athena_studio.js`
+  の不在）と `athena-api` のソース（CORS ヘッダ無し）の読み取りによる。実ブラウザでの
+  試行は行っていない。

@@ -33,7 +33,9 @@ pub struct SkillActions {
     pub version: String,
 }
 
-/// The two Skill action plans (admin-only; the pin is mandatory).
+/// The two Skill action plans (admin-only; the pin is mandatory). The feet ride the
+/// §22.7 per-version endpoints (`POST /skills/{id}/versions/{version}/enable|disable`,
+/// X-32's convergence; `ATH-API-026`: a version-omitting operation is never offered).
 ///
 /// # Errors
 /// An empty pin refuses (the view renders the control disabled).
@@ -44,19 +46,20 @@ pub fn skill_actions(actions: &SkillActions) -> Result<[ActionPlan; 2], String> 
     Ok([
         ActionPlan {
             method: "POST",
-            path: format!("/api/v1/skills/{}/decision", actions.id),
-            body_json: Some(
-                r#"{"decision":"enable","version":"VERSION"}"#.replace("VERSION", &actions.version),
+            path: format!(
+                "/api/v1/skills/{}/versions/{}/enable",
+                actions.id, actions.version
             ),
+            body_json: None,
             label: format!("Enable {}@{}", actions.id, actions.version),
         },
         ActionPlan {
             method: "POST",
-            path: format!("/api/v1/skills/{}/decision", actions.id),
-            body_json: Some(
-                r#"{"decision":"disable","version":"VERSION"}"#
-                    .replace("VERSION", &actions.version),
+            path: format!(
+                "/api/v1/skills/{}/versions/{}/disable",
+                actions.id, actions.version
             ),
+            body_json: None,
             label: format!("Disable {}@{}", actions.id, actions.version),
         },
     ])

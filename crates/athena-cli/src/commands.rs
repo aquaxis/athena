@@ -20,6 +20,7 @@
 //! athena status                     — GET  /api/v1/status
 //! athena task list                  — GET  /api/v1/tasks
 //! athena task show <task-id>        — GET  /api/v1/tasks/{id}
+//! athena task create                 — POST /api/v1/tasks        (auto_run: false)
 //! athena task cancel <task-id>      — POST /api/v1/tasks/{id}/cancel
 //! athena plan show <task-id>        — GET  /api/v1/tasks/{id}/plan
 //! athena agent list | show          — GET  /api/v1/agents[/{id}]
@@ -81,7 +82,7 @@ pub fn plan_for(command: &str, args: &[String], cwd: &Path) -> Result<Plan, Outc
             path: "/api/v1/status".into(),
             body_json: None,
         }),
-        "task" => task_plan(args),
+        "task" => task_plan(args, cwd),
         "plan" => match args.first().map(String::as_str) {
             Some("show") => match args.get(1) {
                 Some(task) => Ok(Plan {
@@ -148,7 +149,7 @@ pub fn plan_for(command: &str, args: &[String], cwd: &Path) -> Result<Plan, Outc
     }
 }
 
-fn task_plan(args: &[String]) -> Result<Plan, Outcome> {
+fn task_plan(args: &[String], cwd: &Path) -> Result<Plan, Outcome> {
     match args.first().map(String::as_str) {
         Some("list") => Ok(Plan {
             method: "GET",
@@ -163,6 +164,25 @@ fn task_plan(args: &[String]) -> Result<Plan, Outcome> {
             }),
             _ => Err(usage("usage: athena task show <task-id>")),
         },
+        Some("create") => match args.get(1) {
+            // The spec's create face: the instruction is the caller's own text, the
+            // workspace the invocation directory (`ATH-DATA-009`); unlike `run`, the
+            // Task is created without queueing (`auto_run: false`) — §24.3's `run`
+            // is the queueing face, `task create` the bare registration.
+            Some(instruction) if !instruction.trim().is_empty() => Ok(Plan {
+                method: "POST",
+                path: "/api/v1/tasks".into(),
+                body_json: Some(
+                    serde_json::json!({
+                        "instruction": instruction,
+                        "workspace": cwd.display().to_string(),
+                        "auto_run": false,
+                    })
+                    .to_string(),
+                ),
+            }),
+            _ => Err(usage("usage: athena task create <instruction>")),
+        },
         Some("cancel") => match args.get(1) {
             Some(task) => Ok(Plan {
                 method: "POST",
@@ -171,7 +191,7 @@ fn task_plan(args: &[String]) -> Result<Plan, Outcome> {
             }),
             _ => Err(usage("usage: athena task cancel <task-id>")),
         },
-        _ => Err(usage("usage: athena task <list|show|cancel> …")),
+        _ => Err(usage("usage: athena task <create|list|show|cancel> …")),
     }
 }
 
@@ -240,6 +260,12 @@ pub fn execute(command: &str, args: &[String], cwd: &Path, token: Option<&str>) 
     perform(&endpoint, &plan, json_wanted)
 }
 
+/// Send an already-planned request against the resolved Core API (the transport face
+/// `skill::run_skill` rides after its own parse — one plan, one source of truth).
+pub fn execute_plan(endpoint: &Endpoint, plan: &Plan, json_wanted: bool) -> Outcome {
+    perform(endpoint, plan, json_wanted)
+}
+
 /// Send the plan and render what came back.
 fn perform(endpoint: &Endpoint, plan: &Plan, json_wanted: bool) -> Outcome {
     let response =
@@ -306,12 +332,15 @@ pub(crate) fn strip_flags(args: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// A usage fault: exit 2, the request-shape code (`ATH-CLI-008`).
-fn usage(message: &str) -> Outcome {
+/// A usage fault: exit 2, the request-shape code (`ATH-CLI-008`); the §24.3 verbs'
+/// parse faults share this face (`skill::skill_plan` includes).
+pub(crate) fn usage(message: &str) -> Outcome {
     Outcome::fail(ExitCode::RequestShapeViolation.as_i32(), message)
 }
 
-fn render_plan(plan: &Plan, json_wanted: bool) -> Outcome {
+/// Render a plan without performing it (the `--dry-run` face; `skill::run_skill` rides
+/// the same deterministic face).
+pub(crate) fn render_plan(plan: &Plan, json_wanted: bool) -> Outcome {
     let rendered = format!(
         "planned: {} {}{}",
         plan.method,
@@ -355,6 +384,30 @@ mod tests {
         assert_eq!(body["instruction"], "fix the build");
         assert_eq!(body["workspace"], "/tmp/project");
         assert_eq!(body["auto_run"], true);
+    }
+
+    #[test]
+    fn a_task_create_plan_carries_the_bare_registration_body() {
+        // §24.3's `task create` (X-32): the caller's own instruction, the invocation
+        // directory as the workspace (`ATH-DATA-009`), created without queueing —
+        // `run` remains the queueing face.
+        let plan = plan_for(
+            "task",
+            &args(&["create", "ship the release"]),
+            Path::new("/tmp/project"),
+        )
+        .expect("a well-formed create");
+        assert_eq!(plan.method, "POST");
+        assert_eq!(plan.path, "/api/v1/tasks");
+        let body: serde_json::Value =
+            serde_json::from_str(plan.body_json.as_deref().expect("body")).expect("json");
+        assert_eq!(body["instruction"], "ship the release");
+        assert_eq!(body["workspace"], "/tmp/project");
+        assert_eq!(body["auto_run"], false);
+        // The instruction-less create is a usage fault (exit 2):
+        let outcome = plan_for("task", &args(&["create"]), Path::new("/tmp/project"))
+            .expect_err("a shape fault");
+        assert_eq!(outcome.code, 2);
     }
 
     #[test]
@@ -417,6 +470,8 @@ mod tests {
             ("run", args(&["   "])),
             ("task", args(&["show"])),
             ("task", args(&["cancel"])),
+            ("task", args(&["create"])),
+            ("task", args(&["create", "   "])),
             ("plan", args(&["show"])),
             ("agent", args(&["show"])),
             ("instance", args(&["stop"])),

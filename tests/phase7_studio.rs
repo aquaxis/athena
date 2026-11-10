@@ -51,24 +51,28 @@ const PUBLISHED: &[&str] = &[
     "/api/v1/runtimes",
     "/api/v1/skills",
     "/api/v1/skills/{id}",
-    "/api/v1/skills/{id}/decision",
+    "/api/v1/skills/{id}/versions/{version}",
+    "/api/v1/skills/{id}/versions/{version}/enable",
+    "/api/v1/skills/{id}/versions/{version}/disable",
+    "/api/v1/skills/{id}/versions/{version}/update",
+    "/api/v1/skills/{id}/versions/{version}/validate",
     "/api/v1/approvals",
     "/api/v1/approvals/{id}",
     "/api/v1/approvals/{id}/approve",
     "/api/v1/approvals/{id}/reject",
 ];
 
-/// A planned path is published when some §22 template matches it segment-wise, with
-/// `{id}` matching exactly one segment and a shorter template matching as a prefix.
+/// A planned path is published when some §22 template matches it segment-wise, with a
+/// `{…}` segment matching exactly one segment (any placeholder — `{id}`, `{version}` —
+/// is a single-segment wildcard) and a shorter template matching as a prefix.
 fn published(path: &str) -> bool {
     PUBLISHED.iter().any(|template| {
         let pattern: Vec<&str> = template.trim_start_matches('/').split('/').collect();
         let planned: Vec<&str> = path.trim_start_matches('/').split('/').collect();
         planned.len() >= pattern.len()
-            && pattern
-                .iter()
-                .enumerate()
-                .all(|(index, segment)| *segment == "{id}" || planned[index] == *segment)
+            && pattern.iter().enumerate().all(|(index, segment)| {
+                (segment.starts_with('{') && segment.ends_with('}')) || planned[index] == *segment
+            })
     })
 }
 
@@ -203,7 +207,7 @@ fn studio_and_cli_ride_the_same_api_for_the_shared_control_flows() {
         (&'static str, &'static str),
         Vec<String>,
     );
-    let flows: [FlowRow; 7] = [
+    let flows: [FlowRow; 8] = [
         (
             "task inspection",
             "task",
@@ -235,10 +239,10 @@ fn studio_and_cli_ride_the_same_api_for_the_shared_control_flows() {
                 .collect(),
         ),
         (
-            "skill decision",
+            "skill lifecycle",
             "skill",
             args(&["enable", "the-skill", "1.2.0"]),
-            ("POST", "/api/v1/skills/the-skill/decision"),
+            ("POST", "/api/v1/skills/the-skill/versions/1.2.0/enable"),
             skill_actions(&SkillActions {
                 id: "the-skill".into(),
                 version: "1.2.0".into(),
@@ -246,6 +250,13 @@ fn studio_and_cli_ride_the_same_api_for_the_shared_control_flows() {
             .expect("the pin is stated")
             .map(|plan| plan.path)
             .to_vec(),
+        ),
+        (
+            "task creation",
+            "task",
+            args(&["create", "ship the release"]),
+            ("POST", "/api/v1/tasks"),
+            vec!["/api/v1/tasks".to_string()],
         ),
         (
             "event stream",
@@ -280,6 +291,15 @@ fn studio_and_cli_ride_the_same_api_for_the_shared_control_flows() {
     ];
 
     for (name, command, verb_args, expected, studio_paths) in flows {
+        // The skill verbs perform their requests (X-32), so the flow test rides their
+        // deterministic `--dry-run` face — the same plan, nothing performed.
+        let verb_args = if command == "skill" {
+            let mut with_dry_run = verb_args.clone();
+            with_dry_run.push("--dry-run".into());
+            with_dry_run
+        } else {
+            verb_args
+        };
         let outcome = if command == "skill" {
             athena_cli::skill::run_skill(&verb_args, Path::new("."))
         } else {

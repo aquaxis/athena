@@ -145,10 +145,11 @@ athena task list                    # Task の一覧
 Task の進行状況を表示し、承認依頼を会話内に表示して回答を受け付け、
 質問(確認対象)への回答もその場で行えます。
 
-その他のコマンド:`athena task show/cancel`、`athena plan show`、
+その他のコマンド:`athena task create/show/cancel`、`athena plan show`、
 `athena agent list/show`、`athena instance list/stop`(admin)、`athena runtime list`、
-`athena event tail`、`athena approval list/approve/reject`、
-`athena skill list/show/search/register/enable/disable`。
+`athena event tail`、`athena approval list/approve/reject`、および spec §24.3 の Skill 語彙 —
+`athena skill install/list/show/search/enable/disable/update/remove/validate`
+(enable/disable/update/remove/validate は `(id, version)` のピンを要求、`ATH-SKILL-020`)。
 どのコマンドも `--json` を受け付けます。CLI は Core API(`/api/v1`)のみを経由し、
 `agent-cli` を直接起動することはありません(`ATH-CLI-001`/`002`)。
 

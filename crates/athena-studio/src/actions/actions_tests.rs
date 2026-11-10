@@ -3,25 +3,22 @@
 use super::*;
 
 #[test]
-fn the_skill_actions_demand_the_pin_and_carry_the_decision_face() {
+fn the_skill_actions_demand_the_pin_and_carry_the_section_22_7_face() {
     let faces = skill_actions(&SkillActions {
         id: "the-skill".into(),
         version: "1.0.0".into(),
     })
     .expect("faces");
     assert_eq!(faces[0].label, "Enable the-skill@1.0.0");
-    assert!(
-        faces[0]
-            .body_json
-            .as_deref()
-            .is_some_and(|body| body.contains("enable") && body.contains("1.0.0"))
+    assert_eq!(
+        faces[0].path, "/api/v1/skills/the-skill/versions/1.0.0/enable",
+        "the §22.7 per-version face (X-32)"
     );
+    assert_eq!(faces[0].body_json, None, "the wire face carries no body");
     assert_eq!(faces[1].label, "Disable the-skill@1.0.0");
-    assert!(
-        faces[1]
-            .body_json
-            .as_deref()
-            .is_some_and(|body| body.contains("disable"))
+    assert_eq!(
+        faces[1].path, "/api/v1/skills/the-skill/versions/1.0.0/disable",
+        "the §22.7 per-version face (X-32)"
     );
     // The pin-less face refuses (the view renders the control disabled):
     let refuse = skill_actions(&SkillActions::default());

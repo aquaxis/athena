@@ -83,6 +83,14 @@ pub fn build_router(state: AppState) -> Router {
                     axum::routing::get(crate::skills::search_skills),
                 )
                 .route(
+                    "/api/v1/skills/{skill_id}",
+                    axum::routing::get(crate::skills::list_skill_versions),
+                )
+                .route(
+                    "/api/v1/skills/{skill_id}/versions/{version}",
+                    axum::routing::get(crate::skills::read_skill_version),
+                )
+                .route(
                     "/api/v1/conversations/{conversation_id}/messages",
                     axum::routing::get(crate::conversations::list_utterances),
                 ),
@@ -157,8 +165,24 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(crate::skills::register_skill),
         )
         .route(
-            "/api/v1/skills/{skill_id}/decision",
-            axum::routing::post(crate::skills::enable_disable_skill),
+            "/api/v1/skills/{skill_id}/versions/{version}/enable",
+            axum::routing::post(crate::skills::enable_skill_version),
+        )
+        .route(
+            "/api/v1/skills/{skill_id}/versions/{version}/disable",
+            axum::routing::post(crate::skills::disable_skill_version),
+        )
+        .route(
+            "/api/v1/skills/{skill_id}/versions/{version}/update",
+            axum::routing::post(crate::skills::update_skill_version),
+        )
+        .route(
+            "/api/v1/skills/{skill_id}/versions/{version}/validate",
+            axum::routing::post(crate::skills::validate_skill_version),
+        )
+        .route(
+            "/api/v1/skills/{skill_id}/versions/{version}",
+            axum::routing::delete(crate::skills::remove_skill_version),
         )
         .route(
             // The spec's only write face on the instance group (ATH-API-024): the admin

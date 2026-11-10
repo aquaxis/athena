@@ -146,9 +146,11 @@ Or use the conversational entry point — `athena chat` is a first-class natural
 interface: it shows Task progress, surfaces approval requests inline, and accepts answers
 to clarifying questions in the conversation.
 
-Further commands: `athena task show/cancel`, `athena plan show`, `athena agent list/show`,
+Further commands: `athena task create/show/cancel`, `athena plan show`, `athena agent list/show`,
 `athena instance list/stop` (admin), `athena runtime list`, `athena event tail`,
-`athena approval list/approve/reject`, `athena skill list/show/search/register/enable/disable`.
+`athena approval list/approve/reject`, and the full §24.3 skill vocabulary —
+`athena skill install/list/show/search/enable/disable/update/remove/validate` (enable/disable/
+update/remove/validate pin `(id, version)`, `ATH-SKILL-020`).
 Every command accepts `--json` for scripting. The CLI talks to the Core API only (`/api/v1`);
 it never launches `agent-cli` directly (`ATH-CLI-001`/`002`).
 
