@@ -80,27 +80,98 @@ pub enum WaitOn {
 }
 
 macro_rules! catalog_event {
+    // REQUIRED_FIELDS assembly (D-3): a mandatory key is a non-`Option` member. The
+    // declaration carries that distinction in its own grammar -- a `required { .. }` group
+    // and an `optional { .. }` group per Event -- so `REQUIRED_FIELDS` is a plain
+    // repetition of the `required` group: no fragment is ever forwarded into a nested
+    // matcher (a captured `:meta`/`:ty` fragment is opaque to re-matching, the failure
+    // both probe5b and the first assembler proved), and no `Option` classification runs
+    // at expansion time. An `Option` key that legitimately drops from the wire
+    // (`skip_serializing_if`) is absent by right, never "missing".
     (
         $(#[$meta:meta])*
         $name:ident => struct {
-            $( $(#[$fattr:meta])* $field:ident : $ftype:ty ),* $(,)?
+            required { $( $(#[$rattr:meta])* $rfield:ident : $rtype:ty ),* $(,)? }
+            optional { $( $(#[$oattr:meta])* $ofield:ident : $otype:ty ),* $(,)? }
         }
     ) => {
         $(#[$meta])*
         #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
         pub struct $name {
-            $( $(#[$fattr])* pub $field: $ftype, )*
+            $( $(#[$rattr])* pub $rfield : $rtype, )*
+            $( $(#[$oattr])* pub $ofield : $otype, )*
         }
 
         impl Payload for $name {
             const EVENT_TYPE: &'static str = stringify!($name);
-            const REQUIRED_FIELDS: &'static [&'static str] = &[ $( stringify!($field) ),* ];
+            const REQUIRED_FIELDS: &'static [&'static str] = &[
+                $( stringify!($rfield) ),*
+            ];
         }
 
         #[cfg(test)]
         impl tests_helpers::Sample for $name {
             fn sample() -> Self {
-                Self { $( $field: tests_helpers::Sample::sample(), )* }
+                Self {
+                    $( $rfield: tests_helpers::Sample::sample(), )*
+                    $( $ofield: tests_helpers::Sample::sample(), )*
+                }
+            }
+        }
+    };
+    (
+        $(#[$meta:meta])*
+        $name:ident => struct {
+            required { $( $(#[$rattr:meta])* $rfield:ident : $rtype:ty ),* $(,)? }
+            optional { }
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        pub struct $name {
+            $( $(#[$rattr])* pub $rfield : $rtype, )*
+        }
+
+        impl Payload for $name {
+            const EVENT_TYPE: &'static str = stringify!($name);
+            const REQUIRED_FIELDS: &'static [&'static str] = &[
+                $( stringify!($rfield) ),*
+            ];
+        }
+
+        #[cfg(test)]
+        impl tests_helpers::Sample for $name {
+            fn sample() -> Self {
+                Self {
+                    $( $rfield: tests_helpers::Sample::sample(), )*
+                }
+            }
+        }
+    };
+    (
+        $(#[$meta:meta])*
+        $name:ident => struct {
+            required { }
+            optional { $( $(#[$oattr:meta])* $ofield:ident : $otype:ty ),* $(,)? }
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        pub struct $name {
+            $( $(#[$oattr])* pub $ofield : $otype, )*
+        }
+
+        impl Payload for $name {
+            const EVENT_TYPE: &'static str = stringify!($name);
+            const REQUIRED_FIELDS: &'static [&'static str] = &[];
+        }
+
+        #[cfg(test)]
+        impl tests_helpers::Sample for $name {
+            fn sample() -> Self {
+                Self {
+                    $( $ofield: tests_helpers::Sample::sample(), )*
+                }
             }
         }
     };
@@ -129,77 +200,114 @@ macro_rules! catalog_event {
 // --- Task (spec section 23.2) -----------------------------------------------------------
 
 catalog_event!(
+
     /// A Task was created from a human instruction (ATH-STATE-...; §23.2 minimum).
     TaskCreated => struct {
-        /// SHA-256 digest of the instruction text; the text itself is not embedded
+        required {
+            /// SHA-256 digest of the instruction text; the text itself is not embedded
         /// (ATH-EVENT-007).
         instruction_digest: String,
-        /// The leased Workspace path (ATH-DATA-009).
+            /// The leased Workspace path (ATH-DATA-009).
         workspace: String,
-        /// Scheduling priority.
+            /// Scheduling priority.
         priority: Priority,
-        /// Who created it (`human` or the Core Agent, for sub-Task creation).
+            /// Who created it (`human` or the Core Agent, for sub-Task creation).
         created_by: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// The Task was queued for the Scheduler, carrying the Plan it should run against.
     TaskQueued => struct {
-        /// The Plan referenced.
+        required {
+            /// The Plan referenced.
         plan_id: PlanId,
-        /// The Plan revision referenced.
+            /// The Plan revision referenced.
         revision: u64,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// The Task began executing.
     TaskStarted => struct {
-        /// The Plan under execution.
+        required {
+            /// The Plan under execution.
         plan_id: PlanId,
-        /// The Plan revision under execution.
+            /// The Plan revision under execution.
         revision: u64,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A Result arrived for the Task (ATH-EVAL-...) with its outcome status.
     TaskResultReceived => struct {
-        /// The Result, referenced (ATH-EVENT-007).
+        required {
+            /// The Result, referenced (ATH-EVENT-007).
         result_id: ResultId,
-        /// The PlanStep that produced it.
+            /// The PlanStep that produced it.
         plan_step_id: PlanStepId,
-        /// The agent's own status; never sufficient for acceptance (ATH-EVAL-005).
+            /// The agent's own status; never sufficient for acceptance (ATH-EVAL-005).
         status: ResultStatus,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// The Core Agent chose to change the Plan (ATH-PLAN-...).
     TaskReplanning => struct {
-        /// The revision being replaced.
+        required {
+            /// The revision being replaced.
         from_revision: u64,
-        /// The revision that supersedes it.
+            /// The revision that supersedes it.
         to_revision: u64,
-        /// Why. Prose, not agent input: recorded for reconstruction (ATH-CORE-016).
+            /// Why. Prose, not agent input: recorded for reconstruction (ATH-CORE-016).
         reason: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A retry was decided for the Task or one of its PlanSteps.
     TaskRetrying => struct {
-        /// The attempt about to run (1-based).
+        required {
+            /// The attempt about to run (1-based).
         attempt: u64,
-        /// The configured attempt ceiling.
+            /// The configured attempt ceiling.
         max_attempts: u64,
-        /// The nine-class taxonomy value (/§20.1).
+            /// The nine-class taxonomy value (/§20.1).
         error_class: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// Cancellation was requested and the stop set was frozen (ATH-STATE-006).
     TaskCancelling => empty()
 );
@@ -207,82 +315,118 @@ catalog_event!(
 catalog_event!(
     /// The Task reached the terminal `CANCELLED` state.
     TaskCancelled => struct {
-        /// Whether `timeout.stop` was exceeded and processes were force-killed
+        required {
+            /// Whether `timeout.stop` was exceeded and processes were force-killed
         /// (ATH-STATE-006).
         forced: bool,
-        /// Whether side effects are known; `Unknown` demands Verification before a re-run
+            /// Whether side effects are known; `Unknown` demands Verification before a re-run
         /// (ATH-CORE-048).
         side_effects: SideEffects,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// The Task reached the terminal `SUCCESS` state.
     TaskCompleted => struct {
-        /// The Results that make up the completion, referenced.
+        required {
+            /// The Results that make up the completion, referenced.
         result_ids: Vec<ResultId>,
-        /// Whether the completion criteria were checked and met (ATH-EVAL-002).
+            /// Whether the completion criteria were checked and met (ATH-EVAL-002).
         completion_criteria_met: bool,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// The Task reached the terminal `FAILED` state (ATH-FAIL-007).
     TaskFailed => struct {
-        /// The nine-class taxonomy value.
+        required {
+            /// The nine-class taxonomy value.
         error_class: String,
-        /// The error code within its class.
+            /// The error code within its class.
         error_code: String,
-        /// How many attempts were made.
+            /// How many attempts were made.
         attempts: u64,
-        /// Whether Core Agent recovery was attempted before failing (ATH-FAIL-011).
+            /// Whether Core Agent recovery was attempted before failing (ATH-FAIL-011).
         recovery_attempted: bool,
+        }
+        optional {
+
+        }
     }
 );
 
 // --- Plan -------------------------------------------------------------------------------
 
 catalog_event!(
+
     /// A Plan revision was created (ATH-PLAN-...).
     PlanCreated => struct {
-        /// The Plan.
+        required {
+            /// The Plan.
         plan_id: PlanId,
-        /// The revision issued (Core-Host-assigned, ATH-CORE-034).
+            /// The revision issued (Core-Host-assigned, ATH-CORE-034).
         revision: u64,
-        /// How many PlanSteps it holds.
+            /// How many PlanSteps it holds.
         step_count: u64,
-        /// Why this decomposition was chosen (ATH-CORE-016).
+            /// Why this decomposition was chosen (ATH-CORE-016).
         rationale: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A Plan was revised without a Task-level re-plan.
     PlanRevised => struct {
-        /// The Plan.
+        required {
+            /// The Plan.
         plan_id: PlanId,
-        /// The revision issued.
+            /// The revision issued.
         revision: u64,
-        /// How many PlanSteps the revision holds.
+            /// How many PlanSteps the revision holds.
         step_count: u64,
-        /// Why (ATH-CORE-016).
+            /// Why (ATH-CORE-016).
         rationale: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A PlanStep moved to `RUNNING`.
     PlanStepStarted => struct {
-        /// The step.
+        required {
+            /// The step.
         plan_step_id: PlanStepId,
-        /// The attempt number (ATH-FAIL-007).
+            /// The attempt number (ATH-FAIL-007).
         attempt: u64,
-        /// The agent the step was delegated to.
+            /// The agent the step was delegated to.
         assigned_agent: AgentId,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A PlanStep reached a terminal state for its attempt, successfully.
     PlanStepCompleted => empty()
 );
@@ -298,16 +442,22 @@ catalog_event!(
     /// A hierarchy was composed and settled (ATH-HIER-009): nodes carry their level and
     /// their work unit.
     HierarchyComposed => struct {
-        /// The hierarchy.
+        required {
+            /// The hierarchy.
         hierarchy_id: HierarchyId,
-        /// Its revision.
+            /// Its revision.
         revision: u64,
-        /// The nodes, each with level and scope.
+            /// The nodes, each with level and scope.
         nodes: Vec<HierarchyNodeRef>,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A delegation from a superior to its immediate child level was started
     /// (ATH-HIER-004).
     AgentDelegated => empty()
@@ -318,18 +468,24 @@ catalog_event!(
 catalog_event!(
     /// Core Agent selected an agent for work (ATH-AGENT-005, ATH-AGENT-007).
     AgentSelected => struct {
-        /// The agent chosen.
+        required {
+            /// The agent chosen.
         agent_id: AgentId,
-        /// Every candidate considered, in evaluation order.
+            /// Every candidate considered, in evaluation order.
         candidates: Vec<AgentId>,
-        /// Why this agent (ATH-CORE-016).
+            /// Why this agent (ATH-CORE-016).
         rationale: String,
-        /// Whether capability matching determined the choice (ATH-AGENT-004).
+            /// Whether capability matching determined the choice (ATH-AGENT-004).
         capability_match: bool,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A Runtime was asked to start an instance.
     AgentStarting => empty()
 );
@@ -337,27 +493,39 @@ catalog_event!(
 catalog_event!(
     /// An instance is running (spec section 26.3).
     AgentStarted => struct {
-        /// The instance.
+        required {
+            /// The instance.
         instance_id: InstanceId,
-        /// The agent definition realized by the instance.
+            /// The agent definition realized by the instance.
         agent_id: AgentId,
-        /// The Runtime kind enforcing its isolation boundary (ATH-SEC-015).
+            /// The Runtime kind enforcing its isolation boundary (ATH-SEC-015).
         runtime_type: RuntimeType,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// An instance reported itself waiting on something; `waits_on` feeds the stall
     /// detectors (ATH-EVENT-018).
     AgentWaiting => struct {
-        /// What it is waiting on, in `WaitOn` form.
+        required {
+            /// What it is waiting on, in `WaitOn` form.
         waits_on: Vec<WaitOn>,
-        /// When the wait expires, if any.
+            /// When the wait expires, if any.
         deadline: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A stop was requested for an instance (ATH-RT-006).
     AgentStopping => empty()
 );
@@ -365,16 +533,22 @@ catalog_event!(
 catalog_event!(
     /// An instance finished releasing its Runtime resources.
     AgentStopped => struct {
-        /// The instance.
+        required {
+            /// The instance.
         instance_id: InstanceId,
-        /// The agent definition realized by the instance.
+            /// The agent definition realized by the instance.
         agent_id: AgentId,
-        /// The Runtime kind.
+            /// The Runtime kind.
         runtime_type: RuntimeType,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// An instance completed its delegated unit successfully.
     AgentCompleted => empty()
 );
@@ -382,18 +556,24 @@ catalog_event!(
 catalog_event!(
     /// An instance failed (ATH-STATE-002).
     AgentFailed => struct {
-        /// The nine-class taxonomy value.
+        required {
+            /// The nine-class taxonomy value.
         error_class: String,
-        /// The attempt that failed.
+            /// The attempt that failed.
         attempt: u64,
-        /// Whether its side effects are known (ATH-CORE-048).
+            /// Whether its side effects are known (ATH-CORE-048).
         side_effects: SideEffects,
+        }
+        optional {
+
+        }
     }
 );
 
 // --- Core Agent (spec section 6.8) ------------------------------------------------------
 
 catalog_event!(
+
     /// The Core Agent instance #0 was started at boot (ATH-CORE-022).
     CoreAgentStarted => empty()
 );
@@ -406,16 +586,22 @@ catalog_event!(
 catalog_event!(
     /// The Core Agent restarted after the deterministic §6.7 procedure.
     CoreAgentRestarted => struct {
-        /// The attempt within the sliding window (ATH-CORE-030).
+        required {
+            /// The attempt within the sliding window (ATH-CORE-030).
         attempt: u64,
-        /// When the restart window opened.
+            /// When the restart window opened.
         window_start: String,
-        /// The rebuilt context document, referenced (ATH-CORE-029).
+            /// The rebuilt context document, referenced (ATH-CORE-029).
         context_document_ref: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// Autonomous execution was escalated to a human (ATH-CORE-031).
     CoreAgentEscalated => empty()
 );
@@ -423,56 +609,79 @@ catalog_event!(
 catalog_event!(
     /// The Core Agent heartbeat, every 20 s by default (ATH-OBS-004).
     CoreAgentHeartbeat => struct {
-        /// The loop iteration count.
-        iteration: u64,
-        /// The Task currently in focus, if any.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        focus_task_id: Option<TaskId>,
-        /// How many CoreRequests await processing.
-        pending_requests: u64,
+        required {
+            /// The loop iteration count.
+            iteration: u64,
+            /// How many CoreRequests await processing.
+            pending_requests: u64,
+        }
+        optional {
+            /// The Task currently in focus, if any.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            focus_task_id: Option<TaskId>,
+        }
     }
 );
 
 catalog_event!(
+
     /// A privileged request refused inspection (ATH-CORE-026, ATH-CORE-027).
     PrivilegedRequestDenied => struct {
-        /// The CoreRequest kind refused.
+        required {
+            /// The CoreRequest kind refused.
         request_kind: String,
-        /// The nine-class taxonomy value.
+            /// The nine-class taxonomy value.
         error_class: String,
-        /// The policy rule that applied.
+            /// The policy rule that applied.
         policy_id: String,
+        }
+        optional {
+
+        }
     }
 );
 
 // --- PlanStep-level observability -------------------------------------------------------
 
 catalog_event!(
+
     /// A dependency-satisfied PlanStep became `READY` (spec section 17.4).
     PlanStepReady => struct {
-        /// The step.
+        required {
+            /// The step.
         plan_step_id: PlanStepId,
-        /// The attempt it will run as.
+            /// The attempt it will run as.
         attempt: u64,
-        /// The agent it is assigned to.
+            /// The agent it is assigned to.
         assigned_agent: AgentId,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A PlanStep whose process disappeared was finalized (ATH-STATE-029): its re-run is
     /// gated behind Verification because its side effects are undetermined.
     PlanStepOrphaned => struct {
-        /// The step.
+        required {
+            /// The step.
         plan_step_id: PlanStepId,
-        /// The instance that vanished.
+            /// The instance that vanished.
         instance_id: InstanceId,
-        /// Whether its side effects are known.
+            /// Whether its side effects are known.
         side_effects: SideEffects,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A PlanStep was skipped by re-planning (only of steps not yet executed, ATH-STATE-028).
     PlanStepSkipped => empty()
 );
@@ -495,71 +704,107 @@ catalog_event!(
 catalog_event!(
     /// A ready PlanStep could not start because a limit applies (ATH-SCHED-014).
     SchedulerBlocked => struct {
-        /// The step held in the queue.
+        required {
+            /// The step held in the queue.
         plan_step_id: PlanStepId,
-        /// The limit that applies.
+            /// The limit that applies.
         blocking_limit: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A non-terminal Task was observed to be stalled (ATH-OBS-008).
     TaskStalled => struct {
-        /// The Task.
+        required {
+            /// The Task.
         task_id: TaskId,
-        /// When its last state-change Event occurred.
+            /// When its last state-change Event occurred.
         last_event_at: String,
-        /// How long it has been silent.
+            /// How long it has been silent.
         stall_seconds: u64,
+        }
+        optional {
+
+        }
     }
 );
 
 // --- Clarification (spec section 15.4) --------------------------------------------------
 
 catalog_event!(
+
     /// Core Agent asked the human a clarification question (ATH-HITL-018).
     ClarificationRequested => struct {
-        /// The clarification.
+        required {
+            /// The clarification.
         clarification_id: String,
-        /// The question, digested; the text is not embedded (ATH-EVENT-007).
+            /// The question, digested; the text is not embedded (ATH-EVENT-007).
         question_digest: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// The human answered a clarification question (ATH-HITL-019).
     ClarificationAnswered => struct {
-        /// The clarification.
+        required {
+            /// The clarification.
         clarification_id: String,
-        /// The question, digested.
+            /// The question, digested.
         question_digest: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A clarification expired: silence was *not* read as an answer; the Task failed
     /// (ATH-HITL-019).
     ClarificationExpired => struct {
-        /// The clarification.
+        required {
+            /// The clarification.
         clarification_id: String,
-        /// The question, digested.
+            /// The question, digested.
         question_digest: String,
+        }
+        optional {
+
+        }
     }
 );
 
 // --- Workspace (spec section 12.1) ------------------------------------------------------
 
 catalog_event!(
+
     /// An instance Workspace's `aiprj` write areas were initialized (ATH-OPS-020).
     WorkspaceInitialized => struct {
-        /// The Workspace (cwd) path.
+        required {
+            /// The Workspace (cwd) path.
         workspace: String,
-        /// The `aiprj` version detected or installed.
+            /// The `aiprj` version detected or installed.
         aiprj_version: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A Workspace lease was acquired for a Task (ATH-DATA-009).
     WorkspaceLeased => empty()
 );
@@ -574,80 +819,115 @@ catalog_event!(
 catalog_event!(
     /// A message was sent through the Broker (ATH-MSG-...).
     AgentMessageSent => struct {
-        /// The message.
+        required {
+            /// The message.
         message_id: MessageId,
-        /// Its kind.
+            /// Its kind.
         message_type: MessageType,
-        /// Its thread.
+            /// Its thread.
         thread_id: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A message was delivered to its instance.
     AgentMessageReceived => struct {
-        /// The message.
+        required {
+            /// The message.
         message_id: MessageId,
-        /// Its kind.
+            /// Its kind.
         message_type: MessageType,
-        /// Its thread.
+            /// Its thread.
         thread_id: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A reply deadline expired (ATH-MSG-006).
     AgentMessageTimeout => struct {
-        /// The message that timed out.
+        required {
+            /// The message that timed out.
         message_id: MessageId,
-        /// Its thread.
+            /// Its thread.
         thread_id: String,
-        /// The deadline that passed.
+            /// The deadline that passed.
         deadline: String,
+        }
+        optional {
+
+        }
     }
 );
 
 // --- Tools (spec section 11) ------------------------------------------------------------
 
 catalog_event!(
+
     /// A tool execution started (ATH-TOOL-004).
     ToolExecutionStarted => struct {
-        /// The execution record.
+        required {
+            /// The execution record.
         tool_execution_id: ToolExecutionId,
-        /// The ATHENA tool name.
+            /// The ATHENA tool name.
         tool: ToolName,
-        /// The canonical operation descriptor built by Core Host (ATH-HITL-010).
+            /// The canonical operation descriptor built by Core Host (ATH-HITL-010).
         operation_descriptor: serde_json::Value,
-        /// The risk classification in force.
+            /// The risk classification in force.
         risk_level: RiskLevel,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A tool execution completed.
     ToolExecutionCompleted => struct {
-        /// The execution record.
+        required {
+            /// The execution record.
         tool_execution_id: ToolExecutionId,
-        /// The ATHENA tool name.
+            /// The ATHENA tool name.
         tool: ToolName,
-        /// The canonical operation descriptor.
+            /// The canonical operation descriptor.
         operation_descriptor: serde_json::Value,
-        /// The risk classification in force.
+            /// The risk classification in force.
         risk_level: RiskLevel,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A tool execution failed or was refused.
     ToolExecutionFailed => struct {
-        /// The execution record.
+        required {
+            /// The execution record.
         tool_execution_id: ToolExecutionId,
-        /// The ATHENA tool name.
+            /// The ATHENA tool name.
         tool: ToolName,
-        /// The canonical operation descriptor.
+            /// The canonical operation descriptor.
         operation_descriptor: serde_json::Value,
-        /// The risk classification in force.
+            /// The risk classification in force.
         risk_level: RiskLevel,
+        }
+        optional {
+
+        }
     }
 );
 
@@ -657,182 +937,267 @@ catalog_event!(
 // (ATH-EVENT-017, `Skill*` row).
 
 catalog_event!(
+
     /// A skill version was registered.
     SkillRegistered => struct {
-        /// The skill.
+        required {
+            /// The skill.
         skill_id: SkillId,
-        /// The version.
+            /// The version.
         version: String,
-        /// The package checksum.
+            /// The package checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// Validation began for a skill version (ATH-SKILL-024).
     SkillValidating => struct {
-        /// The skill.
+        required {
+            /// The skill.
         skill_id: SkillId,
-        /// The version.
+            /// The version.
         version: String,
-        /// The package checksum.
+            /// The package checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// Validation passed for a skill version.
     SkillValidated => struct {
-        /// The skill.
+        required {
+            /// The skill.
         skill_id: SkillId,
-        /// The version.
+            /// The version.
         version: String,
-        /// The package checksum.
+            /// The package checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// Validation failed; the version stays out of the candidate set (ATH-SKILL-024).
     SkillValidationFailed => struct {
-        /// The skill.
+        required {
+            /// The skill.
         skill_id: SkillId,
-        /// The version.
+            /// The version.
         version: String,
-        /// The package checksum.
+            /// The package checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A skill version was enabled (admin operation, ATH-STATE-025).
     SkillEnabled => struct {
-        /// The skill.
+        required {
+            /// The skill.
         skill_id: SkillId,
-        /// The version.
+            /// The version.
         version: String,
-        /// The package checksum.
+            /// The package checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A skill version was disabled.
     SkillDisabled => struct {
-        /// The skill.
+        required {
+            /// The skill.
         skill_id: SkillId,
-        /// The version.
+            /// The version.
         version: String,
-        /// The package checksum.
+            /// The package checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// An update to a skill version began (running instances are immune
     /// to it, ATH-SKILL-010).
     SkillUpdating => struct {
-        /// The skill.
+        required {
+            /// The skill.
         skill_id: SkillId,
-        /// The version.
+            /// The version.
         version: String,
-        /// The package checksum.
+            /// The package checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A skill version was updated.
     SkillUpdated => struct {
-        /// The skill.
+        required {
+            /// The skill.
         skill_id: SkillId,
-        /// The version.
+            /// The version.
         version: String,
-        /// The package checksum.
+            /// The package checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A skill version was removed.
     SkillRemoved => struct {
-        /// The skill.
+        required {
+            /// The skill.
         skill_id: SkillId,
-        /// The version.
+            /// The version.
         version: String,
-        /// The package checksum.
+            /// The package checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// Core Agent selected skills for an assignment (ATH-SKILL-014): the set, pinned to
     /// versions, plus why; and the per-skill maintenance minimum.
     SkillSelected => struct {
-        /// The skills chosen, in resolution order.
+        required {
+            /// The skills chosen, in resolution order.
         skill_refs: Vec<SkillRef>,
-        /// Why this Skill Set (ATH-CORE-016).
+            /// Why this Skill Set (ATH-CORE-016).
         rationale: String,
-        /// Its maintenance minimum: the skill the Skill Set was resolved *for*.
+            /// Its maintenance minimum: the skill the Skill Set was resolved *for*.
         skill_id: SkillId,
-        /// Its version.
+            /// Its version.
         version: String,
-        /// Its checksum.
+            /// Its checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// Selected skills were placed into an instance Workspace (ATH-SKILL-017).
     SkillLoaded => struct {
-        /// The skill.
+        required {
+            /// The skill.
         skill_id: SkillId,
-        /// The version.
+            /// The version.
         version: String,
-        /// The package checksum.
+            /// The package checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A skill execution started.
     SkillExecutionStarted => struct {
-        /// The skill.
+        required {
+            /// The skill.
         skill_id: SkillId,
-        /// The version.
+            /// The version.
         version: String,
-        /// The package checksum.
+            /// The package checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A skill execution completed.
     SkillExecutionCompleted => struct {
-        /// The skill.
+        required {
+            /// The skill.
         skill_id: SkillId,
-        /// The version.
+            /// The version.
         version: String,
-        /// The package checksum.
+            /// The package checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A skill execution failed.
     SkillExecutionFailed => struct {
-        /// The skill.
+        required {
+            /// The skill.
         skill_id: SkillId,
-        /// The version.
+            /// The version.
         version: String,
-        /// The package checksum.
+            /// The package checksum.
         checksum: String,
+        }
+        optional {
+
+        }
     }
 );
 
 // --- Runtime (spec section 14) ----------------------------------------------------------
 
 catalog_event!(
+
     /// The Runtime created an instance for a delegation.
     RuntimeInstanceCreated => empty()
 );
@@ -853,88 +1218,130 @@ catalog_event!(
 catalog_event!(
     /// A high-risk operation was requested (ATH-HITL-003).
     ApprovalRequested => struct {
-        /// The approval.
+        required {
+            /// The approval.
         approval_id: ApprovalId,
-        /// The canonical operation descriptor built by Core Host.
+            /// The canonical operation descriptor built by Core Host.
         operation_descriptor: serde_json::Value,
-        /// The risk classification in force.
+            /// The risk classification in force.
         risk_level: RiskLevel,
-        /// When it expires (reject-by-default, ATH-HITL-003).
+            /// When it expires (reject-by-default, ATH-HITL-003).
         expires_at: String,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A human approved (ATH-HITL-004).
     ApprovalGranted => struct {
-        /// The approval.
+        required {
+            /// The approval.
         approval_id: ApprovalId,
-        /// Who responded (recorded for audit).
+            /// Who responded (recorded for audit).
         responded_by: String,
-        /// The scope of consumption.
+            /// The scope of consumption.
         scope: ApprovalScope,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A human rejected; the Task goes to re-planning, never straight to failure
     /// (ATH-STATE-008).
     ApprovalRejected => struct {
-        /// The approval.
+        required {
+            /// The approval.
         approval_id: ApprovalId,
-        /// Who responded.
+            /// Who responded.
         responded_by: String,
-        /// The scope the grant would have carried.
+            /// The scope the grant would have carried.
         scope: ApprovalScope,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// No answer arrived before the deadline, or a granted scope expired unused
     /// (ATH-HITL-003).
     ApprovalExpired => struct {
-        /// The approval.
+        required {
+            /// The approval.
         approval_id: ApprovalId,
-        /// The scope that lapsed.
+            /// The scope that lapsed.
         scope: ApprovalScope,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// Core Host consumed an approval for an operation; the recorded descriptor is what the
     /// consumption applied to (ATH-HITL-010).
     ApprovalConsumed => struct {
-        /// The approval.
+        required {
+            /// The approval.
         approval_id: ApprovalId,
-        /// The canonical operation descriptor of the consumed operation.
+            /// The canonical operation descriptor of the consumed operation.
         operation_descriptor: serde_json::Value,
-        /// Uses remaining on the scope after consumption (ATH-STATE-013).
+            /// Uses remaining on the scope after consumption (ATH-STATE-013).
         uses_remaining: u64,
+        }
+        optional {
+
+        }
     }
 );
 
 // --- Memory (spec section 13) -----------------------------------------------------------
 
 catalog_event!(
+
     /// A memory record was created (spec section 26.4).
     MemoryRecordCreated => struct {
-        /// The record.
+        required {
+            /// The record.
         memory_id: MemoryId,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// A memory record was deleted; the deletion itself is the audit record
     /// (ATH-MEM-006).
     MemoryRecordDeleted => struct {
-        /// The record.
+        required {
+            /// The record.
         memory_id: MemoryId,
+        }
+        optional {
+
+        }
     }
 );
 
 // --- Evaluation (spec section 19) -------------------------------------------------------
 
 catalog_event!(
+
     /// Core Agent began evaluating a Result against the completion criteria
     /// (ATH-EVAL-001).
     EvaluationStarted => empty()
@@ -943,28 +1350,39 @@ catalog_event!(
 catalog_event!(
     /// An evaluation passed: verdict accepted (ATH-EVAL-003).
     EvaluationPassed => struct {
-        /// The evaluation record.
+        required {
+            /// The evaluation record.
         evaluation_id: EvaluationId,
-        /// Who verified (agent or tool).
+            /// Who verified (agent or tool).
         evaluator: String,
-        /// The verification method (test / lint / build / review / simulation).
+            /// The verification method (test / lint / build / review / simulation).
         method: String,
-        /// The verdict, exactly one of the five (ATH-EVAL-004).
+            /// The verdict, exactly one of the five (ATH-EVAL-004).
         verdict: Verdict,
+        }
+        optional {
+
+        }
     }
 );
 
 catalog_event!(
+
     /// An evaluation failed or demanded retry / re-plan / escalation.
     EvaluationFailed => struct {
-        /// The evaluation record.
+        required {
+            /// The evaluation record.
         evaluation_id: EvaluationId,
-        /// Who verified (agent or tool).
+            /// Who verified (agent or tool).
         evaluator: String,
-        /// The verification method.
+            /// The verification method.
         method: String,
-        /// The verdict, exactly one of the five (ATH-EVAL-004).
+            /// The verdict, exactly one of the five (ATH-EVAL-004).
         verdict: Verdict,
+        }
+        optional {
+
+        }
     }
 );
 
@@ -1513,6 +1931,44 @@ mod tests {
         }
         assert_eq!(event.event_type, "TaskCreated");
         assert_eq!(event.schema_version, 1);
+    }
+
+    #[test]
+    fn an_optional_heartbeat_field_drops_from_the_wire_without_refusal() {
+        // D-3's counter-face: a mandatory item is a *non-`Option`* member. The heartbeat's
+        // `focus_task_id` is optional in the §23.2 minimum, so an idle beat (`None`) is a
+        // valid Event — the construction gate must accept it, and the serialized payload
+        // legitimately drops the key (`skip_serializing_if`).
+        let event = TypedEvent::new(
+            CoreAgentHeartbeat {
+                iteration: 7,
+                focus_task_id: None,
+                pending_requests: 0,
+            },
+            ctx("cor-heartbeat-idle"),
+        )
+        .expect("an idle beat is a valid Event");
+        let parsed: serde_json::Value = serde_json::from_str(&event.payload_json).expect("json");
+        assert_eq!(parsed["iteration"], 7);
+        assert_eq!(parsed["pending_requests"], 0);
+        assert!(
+            parsed.get("focus_task_id").is_none(),
+            "{}",
+            event.payload_json
+        );
+
+        // Its presence face serializes the key as before.
+        let focused = TypedEvent::new(
+            CoreAgentHeartbeat {
+                iteration: 7,
+                focus_task_id: Some(TaskId::new()),
+                pending_requests: 2,
+            },
+            ctx("cor-heartbeat-focused"),
+        )
+        .expect("a focused beat is a valid Event");
+        let parsed: serde_json::Value = serde_json::from_str(&focused.payload_json).expect("json");
+        assert!(parsed.get("focus_task_id").is_some());
     }
 
     #[test]

@@ -366,6 +366,12 @@ async fn main() {
     //     own clock (the same cadence/semantics split D-35 keeps).
     skill_lifecycle_cadence(rows.clone(), config.clone());
 
+    // 9e. The Core Agent heartbeat cadence (X-36/X-42): the typed `CoreAgentHeartbeat`
+    //     Event and the Runtime Instance receipt are one beat on the configured interval
+    //     (`core_agent_restart.heartbeat_interval`, default 20 s — ATH-OBS-011 /
+    //     ATH-CORE-047, the cadence/semantics split D-35 keeps).
+    core_agent_heartbeat_cadence(adapter.clone(), rows.clone(), config.clone());
+
     // 10. Serve until the signal; then the safe-shutdown sequence (NFR-13).
     let server = axum::serve(listener, build_router(state)).with_graceful_shutdown(async {
         let ctrl_c = tokio::signal::ctrl_c();
@@ -998,6 +1004,11 @@ const MAINTENANCE_POLL: Duration = Duration::from_secs(60);
 /// gate away once the material is located.
 const SKILL_LIFECYCLE_POLL: Duration = Duration::from_secs(2);
 
+/// The Core Agent heartbeat's spacing fallback when the configured interval is degenerate
+/// (zero): beating without pause would burn the Event log, so the interval is floored at
+/// the specification's default — the configuration validator (`R-CFG-05`) rejects it first.
+const HEARTBEAT_POLL_FALLBACK: Duration = Duration::from_secs(20);
+
 /// One `duration`-ago RFC 3339 stamp (the cutoff arithmetic): now minus the retention.
 fn cutoff(duration: std::time::Duration) -> String {
     let now = std::time::SystemTime::now()
@@ -1116,4 +1127,67 @@ fn skill_lifecycle_cadence(rows: Arc<Mutex<AthenaStore>>, config: Config) {
             }
         }
     });
+}
+
+/// The Core Agent heartbeat cadence (X-36/X-42): one tick per
+/// `core_agent_restart.heartbeat_interval` (ATH-OBS-011's default 20 s), beating through
+/// `athena_core::heartbeat::beat_once` — the typed `CoreAgentHeartbeat` Event plus the
+/// Runtime Instance receipt are one fact apiece on a single beat. Instance #0's residency
+/// is observed per tick, never invented: when its record is absent the beat's Event still
+/// emits (the Core Agent's own fact) and the receipt's refusal rides the report as a note.
+/// Faults are logged and retried at the next tick — a faulted beat never halts the
+/// resident.
+fn core_agent_heartbeat_cadence<D>(
+    adapter: Arc<AgentCliAdapter<D>>,
+    rows: Arc<Mutex<AthenaStore>>,
+    config: Config,
+) -> tokio::task::JoinHandle<()>
+where
+    D: ProcessDriver + 'static,
+{
+    let interval = config
+        .core_agent_restart
+        .heartbeat_interval
+        .max(HEARTBEAT_POLL_FALLBACK);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            let now = athena_types::now_rfc3339();
+            // The resident's own runtime id, observed per tick: the supervision poll may
+            // restart instance #0 between beats, so the receipt's row key is never cached.
+            let runtime_instance = adapter
+                .core_record()
+                .map(|record| record.runtime_instance_id);
+            let iteration = {
+                let Ok(guard) = rows.lock() else {
+                    continue;
+                };
+                match athena_core::heartbeat::observed_iteration(&guard) {
+                    Ok(count) => count,
+                    Err(fault) => {
+                        eprintln!("athena-api: heartbeat read faulted: {fault}; retries next tick");
+                        continue;
+                    }
+                }
+            };
+            let Ok(mut guard) = rows.lock() else {
+                continue;
+            };
+            match athena_core::heartbeat::beat_once(
+                &mut guard,
+                iteration,
+                runtime_instance.as_ref(),
+                &now,
+            ) {
+                Ok(report) => {
+                    if let Some(note) = &report.receipt_note {
+                        eprintln!("athena-api: heartbeat receipt not recorded: {note}");
+                    }
+                }
+                Err(fault) => {
+                    eprintln!("athena-api: heartbeat faulted: {fault}; retries next tick");
+                }
+            }
+        }
+    })
 }

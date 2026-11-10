@@ -39,6 +39,10 @@ pub mod core_loop;
 mod core_loop_tests;
 pub mod event_manager;
 pub mod failure;
+pub mod heartbeat;
+#[cfg(test)]
+#[path = "heartbeat_tests.rs"]
+mod heartbeat_tests;
 pub mod hierarchy_manager;
 pub mod inspection;
 pub mod issuance;
