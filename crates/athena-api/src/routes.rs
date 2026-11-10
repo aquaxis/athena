@@ -21,7 +21,7 @@ use crate::auth::{AuthMode, TokenRegistry};
 use crate::roles::Role;
 use axum::{
     Json, Router,
-    extract::{Request, State},
+    extract::{Extension, Request, State},
     http::{HeaderMap, StatusCode},
     middleware::from_fn_with_state,
     response::{IntoResponse, Response},
@@ -46,6 +46,9 @@ pub struct AppState {
     /// restart-window head-room (the never-invent discipline: `None` until the poll has
     /// observed once, and the route renders its absence rather than a fabricated zero).
     pub standing: crate::standing::StandingCell,
+    /// The resolved effective configuration (X-34): the memory write route's tier gate
+    /// and retention ceiling read `memory.long_term.*` from here.
+    pub config: athena_core::Config,
 }
 
 /// A call-time seed for the correlation mint (locked monotonicity is fine here: the
@@ -132,6 +135,7 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(crate::conversations::post_utterance),
         )
         .route("/api/v1/memory", get(list_memory_rows))
+        .route("/api/v1/memory", axum::routing::post(create_memory_row))
         .route(
             "/api/v1/memory/{memory_id}",
             axum::routing::delete(delete_memory_row),
@@ -223,6 +227,11 @@ fn endpoint_layer(state: &AppState, required: Role, routes: Router<AppState>) ->
         };
         match caller {
             Ok(caller) if caller.satisfies(required) => {
+                // The resolved identity rides into the handlers (`ATH-SEC-005`'s audit
+                // name; X-34's memory write names the caller's registered token, not
+                // `"bearer"`).
+                let mut request = request;
+                request.extensions_mut().insert(caller);
                 let mut response = next.run(request).await;
                 if let Ok(value) = axum::http::HeaderValue::from_str(&correlation) {
                     response
@@ -558,6 +567,37 @@ async fn delete_memory_row(
     let now = crate::routes::now_text();
     crate::memory::delete(&rows, &memory_id, &now, &correlation)
         .unwrap_or_else(|error| error.into_response())
+}
+
+async fn create_memory_row(
+    State(state): State<AppState>,
+    Extension(caller): Extension<crate::auth::ApiCaller>,
+    headers: HeaderMap,
+    payload: Json<Value>,
+) -> Response {
+    let Some(rows) = task_rows(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":{"code":"CORE_STORE_UNAVAILABLE"}})),
+        )
+            .into_response();
+    };
+    let correlation = crate::errors::correlation_of(&headers, request_wall_clock_seed());
+    let now = crate::routes::now_text();
+    // The caller's registered name is the write's audit identity (`HumanInstruction
+    // { identity }`): the layer resolved the bearer and inserted the caller, so a
+    // layer-covered route reads its extension with no re-hash; `none`-mode loopback
+    // carries the name the middleware minted.
+    let caller_identity = caller.name;
+    crate::memory::create(
+        &rows,
+        &state.config,
+        &payload,
+        &caller_identity,
+        &now,
+        &correlation,
+    )
+    .unwrap_or_else(|error| error.into_response())
 }
 
 fn form_urlencoded_pairs(query: &str) -> Vec<(String, String)> {

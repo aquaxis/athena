@@ -27,6 +27,7 @@ fn state(store: Option<SharedStore>) -> AppState {
         host: "127.0.0.1".into(),
         rows: store,
         standing: crate::standing::new_cell(),
+        config: athena_core::Config::default(),
     }
 }
 
@@ -98,6 +99,7 @@ fn seeded_router(state_of: SkillState) -> (axum::Router, String, SharedStore) {
         host: "127.0.0.1".into(),
         rows: Some(store.clone()),
         standing: crate::standing::new_cell(),
+        config: athena_core::Config::default(),
     });
     (app, admin, store)
 }

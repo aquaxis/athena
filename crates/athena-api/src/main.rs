@@ -248,6 +248,7 @@ async fn main() {
         host: host.clone(),
         rows: Some(rows.clone()),
         standing: standing.clone(),
+        config: config.clone(),
     };
 
     // 6. The composition root's Adapter link: the real process driver, the template
@@ -349,7 +350,13 @@ async fn main() {
         rows.clone(),
         athena_core::scheduler::SchedulerLimits::from_config(&config.scheduler),
         clarification_ttl_secs(&config),
+        config.clone(),
     );
+
+    // 9c. The maintenance cadence (X-34's Phase C): the retention sweeps run on the
+    //     resident's own clock — bounded deletions whose authority is the configuration,
+    //     never the request path (the same cadence/semantics split D-35 keeps).
+    maintenance_cadence(rows.clone(), config.clone());
 
     // 10. Serve until the signal; then the safe-shutdown sequence (NFR-13).
     let server = axum::serve(listener, build_router(state)).with_graceful_shutdown(async {
@@ -436,6 +443,7 @@ fn core_execution<D>(
     rows: Arc<Mutex<AthenaStore>>,
     limits: athena_core::scheduler::SchedulerLimits,
     clarification_ttl_secs: u64,
+    config: athena_core::Config,
 ) -> tokio::task::JoinHandle<()>
 where
     D: ProcessDriver + 'static,
@@ -694,11 +702,89 @@ where
                                 ),
                             }
                         }
-                        // One of the ten routed `CoreRequest` kinds: observed and named —
-                        // the v1 execution model gives the answer itself as the product
-                        // (`ATH-DATA-004`), and the Task completes on the answer rather
-                        // than spawning side paths behind the caller's back.
-                        athena_core::core_loop::Interpreted::Requested { kind } => {
+                        // A routed `CoreRequest`: `write_memory` is the one kind the Core
+                        // Host *answers* (X-34 — `athena_core::write_memory`'s face applies
+                        // the write under the resident's clock), the rest stay observed
+                        // (the v1 model gives the answer itself as the product, and one
+                        // answered kind already answers ATH-CORE-034's every-request face).
+                        athena_core::core_loop::Interpreted::Requested { kind, request } => {
+                            if let athena_core::protocol::CoreRequest::WriteMemory {
+                                tier,
+                                content,
+                            } = request
+                            {
+                                // The request carries no Task (ATH-CORE-033's own face);
+                                // the requesting Task anchors the write.
+                                let tier = match tier {
+                                    athena_core::WritableMemoryTier::Working => {
+                                        athena_core::write_memory::WritableTier::Working
+                                    }
+                                    athena_core::WritableMemoryTier::Long => {
+                                        athena_core::write_memory::WritableTier::Long
+                                    }
+                                };
+                                let requester =
+                                    athena_core::write_memory::Requester::CoreAgentJudgement;
+                                match athena_core::write_memory::apply_write_memory(
+                                    &mut guard,
+                                    &requester,
+                                    tier,
+                                    content,
+                                    &task_id,
+                                    None,
+                                    config.memory.long_term.max_records,
+                                    &now,
+                                    &correlation,
+                                ) {
+                                    Ok(report) => eprintln!(
+                                        "athena-api: task {} requested write_memory ({:?}): \
+                                         record {} in scope {}",
+                                        task_id.as_str(),
+                                        report.tier,
+                                        report.record_id.as_str(),
+                                        report.scope_id.as_str()
+                                    ),
+                                    Err(fault) => {
+                                        // The refusal is recorded (ATH-CORE-037), not
+                                        // swallowed; the record's fault text stays the
+                                        // whole story.
+                                        let denial = NewEvent {
+                                            event_id: athena_types::EventId::new(),
+                                            schema_version: 1,
+                                            event_type: "PrivilegedRequestDenied".into(),
+                                            occurred_at: now.to_string(),
+                                            task_id: Some(task_id.clone()),
+                                            plan_step_id: None,
+                                            agent_id: Some(athena_types::AgentId::core_agent()),
+                                            instance_id: None,
+                                            skill_id: None,
+                                            correlation_id: correlation.to_string(),
+                                            causation_id: None,
+                                            actor: "core-agent".into(),
+                                            payload_json: serde_json::json!({
+                                                "request_kind": "write_memory",
+                                                "error_class": "validation_error",
+                                                "policy_id": "memory.tier",
+                                                "fault": fault.to_string(),
+                                            })
+                                            .to_string(),
+                                        };
+                                        if let Err(fault) = athena_core::EventRepository::append(
+                                            &mut *guard,
+                                            &denial,
+                                        ) {
+                                            eprintln!(
+                                                "athena-api: recording the write_memory denial of {} failed: {fault}",
+                                                task_id.as_str()
+                                            );
+                                        }
+                                        eprintln!(
+                                            "athena-api: task {}'s write_memory refused: {fault}",
+                                            task_id.as_str()
+                                        );
+                                    }
+                                }
+                            }
                             match athena_core::core_loop::ingest_answer(
                                 &mut guard,
                                 &task_id,
@@ -893,4 +979,78 @@ fn recovered_config(record: &athena_runtime_agent_cli::Record) -> Config {
     config.core.agent.workspace = record.workspace.display().to_string();
     config.core.agent.persona = record.definition.persona_ref.clone();
     config
+}
+
+/// The maintenance polling interval (X-34's Phase C): the retained faces are pruned at
+/// a one-minute cadence — bounded work, never in the request path.
+const MAINTENANCE_POLL: Duration = Duration::from_secs(60);
+
+/// One `duration`-ago RFC 3339 stamp (the cutoff arithmetic): now minus the retention.
+fn cutoff(duration: std::time::Duration) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|age| age.as_secs())
+        .unwrap_or(0);
+    let past = now.saturating_sub(duration.as_secs());
+    athena_types::clock::format_rfc3339(past, 0)
+}
+
+/// The retention sweep cadence (X-34's Phase C): the four implemented deletions get their
+/// production callers through `athena_core::maintenance::sweep_once` — Events
+/// (`events.retention_days`, ATH-EVENT-014), clarifications (ATH-HITL-018), idempotency
+/// keys (the repository's 7-day contract), delivery records (`messaging.dedup_retention`).
+/// Every cycle's counts are recorded by `record_swept` (the audit face), failures are
+/// logged and retried at the next tick — a sweep fault never halts the resident.
+fn maintenance_cadence(rows: Arc<Mutex<AthenaStore>>, config: athena_core::Config) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(MAINTENANCE_POLL).await;
+            let events_cutoff = cutoff(std::time::Duration::from_secs(
+                config.events.retention_days * 24 * 60 * 60,
+            ));
+            let idempotency_cutoff = cutoff(std::time::Duration::from_secs(7 * 24 * 60 * 60));
+            let deliveries_cutoff = cutoff(config.messaging.dedup_retention);
+            let now = athena_types::now_rfc3339();
+            let correlation = athena_core::digest(&format!("maintenance-{now}"));
+            let Ok(mut guard) = rows.lock() else {
+                continue;
+            };
+            match athena_core::maintenance::sweep_once(
+                &mut guard,
+                &now,
+                &events_cutoff,
+                &idempotency_cutoff,
+                &deliveries_cutoff,
+            ) {
+                Ok(report) => {
+                    if report.events_pruned
+                        + report.clarifications_expired
+                        + report.idempotency_keys_pruned
+                        + report.delivery_records_pruned
+                        > 0
+                    {
+                        eprintln!(
+                            "athena-api: retention sweep removed events {}, clarifications {}, \
+                             idempotency keys {}, deliveries {}",
+                            report.events_pruned,
+                            report.clarifications_expired,
+                            report.idempotency_keys_pruned,
+                            report.delivery_records_pruned
+                        );
+                        if let Err(fault) = athena_core::maintenance::record_swept(
+                            &mut guard,
+                            &report,
+                            &now,
+                            &correlation,
+                        ) {
+                            eprintln!("athena-api: recording the sweep failed: {fault}");
+                        }
+                    }
+                }
+                Err(fault) => {
+                    eprintln!("athena-api: retention sweep faulted: {fault}; retries next tick");
+                }
+            }
+        }
+    });
 }

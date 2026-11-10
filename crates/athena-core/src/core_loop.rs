@@ -494,7 +494,9 @@ pub async fn next_answer(
 }
 
 /// What one answer's protocol face resolved to (`ATH-CORE-033`'s twelve kinds, routed).
-#[derive(Debug, Clone, PartialEq, Eq)]
+// No `Eq`: `CoreRequest` carries `serde_json::Value` (ExecuteTool's `args`), which is
+// `PartialEq`-only — the loop compares by pattern-match, never whole-value equality.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Interpreted {
     /// `complete_task`: the Task's closing summary and the Results it closes with — the
     /// settlement's product.
@@ -518,10 +520,14 @@ pub enum Interpreted {
     /// execution model (`ATH-DATA-004`) gives the answer itself as the product, so the
     /// request is surfaced for the caller to route — Core Host answers every `CoreRequest`
     /// (`ATH-CORE-034`), and the answer's face is the caller's next delivery, never a side
-    /// path this loop would run behind the caller's back (`ATH-CORE-033`).
+    /// path this loop would run behind the caller's back (`ATH-CORE-033`). The request
+    /// itself rides here, so a caller who *can* answer a kind (`write_memory`'s explicit
+    /// judgement, X-34) routes it without re-parsing the raw answer.
     Requested {
         /// The serde tag of the requested kind (see [`crate::protocol::REQUEST_KINDS`]).
         kind: &'static str,
+        /// The request as parsed (`ATH-CORE-033`'s gate already validated it).
+        request: crate::protocol::CoreRequest,
     },
 }
 
@@ -577,6 +583,7 @@ fn route(request: crate::protocol::CoreRequest) -> Interpreted {
         } => Interpreted::AskHuman { question, options },
         other => Interpreted::Requested {
             kind: other.kind_tag(),
+            request: other,
         },
     }
 }

@@ -19,6 +19,7 @@ fn state() -> (AppState, String, String, String) {
         host: "127.0.0.1".into(),
         rows: None,
         standing: crate::standing::new_cell(),
+        config: athena_core::Config::default(),
     };
     (st, viewer_token, operator_token, admin_token)
 }
@@ -210,6 +211,7 @@ async fn task_api_router() -> (axum::Router, String) {
         host: "127.0.0.1".into(),
         rows: Some(Arc::new(Mutex::new(store))),
         standing: crate::standing::new_cell(),
+        config: athena_core::Config::default(),
     });
     (router, operator)
 }
@@ -453,6 +455,7 @@ async fn memory_api_router() -> (
         host: "127.0.0.1".into(),
         rows: Some(store.clone()),
         standing: crate::standing::new_cell(),
+        config: athena_core::Config::default(),
     });
     (router, operator, store)
 }
@@ -600,6 +603,7 @@ async fn clarify_router() -> (
         host: "127.0.0.1".into(),
         rows: Some(store.clone()),
         standing: crate::standing::new_cell(),
+        config: athena_core::Config::default(),
     });
     (router, operator, store)
 }
@@ -757,6 +761,7 @@ async fn approvals_router() -> (
         host: "127.0.0.1".into(),
         rows: Some(store.clone()),
         standing: crate::standing::new_cell(),
+        config: athena_core::Config::default(),
     });
     (router, operator, store)
 }
@@ -919,6 +924,7 @@ async fn the_status_answer_carries_the_core_agents_standing() {
         host: "127.0.0.1".into(),
         rows: None,
         standing,
+        config: athena_core::Config::default(),
     };
     let router = build_router(st);
     let mut request = Request::builder()
@@ -956,6 +962,7 @@ async fn the_status_answer_names_an_unobserved_core_agent_as_unobserved() {
         host: "127.0.0.1".into(),
         rows: None,
         standing: crate::standing::new_cell(),
+        config: athena_core::Config::default(),
     };
     let router = build_router(st);
     let mut request = Request::builder()
@@ -988,6 +995,7 @@ async fn agent_surface_router() -> (axum::Router, String, SharedTestStore) {
         host: "127.0.0.1".into(),
         rows: Some(store.clone()),
         standing: crate::standing::new_cell(),
+        config: athena_core::Config::default(),
     });
     (router, admin, store)
 }
@@ -1190,4 +1198,246 @@ async fn the_instance_stop_refuses_terminal_and_moves_live_states_to_stopping() 
             row.state
         );
     }
+}
+
+// --- X-34: the Long-Term Memory write route (`POST /api/v1/memory`) --------------------
+
+/// A router + operator token + live store with one seeded RUNNING Task (the write's
+/// provenance anchor needs a real Task row).
+async fn memory_write_router() -> (
+    axum::Router,
+    String,
+    std::sync::Arc<std::sync::Mutex<athena_core::AthenaStore>>,
+    athena_types::TaskId,
+) {
+    use athena_core::TaskRepository;
+    let mut registry = TokenRegistry::default();
+    let operator = registry.issue("operator-write-test", Role::Operator);
+    let store = std::sync::Arc::new(std::sync::Mutex::new(
+        athena_core::AthenaStore::in_memory().expect("store"),
+    ));
+    let task = athena_types::Task {
+        id: athena_types::TaskId::new(),
+        title: "the memory write's anchor task".into(),
+        goal: Some("hold a provenance anchor".into()),
+        instruction: "hold a provenance anchor".into(),
+        parent_id: None,
+        workspace: "/repo/x34-anchor".into(),
+        constraints: vec![],
+        completion_criteria: vec![],
+        state: athena_types::TaskState::Running,
+        priority: athena_types::Priority::Normal,
+        plan_id: None,
+        risk_level: athena_types::RiskLevel::Medium,
+        attempt_count: 0,
+        max_attempts: 3,
+        iteration_count: 0,
+        max_iterations: 50,
+        deadline: None,
+        created_by: "test".into(),
+        created_at: "2026-11-10T00:00:00.000Z".into(),
+        updated_at: "2026-11-10T00:00:00.000Z".into(),
+        finished_at: None,
+    };
+    {
+        let mut guard = store.lock().expect("store");
+        TaskRepository::insert(&mut *guard, &task).expect("task seeds");
+    }
+    let router = crate::build_router(crate::AppState {
+        registry: std::sync::Arc::new(registry),
+        mode: AuthMode::Token,
+        host: "127.0.0.1".into(),
+        rows: Some(store.clone()),
+        standing: crate::standing::new_cell(),
+        config: athena_core::Config::default(),
+    });
+    (router, operator, store, task.id)
+}
+
+fn op_write_request(uri: &str, token: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request")
+}
+
+#[tokio::test]
+async fn the_memory_write_route_accepts_an_anchored_human_instruction() {
+    // ATH-MEM-003's (b) face: an explicit `HumanInstruction` requester writes Long,
+    // through the route the §22 table now carries. The masked content lands, the
+    // `MemoryRecordCreated` Event rides as the audit record, and the answer is `201`.
+    let (router, token, store, task) = memory_write_router().await;
+    let body = format!(
+        r#"{{"content": "the integration harness decision remembered", "workspace": "/repo/x34", "task_id": "{}"}}"#,
+        task.as_str()
+    );
+    let response = router
+        .clone()
+        .oneshot(op_write_request("/api/v1/memory", &token, &body))
+        .await
+        .expect("answered");
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "{}",
+        body_text(response).await
+    );
+
+    // The record is in the Long tier under the workspace's scope (R-DAT-02).
+    let listed = router
+        .clone()
+        .oneshot(op_request("/api/v1/memory?tier=long", "GET", &token))
+        .await
+        .expect("answered");
+    let body = body_text(listed).await;
+    assert!(body.contains("the integration harness"), "{body}");
+
+    // The audit Event is present (D-1's record-through-the-repository route).
+    {
+        use athena_core::EventRepository;
+        let guard = store.lock().expect("store");
+        let events = EventRepository::list_since(&*guard, 0, 100).expect("events");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "MemoryRecordCreated"),
+            "{:?}",
+            events
+                .iter()
+                .map(|event| &event.event_type)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_memory_write_route_refuses_unanchored_and_empty_writes() {
+    // ATH-MEM-005 + the hygiene gate: no anchor, no write; no content, no write.
+    let (router, token, _store, _task) = memory_write_router().await;
+    for (body, code) in [
+        (
+            r#"{"content": "a judgement", "workspace": "/repo/x34"}"#,
+            "MEMORY_ANCHOR_REQUIRED",
+        ),
+        (
+            r#"{"workspace": "/repo/x34", "task_id": ""}"#,
+            "MEMORY_CONTENT_REQUIRED",
+        ),
+        (r#"{"content": "a judgement"}"#, "MEMORY_SCOPE_REQUIRED"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(op_write_request("/api/v1/memory", &token, body))
+            .await
+            .expect("answered");
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{body}: {}",
+            body_text(response).await
+        );
+        assert!(
+            body_text(response).await.contains(code),
+            "{code} expected in the refusal"
+        );
+    }
+
+    // A well-formed but unknown anchor is a 404 (`ATH-MEM-005`'s provenance names facts).
+    let ghost = op_write_request(
+        "/api/v1/memory",
+        &token,
+        r#"{"content": "a judgement", "workspace": "/repo/x34", "task_id": "task-01K78EA9QQJXBY8CM55GB5WXEQM"}"#,
+    );
+    let response = router.oneshot(ghost).await.expect("answered");
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "{}",
+        body_text(response).await
+    );
+}
+
+#[tokio::test]
+async fn the_memory_write_route_refuses_at_the_tier_gates() {
+    // ATH-MEM-002/003: the disabled tier refuses with 403; the ceiling refuses with 409
+    // (`MEMORY_CEILING_REACHED`) — removal is an explicit judgement, never a digest.
+    let (_router, _token, store, task) = memory_write_router().await;
+    let anchored = format!(
+        r#"{{"content": "ceiling filler judgement", "workspace": "/repo/ceil", "task_id": "{}"}}"#,
+        task.as_str()
+    );
+    // Two writes against a two-record ceiling: the third must refuse. The default cap
+    // is 10 000, so this test asserts the *fill-then-refuse* shape through a store whose
+    // ceiling the router's config sets to 2.
+    let mut registry = TokenRegistry::default();
+    let token_small = registry.issue("small-ceiling", Role::Operator);
+    let mut small_config = athena_core::Config::default();
+    small_config.memory.long_term.max_records = 2;
+    let small_router = crate::build_router(crate::AppState {
+        registry: std::sync::Arc::new(registry),
+        mode: AuthMode::Token,
+        host: "127.0.0.1".into(),
+        rows: Some(store.clone()),
+        standing: crate::standing::new_cell(),
+        config: small_config,
+    });
+    for at in 0..2 {
+        let filler = format!(
+            r#"{{"content": "filler {at}", "workspace": "/repo/ceil", "task_id": "{}"}}"#,
+            task.as_str()
+        );
+        let response = small_router
+            .clone()
+            .oneshot(op_write_request("/api/v1/memory", &token_small, &filler))
+            .await
+            .expect("answered");
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "filler {at}: {}",
+            body_text(response).await
+        );
+    }
+    let third = small_router
+        .oneshot(op_write_request("/api/v1/memory", &token_small, &anchored))
+        .await
+        .expect("answered");
+    assert_eq!(
+        third.status(),
+        StatusCode::CONFLICT,
+        "{}",
+        body_text(third).await
+    );
+    assert!(
+        body_text(third).await.contains("MEMORY_CEILING_REACHED"),
+        "the ceiling's own code expected"
+    );
+
+    // The disabled tier (a fresh router with `memory.long_term.enabled = false`).
+    let mut registry_off = TokenRegistry::default();
+    let token_off = registry_off.issue("tier-off", Role::Operator);
+    let mut off_config = athena_core::Config::default();
+    off_config.memory.long_term.enabled = false;
+    let off_router = crate::build_router(crate::AppState {
+        registry: std::sync::Arc::new(registry_off),
+        mode: AuthMode::Token,
+        host: "127.0.0.1".into(),
+        rows: Some(store.clone()),
+        standing: crate::standing::new_cell(),
+        config: off_config,
+    });
+    let refused = off_router
+        .oneshot(op_write_request("/api/v1/memory", &token_off, &anchored))
+        .await
+        .expect("answered");
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert!(
+        body_text(refused)
+            .await
+            .contains("MEMORY_LONG_TERM_DISABLED"),
+        "the tier gate's own code expected"
+    );
 }

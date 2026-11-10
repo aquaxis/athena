@@ -14,6 +14,7 @@ fn state() -> AppState {
         host: "127.0.0.1".into(),
         rows: None,
         standing: crate::standing::new_cell(),
+        config: athena_core::Config::default(),
     }
 }
 

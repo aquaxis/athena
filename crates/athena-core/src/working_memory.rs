@@ -64,6 +64,17 @@ pub enum WorkingItem {
         /// The report's message id.
         message_id: String,
     },
+    /// An explicit Core Agent memory judgement (`ATH-MEM-003`'s WriteMemory route, X-34).
+    /// The §13.1 list is a *floor* (ATH-MEM-007: 最低限), so the tier admits an
+    /// agent-stated judgement as a content record of its own; the content it carries is
+    /// the mask the writer's hygiene pass already applied (`R-POL-13` runs at the writer,
+    /// before this item exists). The ceiling treats it as any content record — evictable
+    /// to its reference like the rest.
+    AgentJudgement {
+        /// The judgement's masked content (never a plaintext burst — the mask ran before
+        /// this item was built).
+        content: String,
+    },
     /// A denial record (`ATH-MEM-007` row 7): the §23.2 Event carries the facts. The
     /// reference here is the Event id.
     DenialRef {

@@ -101,6 +101,17 @@ impl TokenRegistry {
             .map(|record| record.role)
     }
 
+    /// The presented token's own registry record — the role *and* the audit name, so a
+    /// caller who carries an identity into a record (`HumanInstruction { identity }`,
+    /// X-34's memory write) names the registered token, never `"bearer"`.
+    #[must_use]
+    pub fn resolve(&self, presented: &str) -> Option<&IssuedToken> {
+        let digest = Self::hash(presented);
+        self.tokens
+            .iter()
+            .find(|record| record.sha256_hex == digest)
+    }
+
     /// Every registered record (audit view).
     #[must_use]
     pub fn records(&self) -> &[IssuedToken] {
@@ -168,10 +179,14 @@ pub fn from_request(
     let Some(role) = registry.authenticate(token) else {
         return Err(crate::errors::ApiError::unknown_token(correlation_id));
     };
-    Ok(ApiCaller {
-        name: "bearer".into(),
-        role,
-    })
+    // The identity face: the registry's own audit name for the token (X-34's
+    // `HumanInstruction { identity }` rides this; the token itself never leaves the
+    // registry — ATH-SEC-005).
+    let name = registry
+        .resolve(token)
+        .map(|record| record.name.clone())
+        .unwrap_or_else(|| "bearer".into());
+    Ok(ApiCaller { name, role })
 }
 
 /// The bearer header of a request header map (spec §22.1's form).

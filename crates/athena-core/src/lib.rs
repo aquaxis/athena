@@ -42,6 +42,7 @@ pub mod failure;
 pub mod hierarchy_manager;
 pub mod inspection;
 pub mod issuance;
+pub mod maintenance;
 pub mod memory_manager;
 pub mod observability;
 pub mod orphan;
@@ -62,6 +63,10 @@ mod session_tests;
 pub mod skills_bridge;
 pub mod state_manager;
 pub mod tool_manager;
+pub mod write_memory;
+#[cfg(test)]
+#[path = "write_memory_tests.rs"]
+mod write_memory_tests;
 
 #[cfg(test)]
 mod inspection_tests;
@@ -69,7 +74,7 @@ mod inspection_tests;
 #[cfg(test)]
 mod protocol_tests;
 
-pub use athena_events::redact::digest;
+pub use athena_events::redact::{digest, mask_text};
 pub use athena_persistence::now_rfc3339;
 pub use athena_persistence::{NewEvent, WorkspaceLeaseRepository};
 /// Task transition tables re-exported for the API's run / cancel handlers; the state
