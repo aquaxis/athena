@@ -372,6 +372,12 @@ async fn main() {
     //     ATH-CORE-047, the cadence/semantics split D-35 keeps).
     core_agent_heartbeat_cadence(adapter.clone(), rows.clone(), config.clone());
 
+    // 9f. The stall-detection cadence (X-37): the resident walks the two stall faces
+    //     on its own clock — closed wait-graph cycles escalate immediately and the
+    //     state-change silence line fires at the configured threshold — and the
+    //     `TaskStalled` Event is the escalation record (ATH-OBS-012/013, the
+    //     cadence/semantics split D-35 keeps).
+    stall_detection_cadence(rows.clone(), config.clone());
     // 10. Serve until the signal; then the safe-shutdown sequence (NFR-13).
     let server = axum::serve(listener, build_router(state)).with_graceful_shutdown(async {
         let ctrl_c = tokio::signal::ctrl_c();
@@ -1190,4 +1196,38 @@ where
             }
         }
     })
+}
+
+/// The stall-detection cadence (X-37): the resident's own clock walks the two stall
+/// faces each tick — the closed-wait-cycle face escalates immediately and the
+/// state-change silence line fires at the configured threshold
+/// (`core.iteration_timeout` x `scheduler.stall_detection_factor`, ATH-OBS-012) —
+/// while the module owns the rule and the tick owns the clock (D-35). A tick fault
+/// is logged and retried on the next tick: the cadence never halts the resident.
+fn stall_detection_cadence(rows: Arc<Mutex<AthenaStore>>, config: Config) {
+    tokio::spawn(async move {
+        let threshold_ms = athena_core::stall_detection::stall_threshold_ms(
+            u64::try_from(config.core.iteration_timeout.as_millis()).unwrap_or(1_800_000),
+            config.scheduler.stall_detection_factor,
+        );
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let now = athena_types::now_rfc3339();
+            let Ok(mut guard) = rows.lock() else {
+                continue;
+            };
+            match athena_core::stall_detection::scan_once(&mut guard, threshold_ms, &now) {
+                Ok(report) => {
+                    if !report.stalled.is_empty() {
+                        for stalled in &report.stalled {
+                            eprintln!("athena-api: task {} stalled ({stalled:?})", stalled.task_id);
+                        }
+                    }
+                }
+                Err(fault) => {
+                    eprintln!("athena-api: stall scan faulted: {fault}; retries next tick");
+                }
+            }
+        }
+    });
 }

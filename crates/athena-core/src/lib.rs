@@ -63,6 +63,10 @@ pub mod skill_lifecycle;
 #[cfg(test)]
 #[path = "skill_lifecycle_tests.rs"]
 mod skill_lifecycle_tests;
+pub mod stall_detection;
+#[cfg(test)]
+#[path = "stall_detection_tests.rs"]
+mod stall_detection_tests;
 pub mod working_memory;
 
 pub mod schema;
