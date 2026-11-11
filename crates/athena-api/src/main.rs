@@ -1512,6 +1512,7 @@ fn maintenance_cadence(rows: Arc<Mutex<AthenaStore>>, config: athena_core::Confi
                         + report.clarifications_expired
                         + report.idempotency_keys_pruned
                         + report.delivery_records_pruned
+                        + report.approvals_expired
                         + report.aiprj_areas_deleted
                         + report.aiprj_areas_skipped
                         > 0
@@ -1522,13 +1523,15 @@ fn maintenance_cadence(rows: Arc<Mutex<AthenaStore>>, config: athena_core::Confi
                             &format!(
                                 "retention sweep removed events {}, clarifications {}, \
                                  idempotency keys {}, deliveries {}, aiprj areas {} \
-                                 (areas left by the recognition fence: {})",
+                                 (areas left by the recognition fence: {}); \
+                                 approvals expired as refusals {}",
                                 report.events_pruned,
                                 report.clarifications_expired,
                                 report.idempotency_keys_pruned,
                                 report.delivery_records_pruned,
                                 report.aiprj_areas_deleted,
-                                report.aiprj_areas_skipped
+                                report.aiprj_areas_skipped,
+                                report.approvals_expired
                             ),
                             &correlation,
                             serde_json::json!({
@@ -1536,6 +1539,7 @@ fn maintenance_cadence(rows: Arc<Mutex<AthenaStore>>, config: athena_core::Confi
                                 "clarifications_expired": report.clarifications_expired,
                                 "idempotency_keys_pruned": report.idempotency_keys_pruned,
                                 "delivery_records_pruned": report.delivery_records_pruned,
+                                "approvals_expired": report.approvals_expired,
                                 "aiprj_areas_deleted": report.aiprj_areas_deleted,
                                 "aiprj_areas_skipped": report.aiprj_areas_skipped
                             }),

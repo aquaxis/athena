@@ -1,9 +1,11 @@
-//! The Instance `.aiprj` area sweep (X-41, ATH-AIPRJ-029) and its recognition fence.
+//! The Instance `.aiprj` area sweep (X-41, ATH-AIPRJ-029) and its recognition fence, plus
+//! the approval expiry step (X-45, ATH-HITL-005 / ATH-STATE-011 / §17.4).
 //!
-//! Every test builds a real directory tree in the system temp area — the fence's whole
-//! point is that it reads the disk, so a mocked filesystem would verify nothing. The rows
-//! are real store rows for the same reason: the fence's first condition is an agreement
-//! between a row and a directory.
+//! Every area test builds a real directory tree in the system temp area — the fence's
+//! whole point is that it reads the disk, so a mocked filesystem would verify nothing. The
+//! rows are real store rows for the same reason: the fence's first condition is an
+//! agreement between a row and a directory. The approval tests are store rows throughout
+//! as well: the step's facts are the §17.4 state and the two deadline stamps.
 
 use crate::maintenance::aiprj_area_step;
 use athena_types::{
@@ -341,6 +343,323 @@ fn the_full_cycle_reports_the_area_counts_and_records_them() {
     );
     assert!(
         audit.payload_json.contains("\"aiprj_areas_skipped\":0"),
+        "{}",
+        audit.payload_json
+    );
+}
+
+// --- The approval expiry step (X-45, §17.4's two expiry edges) ----------------------------
+
+/// The approval fixtures' shared clock: the deadline sits between the two stamps, so one
+/// `now` is "before the deadline" and the other is "after" without any arithmetic.
+const APPROVAL_DEADLINE: &str = "2026-11-12T01:00:00.000Z";
+const BEFORE_DEADLINE: &str = "2026-11-12T00:30:00.000Z";
+const AFTER_DEADLINE: &str = "2026-11-12T01:30:00.000Z";
+
+/// One Task row in the state the §17.1 approval edge needs.
+fn approval_task(state: athena_types::TaskState) -> athena_types::Task {
+    athena_types::Task {
+        id: athena_types::TaskId::new(),
+        parent_id: None,
+        title: "X45".into(),
+        instruction: "the operation awaiting a human".into(),
+        workspace: "/work/x45".into(),
+        goal: None,
+        constraints: vec![],
+        completion_criteria: vec![],
+        state,
+        priority: athena_types::Priority::Normal,
+        plan_id: None,
+        risk_level: athena_types::RiskLevel::High,
+        attempt_count: 0,
+        max_attempts: 3,
+        iteration_count: 0,
+        max_iterations: 50,
+        deadline: None,
+        created_by: "test".into(),
+        created_at: "2026-11-12T00:00:00.000Z".into(),
+        updated_at: "2026-11-12T00:00:00.000Z".into(),
+        finished_at: None,
+    }
+}
+
+/// A `REQUESTED` approval through the production staging path, with the deadline the
+/// caller names (`ATH-HITL-004`).
+fn seed_requested(
+    store: &mut crate::AthenaStore,
+    task: &athena_types::TaskId,
+    expires_at: &str,
+    scope: athena_types::ApprovalScope,
+) -> athena_types::Approval {
+    crate::approval_manager::staging::create(
+        store,
+        &athena_types::ApprovalId::new(),
+        task,
+        &athena_types::AgentId::core_agent(),
+        &athena_types::InstanceId::new(),
+        "shell git push",
+        "tool=shell target=- args={} risk=high instance=-".into(),
+        "agent prose, untrusted",
+        "agent prose, untrusted",
+        athena_types::RiskLevel::High,
+        expires_at.into(),
+        scope,
+    )
+    .expect("the approval stages")
+}
+
+/// The same row moved to `GRANTED` with uses left — the state edge 2 starts from.
+fn grant(store: &mut crate::AthenaStore, approval: &athena_types::Approval, uses: u64) {
+    crate::ApprovalRepository::update_state(
+        store,
+        &approval.id,
+        athena_types::ApprovalState::Granted,
+        Some("admin rt-3"),
+        uses,
+    )
+    .expect("the grant lands");
+}
+
+fn approval_state(
+    store: &crate::AthenaStore,
+    id: &athena_types::ApprovalId,
+) -> athena_types::ApprovalState {
+    crate::ApprovalRepository::get(store, id)
+        .expect("read")
+        .expect("row")
+        .state
+}
+
+fn expired_events(
+    store: &crate::AthenaStore,
+    task: &athena_types::TaskId,
+) -> Vec<athena_persistence::StoredEvent> {
+    crate::EventRepository::list_for_task(store, task)
+        .expect("chain")
+        .into_iter()
+        .filter(|event| event.event_type == "ApprovalExpired")
+        .collect()
+}
+
+#[test]
+fn an_approval_inside_its_deadline_is_left_alone() {
+    // ATH-HITL-005 is about *silence past the deadline*. A row still inside its window is
+    // not a candidate: no state change, no Event, no count.
+    let mut store = crate::AthenaStore::in_memory().expect("store");
+    let task = approval_task(athena_types::TaskState::WaitingApproval);
+    crate::TaskRepository::insert(&mut store, &task).expect("task seeds");
+    let approval = seed_requested(
+        &mut store,
+        &task.id,
+        APPROVAL_DEADLINE,
+        athena_types::ApprovalScope::OperationOnly {
+            operation_only: true,
+        },
+    );
+
+    let expired = crate::maintenance::approval_expiry_step(&mut store, BEFORE_DEADLINE)
+        .expect("the step runs");
+
+    assert_eq!(expired, 0);
+    assert_eq!(
+        approval_state(&store, &approval.id),
+        athena_types::ApprovalState::Requested
+    );
+    assert!(expired_events(&store, &task.id).is_empty());
+    let after = crate::TaskRepository::get(&store, &task.id)
+        .expect("read")
+        .expect("row");
+    assert_eq!(after.state, athena_types::TaskState::WaitingApproval);
+}
+
+#[test]
+fn a_requested_approval_past_its_deadline_expires_as_a_refusal() {
+    // §17.4's `REQUESTED → EXPIRED` edge (actor: Approval Manager) with the Task's §17.1
+    // `WAITING_APPROVAL + ApprovalExpired → FAILED` row walked by the same Event: the
+    // default is refusal (ATH-HITL-005) and `EXPIRED` counts as one (ATH-STATE-011).
+    let mut store = crate::AthenaStore::in_memory().expect("store");
+    let task = approval_task(athena_types::TaskState::WaitingApproval);
+    crate::TaskRepository::insert(&mut store, &task).expect("task seeds");
+    let approval = seed_requested(
+        &mut store,
+        &task.id,
+        APPROVAL_DEADLINE,
+        athena_types::ApprovalScope::OperationOnly {
+            operation_only: true,
+        },
+    );
+
+    let expired = crate::maintenance::approval_expiry_step(&mut store, AFTER_DEADLINE)
+        .expect("the step runs");
+
+    assert_eq!(expired, 1);
+    assert_eq!(
+        approval_state(&store, &approval.id),
+        athena_types::ApprovalState::Expired
+    );
+    let row = crate::ApprovalRepository::get(&store, &approval.id)
+        .expect("read")
+        .expect("row");
+    assert_eq!(row.uses_remaining, 0, "a refused approval carries no uses");
+    assert_eq!(
+        row.responded_by, None,
+        "silence has no approver — none is invented (ATH-HITL-006)"
+    );
+    let failed = crate::TaskRepository::get(&store, &task.id)
+        .expect("read")
+        .expect("row");
+    assert_eq!(
+        failed.state,
+        athena_types::TaskState::Failed,
+        "the waiting Task does not wait forever (§17.1)"
+    );
+
+    // The Event is the audit record, with the catalog's required keys (ATH-EVENT-017).
+    let events = expired_events(&store, &task.id);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.actor, "system", "the Approval Manager's §17.4 actor");
+    assert_eq!(event.occurred_at, AFTER_DEADLINE);
+    let wire: serde_json::Value =
+        serde_json::from_str(&event.payload_json).expect("payload parses");
+    for key in <athena_events::events::ApprovalExpired as athena_events::Payload>::REQUIRED_FIELDS {
+        assert!(
+            wire.get(*key).is_some_and(|value| !value.is_null()),
+            "the catalog key {key} is missing from {}",
+            event.payload_json
+        );
+    }
+    let payload: athena_events::events::ApprovalExpired =
+        serde_json::from_str(&event.payload_json).expect("wire-exact payload");
+    assert_eq!(payload.approval_id, approval.id);
+    assert_eq!(payload.scope, row.scope);
+
+    // Idempotence: the row left the `REQUESTED` candidate set, so a second cycle writes
+    // no second Event.
+    let again = crate::maintenance::approval_expiry_step(&mut store, AFTER_DEADLINE)
+        .expect("the step reruns");
+    assert_eq!(again, 0);
+    assert_eq!(expired_events(&store, &task.id).len(), 1);
+}
+
+#[test]
+fn a_granted_scope_lapses_before_it_is_consumed() {
+    // §17.4's second expiry edge: `GRANTED → EXPIRED` when `scope.expires_at`
+    // (ATH-HITL-013) arrives with uses still unconsumed. The Task is `RUNNING` here —
+    // the grant already released it — so the Event is the record alone.
+    let mut store = crate::AthenaStore::in_memory().expect("store");
+    let task = approval_task(athena_types::TaskState::Running);
+    crate::TaskRepository::insert(&mut store, &task).expect("task seeds");
+    let approval = seed_requested(
+        &mut store,
+        &task.id,
+        APPROVAL_DEADLINE,
+        athena_types::ApprovalScope::Pattern {
+            pattern: "git_push_to_origin_main".into(),
+            expires_at: APPROVAL_DEADLINE.into(),
+        },
+    );
+    grant(&mut store, &approval, 3);
+
+    let expired = crate::maintenance::approval_expiry_step(&mut store, AFTER_DEADLINE)
+        .expect("the step runs");
+
+    assert_eq!(expired, 1);
+    assert_eq!(
+        approval_state(&store, &approval.id),
+        athena_types::ApprovalState::Expired
+    );
+    let events = expired_events(&store, &task.id);
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        crate::TaskRepository::get(&store, &task.id)
+            .expect("read")
+            .expect("row")
+            .state,
+        athena_types::TaskState::Running,
+        "a Task that is not waiting on the approval is not re-decided here"
+    );
+
+    // Idempotence on this edge too: `EXPIRED` is terminal, so the granted-unconsumed
+    // query no longer answers with it.
+    let again = crate::maintenance::approval_expiry_step(&mut store, AFTER_DEADLINE)
+        .expect("the step reruns");
+    assert_eq!(again, 0);
+    assert_eq!(expired_events(&store, &task.id).len(), 1);
+}
+
+#[test]
+fn a_granted_scope_still_in_its_window_keeps_its_uses() {
+    // The counterpart of edge 2: a live scope stamp, and an `operation_only` grant, which
+    // carries no `scope.expires_at` at all — the step dates neither of them.
+    let mut store = crate::AthenaStore::in_memory().expect("store");
+    let task = approval_task(athena_types::TaskState::Running);
+    crate::TaskRepository::insert(&mut store, &task).expect("task seeds");
+    let live = seed_requested(
+        &mut store,
+        &task.id,
+        APPROVAL_DEADLINE,
+        athena_types::ApprovalScope::Pattern {
+            pattern: "git_push_to_origin_main".into(),
+            expires_at: AFTER_DEADLINE.into(),
+        },
+    );
+    grant(&mut store, &live, 2);
+    let operation_only = seed_requested(
+        &mut store,
+        &task.id,
+        APPROVAL_DEADLINE,
+        athena_types::ApprovalScope::OperationOnly {
+            operation_only: true,
+        },
+    );
+    grant(&mut store, &operation_only, 1);
+
+    let expired = crate::maintenance::approval_expiry_step(&mut store, BEFORE_DEADLINE)
+        .expect("the step runs");
+
+    assert_eq!(expired, 0);
+    assert_eq!(
+        approval_state(&store, &live.id),
+        athena_types::ApprovalState::Granted
+    );
+    assert_eq!(
+        approval_state(&store, &operation_only.id),
+        athena_types::ApprovalState::Granted
+    );
+    assert!(expired_events(&store, &task.id).is_empty());
+}
+
+#[test]
+fn the_full_cycle_reports_the_expired_approvals_and_records_them() {
+    // The step rides `sweep_once` as step 6, and `record_swept` carries the count into the
+    // audit Event's payload (the five earlier steps' own flow).
+    let mut store = crate::AthenaStore::in_memory().expect("store");
+    let task = approval_task(athena_types::TaskState::WaitingApproval);
+    crate::TaskRepository::insert(&mut store, &task).expect("task seeds");
+    seed_requested(
+        &mut store,
+        &task.id,
+        APPROVAL_DEADLINE,
+        athena_types::ApprovalScope::OperationOnly {
+            operation_only: true,
+        },
+    );
+
+    let report =
+        crate::maintenance::sweep_once(&mut store, AFTER_DEADLINE, CUTOFF, CUTOFF, CUTOFF, None)
+            .expect("the cycle runs");
+    assert_eq!(report.approvals_expired, 1);
+
+    crate::maintenance::record_swept(&mut store, &report, AFTER_DEADLINE, "cor-x45-cycle")
+        .expect("the audit records");
+    let events = crate::EventRepository::list_since(&store, 0, u64::MAX).expect("events");
+    let audit = events
+        .iter()
+        .find(|event| event.correlation_id == "cor-x45-cycle")
+        .expect("the audit Event");
+    assert!(
+        audit.payload_json.contains("\"approvals_expired\":1"),
         "{}",
         audit.payload_json
     );
