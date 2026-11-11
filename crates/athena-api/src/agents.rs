@@ -444,9 +444,10 @@ pub fn read_runtime(store: &SharedStore, runtime: &str) -> Result<Response, ApiE
 // --- §22.9 Events list ----------------------------------------------------------------------
 
 /// List Events (`GET /events`, viewer): the §23 rows newest first, cursor-paginated;
-/// `?task_id=` narrows to one Task's replay, `?since=` anchors a sequence position
-/// (the stream's gap face, `ATH-EVENT-020`, in list form). Payload contents are never
-/// rendered (`ATH-EVENT-007`): names and stamps only.
+/// `?task_id=` narrows to one Task's replay, `?type=` (one name) and `?since=` (the
+/// stream's gap anchor, `ATH-EVENT-020`, in list form) narrow the rows per
+/// §22.9 (X-38: the narrowing keys are read by `athena_core::event_filter`). Payload
+/// contents are never rendered (`ATH-EVENT-007`): names and stamps only.
 ///
 /// # Errors
 /// Unknown `task_id` shape ⇒ 400; store faults ⇒ 500.
@@ -454,9 +455,23 @@ pub fn list_events(
     store: &SharedStore,
     page: &crate::pagination::Query,
     task_id: Option<&str>,
-    _types: Option<&str>,
+    types: Option<&str>,
+    since: Option<u64>,
 ) -> Result<Response, ApiError> {
     let guard = store.lock().expect("event store poisoned");
+    let filter_parts: Vec<(String, String)> = task_id
+        .map(|raw| vec![(String::from("task_id"), raw.to_string())])
+        .unwrap_or_default();
+    let mut filter_parts = filter_parts;
+    if let Some(wire) = types {
+        filter_parts.push((String::from("types"), wire.to_string()));
+    }
+    if let Some(anchor) = since {
+        // `?since=` rides the filter itself (the sequence anchor, `ATH-EVENT-020`);
+        // the row walk then answers `sequence > since`, list-wise.
+        filter_parts.push((String::from("since"), anchor.to_string()));
+    }
+    let filter = athena_core::event_filter::EventFilter::parse(&filter_parts);
     let rows = match task_id {
         Some(raw) => {
             let task_id = TaskId::parse(raw).ok_or_else(|| {
@@ -469,17 +484,26 @@ pub fn list_events(
                     String::new(),
                 )
             })?;
+            task_present(&guard, &task_id)?;
             EventRepository::list_for_task(&*guard, &task_id)
                 .map_err(|e| crate::tasks::store_fault(e, ""))?
         }
         None => {
-            // The stream's own semantics, list form: `since` anchors the gap; without it
-            // the whole append-only history walks oldest → newest under the cursor.
-            let since = page.cursor.unwrap_or(0);
+            // The stream's own semantics, list form: `?since=` (§22.9) anchors the gap
+            // (ATH-EVENT-020), the cursor pages the filtered answer; without either the
+            // whole append-only history walks oldest → newest under the cursor.
+            let since = filter.since.or(page.cursor).unwrap_or(0);
             EventRepository::list_since(&*guard, since, u64::MAX)
                 .map_err(|e| crate::tasks::store_fault(e, ""))?
         }
     };
+    // The §22.9 narrowing keys apply to the row set before the page slice (X-38);
+    // the cursor indexes the *filtered* order, so a walk that changes the filter
+    // changes what the cursors mean — the response always says what to ask next.
+    let rows: Vec<_> = rows
+        .into_iter()
+        .filter(|event| filter.matches(event))
+        .collect();
     // Newest first, matching every other list face; the cursor indexes into that order.
     let mut rows = rows;
     rows.reverse();
@@ -651,7 +675,10 @@ pub fn list_task_messages(
 /// [`crate::tasks::read_task`] gives, without re-locking the shared `Mutex` (std
 /// `Mutex` is not reentrant: locking it again over the same thread deadlocks the
 /// whole runtime's accept loop, the freeze the first live probe recorded).
-fn task_present(store: &athena_core::AthenaStore, task_id: &TaskId) -> Result<(), ApiError> {
+pub(crate) fn task_present(
+    store: &athena_core::AthenaStore,
+    task_id: &TaskId,
+) -> Result<(), ApiError> {
     match athena_core::TaskRepository::get(store, task_id)
         .map_err(|e| crate::tasks::store_fault(e, ""))?
     {

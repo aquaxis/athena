@@ -711,6 +711,7 @@ async fn task_events_row(
 async fn events_stream_row(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Response {
     use athena_core::EventRepository;
     use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -721,17 +722,60 @@ async fn events_stream_row(
         )
             .into_response();
     };
+    // The §22.9 wire keys are read through the shared grammar (X-38): `?task_id=`
+    // narrows to one Task's rows, `?types=` (comma-separated) narrows to the named
+    // types; a `task_id` that fails the newtype parse is the API face's 400.
+    let raw = query.as_deref().unwrap_or("");
+    let pairs = form_urlencoded_pairs(raw);
+    let filter = athena_core::event_filter::EventFilter::parse(&pairs);
+    // A `?task_id=` that fails the newtype parse is the API face's 400 (the list
+    // face answers the same shape); without this the stream would silently serve
+    // the unfiltered register.
+    if pairs
+        .iter()
+        .any(|(key, value)| key == "task_id" && athena_types::TaskId::parse(value).is_none())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "code": "TASK_NOT_FOUND",
+                    "message": "malformed task id on the stream filter"
+                }
+            })),
+        )
+            .into_response();
+    }
+    if let Some(task) = &filter.task {
+        {
+            let guard = rows.lock().expect("store");
+            // Existence, not row count: an absent Task is 404 (`task_present`);
+            // `list_for_task`'s `Ok(empty)` is not the same fact.
+            if let Err(error) = crate::agents::task_present(&guard, task) {
+                return error.into_response();
+            }
+        }
+    }
     // The client's `Last-Event-ID` header is the gap anchor (ATH-EVENT-020: reconnection
-    // fetches by `sequence`). A bounded tail is served at connect; a follow-up reconnect
-    // fetches the next gap — the register is the store, never a dropped event.
+    // fetches by `sequence`); a `?since=` in the query rides the same anchor when given.
+    // A bounded tail is served at connect; a follow-up reconnect fetches the next gap —
+    // the register is the store, never a dropped event.
     let since = headers
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
+        .or(filter.since)
         .unwrap_or(0);
     let guard = rows.lock().expect("store");
-    let events = EventRepository::list_since(&*guard, since, 500).unwrap_or_default();
-    let frames = events
+    let events = EventRepository::list_since(&*guard, since, u64::MAX)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|event| filter.matches(event))
+        .collect::<Vec<_>>();
+    // A bounded tail remains the delivery shape; the newest `500` filtered rows serve.
+    let taken = events.len().saturating_sub(500).min(events.len());
+    let served = &events[taken..];
+    let frames = served
         .iter()
         .map(|event| {
             SseEvent::default().id(event.sequence.to_string()).data(
@@ -1075,6 +1119,9 @@ async fn events_list_row(
         )
             .into_response();
     };
+    // The §22.9 list keys (`?task_id=&type=&since=&limit=&cursor=`) parse through the
+    // shared grammar (X-38); `limit=&cursor=` stay pagination's own keys. The list
+    // face's singular `type=` narrows to one named row type.
     let raw = query.as_deref().unwrap_or("");
     let page = crate::pagination::Query::parse(raw);
     let pairs = form_urlencoded_pairs(raw);
@@ -1082,7 +1129,15 @@ async fn events_list_row(
         .iter()
         .find(|(key, _)| key == "task_id")
         .map(|(_, value)| value.as_str());
-    crate::agents::list_events(&rows, &page, task_id, None)
+    let type_wire = pairs
+        .iter()
+        .find(|(key, _)| key == "type")
+        .map(|(_, value)| value.as_str());
+    let since = pairs
+        .iter()
+        .find(|(key, _)| key == "since")
+        .and_then(|(_, value)| value.parse::<u64>().ok());
+    crate::agents::list_events(&rows, &page, task_id, type_wire, since)
         .unwrap_or_else(|error| error.into_response())
 }
 

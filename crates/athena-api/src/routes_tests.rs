@@ -1441,3 +1441,205 @@ async fn the_memory_write_route_refuses_at_the_tier_gates() {
         "the tier gate's own code expected"
     );
 }
+// --- X-38: the §22.9 narrowing keys (`?task_id=&type=&since=&types=`) ----------------------
+
+/// Seed the register the way the §22.9 faces read it: a live Task row (the
+/// faces answer 404 for an absent one, 400 for a malformed one), three
+/// task-anchored `TaskQueued` rows (sequences 1–3) and two register-wide
+/// `ConfigurationLoaded` rows (4–5), appended in that order; the store's append
+/// order is the register's truth and no extra row is invented to make an
+/// assertion come out.
+async fn seed_event_mix(store: &SharedTestStore) -> String {
+    use athena_core::{EventRepository, TaskRepository};
+    let mut guard = store.lock().expect("store");
+    let task = athena_types::Task {
+        id: athena_types::TaskId::new(),
+        title: "the narrowing probe".into(),
+        instruction: "hold the §22.9 narrowing probe".into(),
+        constraints: vec![],
+        completion_criteria: vec![],
+        state: athena_types::TaskState::Queued,
+        priority: athena_types::Priority::Normal,
+        plan_id: None,
+        risk_level: athena_types::RiskLevel::Medium,
+        attempt_count: 0,
+        max_attempts: 3,
+        iteration_count: 0,
+        max_iterations: 50,
+        deadline: None,
+        parent_id: None,
+        workspace: "/repo/x38".into(),
+        goal: Some("hold the narrowing probe".into()),
+        created_by: "test".into(),
+        created_at: "2026-11-12T00:00:00.000Z".into(),
+        updated_at: "2026-11-12T00:00:00.000Z".into(),
+        finished_at: None,
+    };
+    TaskRepository::insert(&mut *guard, &task).expect("task row");
+    // Three task-anchored `TaskQueued` rows (the §23.2 Task family's state-change
+    // vocabulary, X-37's `STATE_CHANGE_NAMES`): sequences 1–3, each naming the
+    // probe Task in `task_id` — the anchor the narrowing faces read.
+    for index in 0..3 {
+        let event = athena_core::NewEvent {
+            event_id: athena_types::EventId::new(),
+            schema_version: 1,
+            event_type: "TaskQueued".into(),
+            occurred_at: format!("2026-11-12T00:00:0{}.000Z", 1 + index),
+            task_id: Some(task.id.clone()),
+            plan_step_id: None,
+            agent_id: None,
+            instance_id: None,
+            skill_id: None,
+            correlation_id: format!("cor-x38-tq-{index}"),
+            causation_id: None,
+            actor: "system".into(),
+            payload_json: serde_json::json!({}).to_string(),
+        };
+        EventRepository::append(&mut *guard, &event).expect("event row");
+    }
+    for index in 0..2 {
+        let event = athena_core::NewEvent {
+            event_id: athena_types::EventId::new(),
+            schema_version: 1,
+            event_type: "ConfigurationLoaded".into(),
+            occurred_at: format!("2026-11-12T00:00:0{}.000Z", 4 + index),
+            task_id: None,
+            plan_step_id: None,
+            agent_id: None,
+            instance_id: None,
+            skill_id: None,
+            correlation_id: format!("cor-x38-config-{index}"),
+            causation_id: None,
+            actor: "system".into(),
+            payload_json: serde_json::json!({}).to_string(),
+        };
+        EventRepository::append(&mut *guard, &event).expect("event row");
+    }
+    task.id.as_str().to_string()
+}
+#[tokio::test]
+async fn the_list_face_serves_the_22_9_narrowing_keys() {
+    let (router, token, store) = agent_surface_router().await;
+    let task_id = seed_event_mix(&store).await;
+
+    // `?task_id=` — the three TaskQueued rows anchored to the probe Task.
+    let (status, body) = admin_get(
+        &router,
+        &token,
+        &format!("/api/v1/events?task_id={task_id}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.matches("TaskQueued").count(), 3, "{body}");
+    assert!(!body.contains("ConfigurationLoaded"), "{body}");
+    assert!(body.contains("cor-x38-tq-0"), "{body}");
+
+    // `?type=` (singular on the list face) — the two register-wide rows.
+    let (status, body) =
+        admin_get(&router, &token, "/api/v1/events?type=ConfigurationLoaded").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.matches("ConfigurationLoaded").count(), 2, "{body}");
+    assert!(!body.contains("TaskQueued"), "{body}");
+    assert!(body.contains("cor-x38-config-0"), "{body}");
+    // `?since=` — the anchor is exclusive (`sequence > since`), so 4 leaves row 5.
+    let (status, body) = admin_get(&router, &token, "/api/v1/events?since=4").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.matches("ConfigurationLoaded").count(), 1, "{body}");
+    assert!(body.contains("cor-x38-config-1"), "{body}");
+    assert!(!body.contains("TaskQueued"), "{body}");
+
+    // A malformed task id is the 400; a well-formed but absent one is the 404.
+    let (status, body) = admin_get(&router, &token, "/api/v1/events?task_id=not-a-task").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("TASK_NOT_FOUND"), "{body}");
+    let (status, body) = admin_get(
+        &router,
+        &token,
+        "/api/v1/events?task_id=task-01JAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert!(body.contains("TASK_NOT_FOUND"), "{body}");
+}
+#[tokio::test]
+async fn the_stream_face_serves_the_22_9_narrowing_keys() {
+    let (router, token, store) = agent_surface_router().await;
+    let task_id = seed_event_mix(&store).await;
+
+    // `?task_id=` — the stream narrows to the probe Task's three rows only.
+    let (status, body) = admin_get(
+        &router,
+        &token,
+        &format!("/api/v1/events/stream?task_id={task_id}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.matches("TaskQueued").count(), 3, "{body}");
+    assert!(!body.contains("ConfigurationLoaded"), "{body}");
+    assert!(body.contains("cor-x38-tq-0"), "{body}");
+    // `?types=` — a comma-separated type set narrows the register-wide stream.
+    let (status, body) = admin_get(
+        &router,
+        &token,
+        "/api/v1/events/stream?types=ConfigurationLoaded",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.matches("ConfigurationLoaded").count(), 2, "{body}");
+    assert!(!body.contains("TaskQueued"), "{body}");
+    assert!(body.contains("cor-x38-config-0"), "{body}");
+
+    // `?since=` — the query rides the same gap anchor when the header is absent.
+    let (status, body) = admin_get(
+        &router,
+        &token,
+        &format!("/api/v1/events/stream?task_id={task_id}&since=2"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.contains("cor-x38-tq-0"), "{body}");
+    assert!(!body.contains("cor-x38-tq-1"), "{body}");
+    assert!(body.contains("cor-x38-tq-2"), "{body}");
+    // The `Last-Event-ID` header is the gap anchor (ATH-EVENT-020): a reconnect
+    // fetches only the rows after the last served `sequence`.
+    let request = Request::builder()
+        .uri(format!("/api/v1/events/stream?task_id={task_id}"))
+        .body(Body::empty())
+        .expect("request");
+    let mut request = request;
+    bearer(&mut request, &token);
+    request
+        .headers_mut()
+        .insert("last-event-id", "2".parse().expect("header"));
+    let response = router.clone().oneshot(request).await.expect("answered");
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 65_536)
+        .await
+        .expect("body");
+    let body = String::from_utf8_lossy(&body).to_string();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.contains("cor-x38-tq-0"), "{body}");
+    assert!(!body.contains("cor-x38-tq-1"), "{body}");
+    assert!(body.contains("cor-x38-tq-2"), "{body}");
+}
+#[tokio::test]
+async fn a_malformed_stream_task_id_is_the_400_and_an_absent_task_is_the_404() {
+    let (router, token, store) = agent_surface_router().await;
+    let _ = seed_event_mix(&store).await;
+    // `?task_id=` that fails the newtype parse is the API face's 400 — the query
+    // grammar is shared with the list face (X-38's `EventFilter`).
+    let (status, body) =
+        admin_get(&router, &token, "/api/v1/events/stream?task_id=not-a-task").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("TASK_NOT_FOUND"), "{body}");
+    // A well-formed but absent Task is the 404 — existence, not row count
+    // (`task_present`): `list_for_task`'s `Ok(empty)` is not the same fact.
+    let (status, body) = admin_get(
+        &router,
+        &token,
+        "/api/v1/events/stream?task_id=task-01JAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert!(body.contains("TASK_NOT_FOUND"), "{body}");
+}

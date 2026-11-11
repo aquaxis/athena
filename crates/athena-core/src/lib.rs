@@ -37,6 +37,7 @@ pub mod core_agent_session;
 pub mod core_loop;
 #[cfg(test)]
 mod core_loop_tests;
+pub mod event_filter;
 pub mod event_manager;
 pub mod failure;
 pub mod heartbeat;
@@ -115,6 +116,10 @@ pub use observability::{
     heartbeat_age_since, silence, wait_cycle,
 };
 pub use ownership::{Entity, ModuleRole, OWNERSHIP};
+
+/// The §22.9 read-key grammar (X-38): both Event read faces' narrowing keys parse and
+/// match through one grammar (the module owns the rule, the caller its own IO).
+pub use event_filter::EventFilter;
 
 /// The repository surfaces the API needs, re-exported so `athena-api` needs no direct
 /// `athena-persistence` edge (spec §32.2 allows `athena-api → athena-core` only).
