@@ -48,6 +48,9 @@ pub mod hierarchy_manager;
 pub mod inspection;
 pub mod issuance;
 pub mod maintenance;
+#[cfg(test)]
+#[path = "maintenance_tests.rs"]
+mod maintenance_tests;
 pub mod memory_manager;
 pub mod observability;
 pub mod orphan;

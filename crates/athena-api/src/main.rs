@@ -1220,14 +1220,21 @@ fn cutoff(duration: std::time::Duration) -> String {
     athena_types::clock::format_rfc3339(past, 0)
 }
 
-/// The retention sweep cadence (X-34's Phase C): the four implemented deletions get their
+/// The retention sweep cadence (X-34's Phase C): the implemented deletions get their
 /// production callers through `athena_core::maintenance::sweep_once` — Events
 /// (`events.retention_days`, ATH-EVENT-014), clarifications (ATH-HITL-018), idempotency
-/// keys (the repository's 7-day contract), delivery records (`messaging.dedup_retention`).
-/// Every cycle's counts are recorded by `record_swept` (the audit face), failures are
-/// logged and retried at the next tick — a sweep fault never halts the resident.
+/// keys (the repository's 7-day contract), delivery records (`messaging.dedup_retention`),
+/// and the Instance `.aiprj` work areas (X-41, ATH-AIPRJ-029 — the areas outlive the
+/// terminal state and age out with the Events they are referenced from, each deletion
+/// gated by the step's recognition fence). The instances root passed here is the only
+/// directory the area step may delete under. Every cycle's counts are recorded by
+/// `record_swept` (the audit face), failures are logged and retried at the next tick — a
+/// sweep fault never halts the resident.
 fn maintenance_cadence(rows: Arc<Mutex<AthenaStore>>, config: athena_core::Config) {
     tokio::spawn(async move {
+        let instances_root = std::path::Path::new(&config.athena.home)
+            .join("var")
+            .join("instances");
         loop {
             tokio::time::sleep(MAINTENANCE_POLL).await;
             let events_cutoff = cutoff(std::time::Duration::from_secs(
@@ -1246,12 +1253,15 @@ fn maintenance_cadence(rows: Arc<Mutex<AthenaStore>>, config: athena_core::Confi
                 &events_cutoff,
                 &idempotency_cutoff,
                 &deliveries_cutoff,
+                Some(instances_root.as_path()),
             ) {
                 Ok(report) => {
                     if report.events_pruned
                         + report.clarifications_expired
                         + report.idempotency_keys_pruned
                         + report.delivery_records_pruned
+                        + report.aiprj_areas_deleted
+                        + report.aiprj_areas_skipped
                         > 0
                     {
                         resident_log(
@@ -1259,18 +1269,23 @@ fn maintenance_cadence(rows: Arc<Mutex<AthenaStore>>, config: athena_core::Confi
                             "maintenance",
                             &format!(
                                 "retention sweep removed events {}, clarifications {}, \
-                                 idempotency keys {}, deliveries {}",
+                                 idempotency keys {}, deliveries {}, aiprj areas {} \
+                                 (areas left by the recognition fence: {})",
                                 report.events_pruned,
                                 report.clarifications_expired,
                                 report.idempotency_keys_pruned,
-                                report.delivery_records_pruned
+                                report.delivery_records_pruned,
+                                report.aiprj_areas_deleted,
+                                report.aiprj_areas_skipped
                             ),
                             &correlation,
                             serde_json::json!({
                                 "events_pruned": report.events_pruned,
                                 "clarifications_expired": report.clarifications_expired,
                                 "idempotency_keys_pruned": report.idempotency_keys_pruned,
-                                "delivery_records_pruned": report.delivery_records_pruned
+                                "delivery_records_pruned": report.delivery_records_pruned,
+                                "aiprj_areas_deleted": report.aiprj_areas_deleted,
+                                "aiprj_areas_skipped": report.aiprj_areas_skipped
                             }),
                         );
                         if let Err(fault) = athena_core::maintenance::record_swept(

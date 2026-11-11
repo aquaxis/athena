@@ -156,6 +156,14 @@ Skill Manager / Skill Validator legs, `SkillUpdated`/`SkillValidated`/`SkillVali
 Every command accepts `--json` for scripting. The CLI talks to the Core API only (`/api/v1`);
 it never launches `agent-cli` directly (`ATH-CLI-001`/`002`).
 
+Retention: the resident sweeps on a one-minute cadence — Events past `events.retention_days`,
+expired clarifications, idempotency keys, delivery records, and each finished Instance's
+`.aiprj` work area once it ages past the same Event horizon. An area is deleted only when the
+store row and the directory together identify it as one ATHENA created for that Instance
+(recorded path, or the exact `var/instances/<id>/.aiprj` layout, resolved inside the instances
+tree and carrying the `AI_LOG/` shape the Runtime leaves); anything else is counted and left on
+disk. Every cycle's counts ride the sweep's audit Event.
+
 Observability: `GET /api/v1/metrics` answers the whole §30.3 catalog in Prometheus text —
 all 23 families, each from recorded facts. Task, instance, approval, message and Event rows
 feed the store-side families (counts by state, durations, failure and retry classes by

@@ -884,6 +884,24 @@ impl AgentRepository for AthenaStore {
             Ok(instances)
         })
     }
+
+    fn set_aiprj_area(&mut self, id: &InstanceId, area: Option<&str>) -> Result<()> {
+        self.commit(|tx| {
+            let raw = tx
+                .get(tables::AGENT_INSTANCES, id.as_str())?
+                .ok_or_else(|| PersistenceError::NotFound {
+                    entity: "agent_instance",
+                    id: id.as_str().into(),
+                })?;
+            let mut resolved = decode_row::<AgentInstance>("agent_instance", "row", &raw)?;
+            resolved.aiprj_log_ref = area.map(str::to_string);
+            tx.put(
+                tables::AGENT_INSTANCES,
+                id.as_str(),
+                &encode_row("agent_instance", "row", &resolved)?,
+            )
+        })
+    }
 }
 
 /// `AgentInstance : RuntimeInstance = 1 : 1` — the owner of a runtime id, for the

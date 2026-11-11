@@ -235,6 +235,15 @@ pub trait AgentRepository {
     /// Every instance row, any state (the Memory API's short-tier scan needs the full
     /// set: Working Memory and the short tier outlive terminal states).
     fn list_all_instances(&self) -> Result<Vec<AgentInstance>>;
+    /// Record (or clear) this instance's `aiprj` work-area reference — the `AI_LOG`
+    /// directory the Runtime actually initialized for the Instance (`ATH-EVENT-016`,
+    /// `ATH-OBS-009`: a Task's Events, logs and the Instance's `AI_LOG` meet on one
+    /// correlation key).
+    ///
+    /// The retention sweep (`ATH-AIPRJ-029`) deletes the area this reference names, so the
+    /// value must be the path the Runtime *wrote*, never a reconstructed guess; `None`
+    /// clears the reference, which is how a completed deletion records itself.
+    fn set_aiprj_area(&mut self, id: &InstanceId, area: Option<&str>) -> Result<()>;
 }
 
 /// Results, artifacts and evaluations (spec section 19).

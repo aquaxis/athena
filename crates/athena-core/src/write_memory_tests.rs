@@ -136,6 +136,8 @@ fn the_retention_sweep_removes_only_what_the_configuration_says() {
         "2027-01-01T00:00:00.000Z",
         "2027-01-01T00:00:00.000Z",
         "2027-01-01T00:00:00.000Z",
+        // No instances root: step 5 is absent rather than guessing a directory to delete.
+        None,
     )
     .expect("the sweep runs");
     assert_eq!(
