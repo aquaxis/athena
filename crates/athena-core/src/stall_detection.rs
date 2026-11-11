@@ -4,6 +4,9 @@
 //! state-change quiet line) and `wait_cycle` (the wait graph's cycle) — but no production
 //! caller fed them. This module is that caller: one resident-tick scan ([`scan_once`])
 //! that reads the store's own truth and emits the `TaskStalled` Event the mandate names.
+//! Both detectors are called — X-49 closed the silence face's own leg, which the scan had
+//! re-decided inline, so the threshold comparison and the wire reason are the detector's
+//! alone.
 //!
 //! The rule, in wire-exact terms:
 //!
@@ -44,7 +47,7 @@ use athena_types::Task;
 use athena_types::clock::parse_rfc3339_millis;
 use athena_types::{EventId, InstanceId, TaskId, TaskState};
 
-use crate::observability::{Stall, wait_cycle};
+use crate::observability::{Stall, silence, wait_cycle};
 
 /// What one scan recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,10 +337,14 @@ pub fn scan_once(
             continue; // the store's stamp is its truth; an unreadable one is skipped,
             // never rewritten and never guessed into an age
         };
+        // The ATH-OBS-012 comparison itself belongs to the detector (X-49: the scan used
+        // to re-decide the line here, so the threshold rule lived in two places). The
+        // signal carries the observed span and names its own wire reason.
         let quiet_ms = now_ms.saturating_sub(last_ms);
-        if quiet_ms < threshold_ms {
+        let Some(signal) = silence(quiet_ms, threshold_ms) else {
             continue;
-        }
+        };
+        let reason = signal.kind();
         // Re-state at the line, only at the line: a TaskStalled stamped inside this
         // window (newer than `now - threshold`) suppresses the re-emission — no
         // per-tick storm — while a stalemated row from an earlier (closed) window
@@ -354,14 +361,14 @@ pub fn scan_once(
         let event_id = emit_stalled(
             store,
             &task.id,
-            "state_change_silence",
+            reason,
             quiet_ms,
             Some(last.occurred_at.as_str()),
             now,
         )?;
         stalled.push(StalledTask {
             task_id: task.id.clone(),
-            reason: "state_change_silence",
+            reason,
             event_id,
         });
     }

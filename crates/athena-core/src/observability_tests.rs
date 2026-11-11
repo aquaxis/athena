@@ -197,3 +197,32 @@ fn the_std_sink_prints_one_json_envelope_per_line() {
     assert_eq!(value["fields"]["port"], 8080);
     assert_eq!(value["level"], "info");
 }
+
+#[test]
+fn the_std_sink_line_is_the_log_json_envelope_byte_for_byte_x49() {
+    // X-49: the §30.1 contract has one implementation. `StdLogSink::emit` prints
+    // `log_line_text` and nothing else, and `log_line_text` is `log_json` serialized —
+    // so the sink's wire form cannot drift from the exported envelope's.
+    //
+    // The frozen literal below is the sink's measured output from before the
+    // unification (the key order serde_json's map ordering gives: at, correlation_id,
+    // fields, level, message, module), so a revision of either face that changes the
+    // wire shape fails here.
+    let line = LogLine {
+        level: Log::Warn,
+        at: "2026-11-11T00:00:07.000Z".into(),
+        correlation_id: "cor-x49".into(),
+        module: "resident.maintenance".into(),
+        message: "probe".into(),
+        fields: serde_json::json!({ "events_pruned": 3, "nested": {"b": 1, "a": [1, "x", null]} }),
+    };
+    assert_eq!(
+        log_line_text(&line),
+        r#"{"at":"2026-11-11T00:00:07.000Z","correlation_id":"cor-x49","fields":{"events_pruned":3,"nested":{"a":[1,"x",null],"b":1}},"level":"warn","message":"probe","module":"resident.maintenance"}"#
+    );
+    assert_eq!(
+        log_line_text(&line),
+        log_json(line.level, &line).to_string(),
+        "the sink's text is the exported envelope, not a second build of it"
+    );
+}
