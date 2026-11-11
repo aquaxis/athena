@@ -19,7 +19,7 @@ use std::time::Duration;
 use athena_api::{AppState, AuthMode, TokenRegistry, build_router};
 use athena_core::NewEvent;
 use athena_core::{
-    AthenaStore, Config, ConfigAuthMode, ConfigCliInputs, FilesystemScope, Runtime,
+    AthenaStore, Config, ConfigAuthMode, ConfigCliInputs, FilesystemScope, Log, Runtime,
     RuntimeInstanceRef, StartContext, load_config, start_core_agent,
 };
 use athena_runtime_agent_cli::{
@@ -63,7 +63,13 @@ fn parse_args() -> Args {
                 }
             }
             other => {
-                eprintln!("athena-api: unknown argument {other} (--home, --config, --set)");
+                resident_log(
+                    Log::Error,
+                    "api.args",
+                    &format!("unknown argument {other} (--home, --config, --set)"),
+                    resident_key(),
+                    serde_json::json!({ "argument": other }),
+                );
                 std::process::exit(70);
             }
         }
@@ -148,16 +154,62 @@ fn stop_all<D: ProcessDriver + 'static>(adapter: &AgentCliAdapter<D>) {
             &reference,
             athena_types::StopReason::Shutdown,
         )) {
-            eprintln!(
-                "athena-api: stop reported for {}: {error}",
-                record.instance_id
+            resident_log(
+                Log::Warn,
+                "resident.stop",
+                &format!("stop reported for {}: {}", record.instance_id, error),
+                resident_key(),
+                serde_json::json!({ "instance_id": record.instance_id.as_str() }),
             );
         }
     }
 }
+/// The resident's log discipline (X-39, ATH-OBS-001..005): every line a JSON envelope
+/// through `athena_core::observability`'s `Logger`/`StdLogSink` — `at`, `level`,
+/// `module`, `message`, the structured `fields`, and a `correlation_id` on every line
+/// (ATH-OBS-003). The raw `eprintln!` writes they replace were the log-discipline gap
+/// the third survey named.
+static RESIDENT_SINK: athena_core::observability::StdLogSink =
+    athena_core::observability::StdLogSink;
+
+/// The correlation key the resident face carries: one minted per process, on first use,
+/// so every non-Task-bound line is still on a chain (ATH-OBS-003/009).
+fn resident_key() -> &'static String {
+    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        athena_core::digest(&format!(
+            "athena-api-resident-{}",
+            athena_core::now_rfc3339()
+        ))
+    })
+}
+
+/// One structured line on the resident chain: level, module, message, the correlation
+/// key that carries it, and the structured fields — one JSON envelope per line (X-39).
+fn resident_log(
+    level: athena_core::observability::Log,
+    module: &str,
+    message: &str,
+    correlation: &str,
+    fields: serde_json::Value,
+) {
+    let _ = athena_core::observability::Logger::new(&RESIDENT_SINK, correlation.to_string()).log(
+        level,
+        module,
+        message,
+        fields,
+        &athena_core::now_rfc3339(),
+    );
+}
 
 fn fail(message: &str) -> ! {
-    eprintln!("athena-api: {message}");
+    resident_log(
+        Log::Error,
+        "resident.fail",
+        message,
+        resident_key(),
+        serde_json::json!({}),
+    );
     std::process::exit(70);
 }
 
@@ -296,9 +348,12 @@ async fn main() {
              (no automatic fallback, design §2.8)"
         )),
     };
-    eprintln!(
-        "athena-api: ready on {host}:{port} (store: {})",
-        db_path.display()
+    resident_log(
+        Log::Info,
+        "athena-api",
+        &format!("ready on {host}:{port} (store: {})", db_path.display()),
+        resident_key(),
+        serde_json::json!({ "store": db_path.display().to_string() }),
     );
 
     // 8. Instance #0 boots as part of the ATHENA boot sequence (ATH-CORE-021): the
@@ -313,13 +368,23 @@ async fn main() {
     )
     .await
     {
-        Ok(handle) => eprintln!(
-            "athena-api: Core Agent resident (instance #0, runtime {})",
-            handle.runtime_instance_id.as_str()
+        Ok(handle) => resident_log(
+            Log::Info,
+            "athena-api",
+            &format!(
+                "Core Agent resident (instance #0, runtime {})",
+                handle.runtime_instance_id.as_str()
+            ),
+            resident_key(),
+            serde_json::json!({ "runtime_instance_id": handle.runtime_instance_id.as_str() }),
         ),
-        Err(error) => {
-            eprintln!("athena-api: Core Agent boot failed (escalation face, ATH-CORE-031): {error}")
-        }
+        Err(error) => resident_log(
+            Log::Error,
+            "athena-api",
+            &format!("Core Agent boot failed (escalation face, ATH-CORE-031): {error}"),
+            resident_key(),
+            serde_json::json!({}),
+        ),
     }
 
     // The checksum captures the *placed* surface (ATH-CORE-044): computed after the
@@ -395,7 +460,13 @@ async fn main() {
         {
             let _ = ctrl_c.await;
         }
-        eprintln!("athena-api: shutdown signal received; stopping instances");
+        resident_log(
+            Log::Info,
+            "athena-api",
+            "shutdown signal received; stopping instances",
+            resident_key(),
+            serde_json::json!({}),
+        );
     });
     if let Err(error) = server.await {
         fail(&format!("server fault: {error}"));
@@ -403,7 +474,13 @@ async fn main() {
     supervision.abort();
     execution.abort();
     stop_all(adapter.as_ref());
-    eprintln!("athena-api: stopped");
+    resident_log(
+        Log::Info,
+        "athena-api",
+        "stopped",
+        resident_key(),
+        serde_json::json!({}),
+    );
 }
 
 /// The Core Agent's `.agent-cli/` control surface under its Workspace.
@@ -544,10 +621,12 @@ where
                 // is named, never silently held.
                 if decision.admitted.is_empty() && !decision.blocked.is_empty() {
                     let (task, limit) = decision.blocked[0].clone();
-                    eprintln!(
-                        "athena-api: task {} held at {} (a scheduler limit); stays queued",
-                        task.as_str(),
-                        limit.wire()
+                    resident_log(
+                        Log::Info,
+                        "resident.execution",
+                        "a scheduler limit holds the task; stays queued",
+                        resident_key(),
+                        serde_json::json!({ "task_id": task.as_str(), "limit": limit.wire() }),
                     );
                 }
                 match decision.admitted.first() {
@@ -572,9 +651,15 @@ where
                         ) {
                             Ok(pending) => Step::Deliver(Box::new(pending)),
                             Err(fault) => {
-                                eprintln!(
-                                    "athena-api: reserving {} failed: {fault}",
-                                    task.id.as_str()
+                                resident_log(
+                                    Log::Error,
+                                    "resident.execution",
+                                    "reserving the task failed",
+                                    &correlation,
+                                    serde_json::json!({
+                                        "task_id": task.id.as_str(),
+                                        "fault": fault.to_string()
+                                    }),
                                 );
                                 Step::Idle
                             }
@@ -599,19 +684,28 @@ where
                     match athena_core::core_loop::deliver(adapter.as_ref(), &instance, &pending)
                         .await
                     {
-                        Ok(()) => eprintln!(
-                            "athena-api: task {} dispatched to the Core Agent",
-                            pending.task_id.as_str()
+                        Ok(()) => resident_log(
+                            Log::Info,
+                            "resident.execution",
+                            "the task is dispatched to the Core Agent",
+                            resident_key(),
+                            serde_json::json!({ "task_id": pending.task_id.as_str() }),
                         ),
                         Err(fault) => {
-                            eprintln!(
-                                "athena-api: task {} delivery failed: {fault}",
-                                pending.task_id.as_str()
-                            );
                             let correlation = athena_core::digest(&format!(
                                 "deliver-failed-{}-{now}",
                                 pending.task_id.as_str()
                             ));
+                            resident_log(
+                                Log::Error,
+                                "resident.execution",
+                                "the task delivery failed",
+                                &correlation,
+                                serde_json::json!({
+                                    "task_id": pending.task_id.as_str(),
+                                    "fault": fault.to_string()
+                                }),
+                            );
                             if let Ok(mut guard) = rows.lock() {
                                 let _ = athena_core::core_loop::fail_task(
                                     &mut guard,
@@ -642,9 +736,15 @@ where
                     let interpreted = match athena_core::core_loop::interpret_answer(&answer) {
                         Ok(value) => value,
                         Err(fault) => {
-                            eprintln!(
-                                "athena-api: answer of {} failed the protocol gate: {fault}",
-                                task_id.as_str()
+                            resident_log(
+                                Log::Error,
+                                "resident.execution",
+                                "the answer failed the protocol gate",
+                                resident_key(),
+                                serde_json::json!({
+                                    "task_id": task_id.as_str(),
+                                    "fault": fault.to_string()
+                                }),
                             );
                             continue;
                         }
@@ -675,13 +775,25 @@ where
                                 &now,
                                 &correlation,
                             ) {
-                                Ok(id) => eprintln!(
-                                    "athena-api: task {} asks a human (clarification {id})",
-                                    task_id.as_str()
+                                Ok(id) => resident_log(
+                                    Log::Info,
+                                    "resident.execution",
+                                    "the task asks a human",
+                                    &correlation,
+                                    serde_json::json!({
+                                        "task_id": task_id.as_str(),
+                                        "clarification_id": id.as_str()
+                                    }),
                                 ),
-                                Err(fault) => eprintln!(
-                                    "athena-api: clarifying {} failed: {fault}",
-                                    task_id.as_str()
+                                Err(fault) => resident_log(
+                                    Log::Error,
+                                    "resident.execution",
+                                    "clarifying the task failed",
+                                    &correlation,
+                                    serde_json::json!({
+                                        "task_id": task_id.as_str(),
+                                        "fault": fault.to_string()
+                                    }),
                                 ),
                             }
                         }
@@ -705,20 +817,38 @@ where
                                         &now,
                                         &correlation,
                                     ) {
-                                        Ok(outcome) => eprintln!(
-                                            "athena-api: task {} settled ({outcome:?}, result {})",
-                                            task_id.as_str(),
-                                            received.result_id.as_str()
+                                        Ok(outcome) => resident_log(
+                                            Log::Info,
+                                            "resident.execution",
+                                            "the task settled",
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": task_id.as_str(),
+                                                "outcome": format!("{outcome:?}"),
+                                                "result_id": received.result_id.as_str()
+                                            }),
                                         ),
-                                        Err(fault) => eprintln!(
-                                            "athena-api: settling {} failed: {fault}",
-                                            task_id.as_str()
+                                        Err(fault) => resident_log(
+                                            Log::Error,
+                                            "resident.execution",
+                                            "settling the task failed",
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": task_id.as_str(),
+                                                "fault": fault.to_string()
+                                            }),
                                         ),
                                     }
                                 }
-                                Err(fault) => eprintln!(
-                                    "athena-api: recording the answer of {} failed: {fault}",
-                                    task_id.as_str()
+                                Err(fault) => resident_log(
+                                    Log::Error,
+                                    "resident.execution",
+                                    "recording the answer failed",
+                                    &correlation,
+                                    serde_json::json!({
+                                        "task_id": task_id.as_str(),
+                                        "fault": fault.to_string()
+                                    }),
                                 ),
                             }
                         }
@@ -756,13 +886,17 @@ where
                                     &now,
                                     &correlation,
                                 ) {
-                                    Ok(report) => eprintln!(
-                                        "athena-api: task {} requested write_memory ({:?}): \
-                                         record {} in scope {}",
-                                        task_id.as_str(),
-                                        report.tier,
-                                        report.record_id.as_str(),
-                                        report.scope_id.as_str()
+                                    Ok(report) => resident_log(
+                                        Log::Info,
+                                        "resident.execution",
+                                        "the task requested a write_memory",
+                                        &correlation,
+                                        serde_json::json!({
+                                            "task_id": task_id.as_str(),
+                                            "tier": format!("{:?}", report.tier),
+                                            "record_id": report.record_id.as_str(),
+                                            "scope_id": report.scope_id.as_str()
+                                        }),
                                     ),
                                     Err(fault) => {
                                         // The refusal is recorded (ATH-CORE-037), not
@@ -793,14 +927,26 @@ where
                                             &mut *guard,
                                             &denial,
                                         ) {
-                                            eprintln!(
-                                                "athena-api: recording the write_memory denial of {} failed: {fault}",
-                                                task_id.as_str()
+                                            resident_log(
+                                                Log::Error,
+                                                "resident.execution",
+                                                "recording the write_memory denial failed",
+                                                &correlation,
+                                                serde_json::json!({
+                                                    "task_id": task_id.as_str(),
+                                                    "fault": fault.to_string()
+                                                }),
                                             );
                                         }
-                                        eprintln!(
-                                            "athena-api: task {}'s write_memory refused: {fault}",
-                                            task_id.as_str()
+                                        resident_log(
+                                            Log::Warn,
+                                            "resident.execution",
+                                            "the write_memory request was refused",
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": task_id.as_str(),
+                                                "fault": fault.to_string()
+                                            }),
                                         );
                                     }
                                 }
@@ -822,21 +968,43 @@ where
                                         &now,
                                         &correlation,
                                     ) {
-                                        Ok(outcome) => eprintln!(
-                                            "athena-api: task {} settled ({outcome:?}, \
-                                             result {}, request {kind} observed)",
-                                            task_id.as_str(),
-                                            received.result_id.as_str()
+                                        Ok(outcome) => resident_log(
+                                            Log::Info,
+                                            "resident.execution",
+                                            &format!(
+                                                "task {} settled ({outcome:?}, result {}, request {kind} observed)",
+                                                task_id.as_str(),
+                                                received.result_id.as_str()
+                                            ),
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": task_id.as_str(),
+                                                "outcome": format!("{outcome:?}"),
+                                                "result_id": received.result_id.as_str(),
+                                                "request_kind": kind
+                                            }),
                                         ),
-                                        Err(fault) => eprintln!(
-                                            "athena-api: settling {} failed: {fault}",
-                                            task_id.as_str()
+                                        Err(fault) => resident_log(
+                                            Log::Error,
+                                            "resident.execution",
+                                            "settling the task failed",
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": task_id.as_str(),
+                                                "fault": fault.to_string()
+                                            }),
                                         ),
                                     }
                                 }
-                                Err(fault) => eprintln!(
-                                    "athena-api: recording the answer of {} failed: {fault}",
-                                    task_id.as_str()
+                                Err(fault) => resident_log(
+                                    Log::Error,
+                                    "resident.execution",
+                                    "recording the answer failed",
+                                    &correlation,
+                                    serde_json::json!({
+                                        "task_id": task_id.as_str(),
+                                        "fault": fault.to_string()
+                                    }),
                                 ),
                             }
                         }
@@ -902,7 +1070,13 @@ where
             if !dead {
                 continue;
             }
-            eprintln!("athena-api: instance #0 process death observed (ATH-CORE-028)");
+            resident_log(
+                Log::Warn,
+                "resident.supervision",
+                "instance #0 process death observed (ATH-CORE-028)",
+                resident_key(),
+                serde_json::json!({}),
+            );
             // 1. The control-surface checksum (ATH-CORE-044): a mismatch escalates —
             //    nothing restarts through a tampered surface.
             let surface_ok = control_surface
@@ -954,18 +1128,32 @@ where
                     match start_core_agent(adapter.as_ref(), record.definition.clone(), context)
                         .await
                     {
-                        Ok(handle) => eprintln!(
-                            "athena-api: Core Agent restarted (attempt {attempt}, runtime {})",
-                            handle.runtime_instance_id.as_str()
+                        Ok(handle) => resident_log(
+                            Log::Info,
+                            "resident.supervision",
+                            &format!(
+                                "Core Agent restarted (attempt {attempt}, runtime {})",
+                                handle.runtime_instance_id.as_str()
+                            ),
+                            resident_key(),
+                            serde_json::json!({ "attempt": attempt }),
                         ),
-                        Err(error) => eprintln!(
-                            "athena-api: Core Agent restart attempt {attempt} failed: {error}"
+                        Err(error) => resident_log(
+                            Log::Error,
+                            "resident.supervision",
+                            &format!("Core Agent restart attempt {attempt} failed: {error}"),
+                            resident_key(),
+                            serde_json::json!({ "attempt": attempt }),
                         ),
                     }
                 }
                 athena_core::Recovery::RetryNotCounted => {
-                    eprintln!(
-                        "athena-api: transient start failure; the next poll retries uncounted (ATH-CORE-045)"
+                    resident_log(
+                        Log::Info,
+                        "resident.supervision",
+                        "transient start failure; the next poll retries uncounted (ATH-CORE-045)",
+                        resident_key(),
+                        serde_json::json!({}),
                     );
                 }
                 athena_core::Recovery::Escalate(reason) => {
@@ -974,7 +1162,13 @@ where
                     // to it — the earlier doubled clause came from repeating it here
                     // (R-DIAG-01 finding (d)).
                     let reason = reason.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
-                    eprintln!("athena-api: CoreAgentEscalated — {reason} (ATH-CORE-030)");
+                    resident_log(
+                        Log::Error,
+                        "resident.escalation",
+                        &format!("CoreAgentEscalated — {reason} (ATH-CORE-030)"),
+                        resident_key(),
+                        serde_json::json!({ "reason": reason }),
+                    );
                     return;
                 }
             }
@@ -1059,13 +1253,24 @@ fn maintenance_cadence(rows: Arc<Mutex<AthenaStore>>, config: athena_core::Confi
                         + report.delivery_records_pruned
                         > 0
                     {
-                        eprintln!(
-                            "athena-api: retention sweep removed events {}, clarifications {}, \
-                             idempotency keys {}, deliveries {}",
-                            report.events_pruned,
-                            report.clarifications_expired,
-                            report.idempotency_keys_pruned,
-                            report.delivery_records_pruned
+                        resident_log(
+                            Log::Info,
+                            "maintenance",
+                            &format!(
+                                "retention sweep removed events {}, clarifications {}, \
+                                 idempotency keys {}, deliveries {}",
+                                report.events_pruned,
+                                report.clarifications_expired,
+                                report.idempotency_keys_pruned,
+                                report.delivery_records_pruned
+                            ),
+                            &correlation,
+                            serde_json::json!({
+                                "events_pruned": report.events_pruned,
+                                "clarifications_expired": report.clarifications_expired,
+                                "idempotency_keys_pruned": report.idempotency_keys_pruned,
+                                "delivery_records_pruned": report.delivery_records_pruned
+                            }),
                         );
                         if let Err(fault) = athena_core::maintenance::record_swept(
                             &mut guard,
@@ -1073,12 +1278,24 @@ fn maintenance_cadence(rows: Arc<Mutex<AthenaStore>>, config: athena_core::Confi
                             &now,
                             &correlation,
                         ) {
-                            eprintln!("athena-api: recording the sweep failed: {fault}");
+                            resident_log(
+                                Log::Error,
+                                "maintenance",
+                                &format!("recording the sweep failed: {fault}"),
+                                &correlation,
+                                serde_json::json!({}),
+                            );
                         }
                     }
                 }
                 Err(fault) => {
-                    eprintln!("athena-api: retention sweep faulted: {fault}; retries next tick");
+                    resident_log(
+                        Log::Error,
+                        "maintenance",
+                        &format!("retention sweep faulted: {fault}; retries next tick"),
+                        &correlation,
+                        serde_json::json!({}),
+                    );
                 }
             }
         }
@@ -1115,20 +1332,36 @@ fn skill_lifecycle_cadence(rows: Arc<Mutex<AthenaStore>>, config: Config) {
                 Ok(report) => {
                     if !report.is_quiet() {
                         for line in &report.faults {
-                            eprintln!("athena-api: skill lifecycle: {line}");
+                            resident_log(
+                                Log::Warn,
+                                "skill.lifecycle",
+                                line,
+                                &correlation,
+                                serde_json::json!({}),
+                            );
                         }
-                        eprintln!(
-                            "athena-api: skill lifecycle settled updates {}, update failures {}, \
-                             revalidations {}, validation failures {}",
-                            report.updated,
-                            report.update_failures,
-                            report.validated,
-                            report.validation_failures
+                        resident_log(
+                            Log::Info,
+                            "skill.lifecycle",
+                            "skill lifecycle settled",
+                            &correlation,
+                            serde_json::json!({
+                                "updated": report.updated,
+                                "update_failures": report.update_failures,
+                                "revalidations": report.validated,
+                                "validation_failures": report.validation_failures
+                            }),
                         );
                     }
                 }
                 Err(fault) => {
-                    eprintln!("athena-api: skill lifecycle faulted: {fault}; retries next tick");
+                    resident_log(
+                        Log::Error,
+                        "skill.lifecycle",
+                        &format!("skill lifecycle faulted: {fault}; retries next tick"),
+                        &correlation,
+                        serde_json::json!({}),
+                    );
                 }
             }
         }
@@ -1171,7 +1404,13 @@ where
                 match athena_core::heartbeat::observed_iteration(&guard) {
                     Ok(count) => count,
                     Err(fault) => {
-                        eprintln!("athena-api: heartbeat read faulted: {fault}; retries next tick");
+                        resident_log(
+                            Log::Error,
+                            "heartbeat",
+                            &format!("heartbeat read faulted: {fault}; retries next tick"),
+                            resident_key(),
+                            serde_json::json!({}),
+                        );
                         continue;
                     }
                 }
@@ -1187,11 +1426,23 @@ where
             ) {
                 Ok(report) => {
                     if let Some(note) = &report.receipt_note {
-                        eprintln!("athena-api: heartbeat receipt not recorded: {note}");
+                        resident_log(
+                            Log::Warn,
+                            "heartbeat",
+                            &format!("heartbeat receipt not recorded: {note}"),
+                            resident_key(),
+                            serde_json::json!({}),
+                        );
                     }
                 }
                 Err(fault) => {
-                    eprintln!("athena-api: heartbeat faulted: {fault}; retries next tick");
+                    resident_log(
+                        Log::Error,
+                        "heartbeat",
+                        &format!("heartbeat faulted: {fault}; retries next tick"),
+                        resident_key(),
+                        serde_json::json!({}),
+                    );
                 }
             }
         }
@@ -1220,12 +1471,24 @@ fn stall_detection_cadence(rows: Arc<Mutex<AthenaStore>>, config: Config) {
                 Ok(report) => {
                     if !report.stalled.is_empty() {
                         for stalled in &report.stalled {
-                            eprintln!("athena-api: task {} stalled ({stalled:?})", stalled.task_id);
+                            resident_log(
+                                Log::Warn,
+                                "stall.scan",
+                                &format!("task {} stalled", stalled.task_id),
+                                resident_key(),
+                                serde_json::json!({ "reason": stalled.reason, "stall_seconds": 0 }),
+                            );
                         }
                     }
                 }
                 Err(fault) => {
-                    eprintln!("athena-api: stall scan faulted: {fault}; retries next tick");
+                    resident_log(
+                        Log::Error,
+                        "stall.scan",
+                        &format!("stall scan faulted: {fault}; retries next tick"),
+                        resident_key(),
+                        serde_json::json!({}),
+                    );
                 }
             }
         }

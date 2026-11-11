@@ -138,13 +138,22 @@ impl LogSink for StdLogSink {
     }
 }
 
-/// One line of the JSON envelope, serialized (the exported contract).
+/// One line of the JSON envelope, serialized (the exported contract, spec §30.1 /
+/// ATH-OBS-001..004): the four levels ride `level`, every line carries its
+/// `correlation_id` (ATH-OBS-003), and the envelope is exactly the shape the sinks
+/// emit — `level`, `at`, `correlation_id`, `module`, `message`, `fields` — so a
+/// consumer never parses two shapes (X-39 made the resident and the studio speak it).
 #[must_use]
 pub fn log_json(level: Log, line: &LogLine) -> serde_json::Value {
-    let _ = (line, level);
+    let debug_only = (level == Log::Debug) || (line.level == Log::Debug);
+    let _ = debug_only; // the level gate itself is the caller's R-OBS-02 decision
     serde_json::json!({
         "level": line.level.wire(),
+        "at": line.at,
         "correlation_id": line.correlation_id,
+        "module": line.module,
+        "message": line.message,
+        "fields": line.fields,
     })
 }
 

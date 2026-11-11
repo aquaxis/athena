@@ -3,6 +3,60 @@
 //! app binds to (`athena-studio` talks to `athena-api` **only**, `ATH-API-001`).
 
 use athena_studio::{StudioApp, answer, boot_from_args};
+/// One JSON log line as the studio emits it (X-39, ATH-OBS-001..005): the same shape
+/// every process's lines carry — level, at, correlation_id, module, message, fields —
+/// because the observation convention does not change with the process. The studio bin
+/// has no athena-core edge (its deps are serde/serde_json only), so the discipline is
+/// stated here: the sink is stderr, the module is always `studio`, and one correlation
+/// key is minted once per process.
+fn studio_log(level: &str, message: &str, fields: serde_json::Value) {
+    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let correlation = KEY.get_or_init(|| {
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        format!("studio-resident-{millis:016x}")
+    });
+    let at = {
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        format_rfc3339(millis)
+    };
+    let line = serde_json::json!({
+        "level": level,
+        "at": at,
+        "correlation_id": correlation,
+        "module": "studio",
+        "message": message,
+        "fields": fields,
+    });
+    eprintln!("{line}");
+}
+
+/// RFC 3339 from Unix milliseconds (UTC, millisecond precision) — the studio's own
+/// stamp face, since it has no athena-core/time edge.
+fn format_rfc3339(millis: u128) -> String {
+    let secs = u64::try_from(millis / 1000).unwrap_or(0);
+    let ms = u64::try_from(millis % 1000).unwrap_or(0);
+    let days = secs / 86_400;
+    let sod = secs % 86_400;
+    let (h, mi, s) = (sod / 3600, (sod % 3600) / 60, sod % 60);
+    // civil-from-days (Howard Hinnant), same rule the core clock uses.
+    let z = i64::try_from(days).unwrap_or(0) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = doe / 1461;
+    let doy = doe % 1461;
+    let mp = (doy * 5 + 308) / 1531;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{ms:03}Z")
+}
+
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;
 
@@ -11,7 +65,11 @@ fn main() {
     let app = match boot_from_args(&args) {
         Ok(app) => app,
         Err(fault) => {
-            eprintln!("athena-studio: {fault}");
+            studio_log(
+                "error",
+                &format!("boot refused: {fault}"),
+                serde_json::json!({}),
+            );
             std::process::exit(4);
         }
     };
@@ -19,13 +77,18 @@ fn main() {
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!("athena-studio: cannot bind 127.0.0.1:{port}: {error}");
+            studio_log(
+                "error",
+                &format!("cannot bind 127.0.0.1:{port}: {error}"),
+                serde_json::json!({ "port": port }),
+            );
             std::process::exit(4);
         }
     };
-    eprintln!(
-        "athena-studio: http://127.0.0.1:{port} — api_root {}",
-        app.api_root
+    studio_log(
+        "info",
+        &format!("http://127.0.0.1:{port} — api_root {}", app.api_root),
+        serde_json::json!({ "port": port, "api_root": app.api_root }),
     );
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else {
@@ -33,7 +96,11 @@ fn main() {
         };
         let served = serve_once(&app, &mut stream);
         if let Err(error) = served {
-            eprintln!("athena-studio: {error}");
+            studio_log(
+                "error",
+                &format!("serve failed: {error}"),
+                serde_json::json!({}),
+            );
         }
     }
 }

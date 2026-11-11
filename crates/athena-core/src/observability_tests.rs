@@ -147,3 +147,53 @@ fn the_heartbeat_age_is_whole_seconds() {
         "future stamps do not back-date"
     );
 }
+#[test]
+fn the_json_envelope_carries_all_six_keys_x39() {
+    // The §30.1 wire contract (X-39): level, at, correlation_id, module, message,
+    // fields — every line carries the chain (ATH-OBS-003) and the structured fields.
+    let line = LogLine {
+        level: Log::Warn,
+        at: "2026-11-11T00:00:07.000Z".into(),
+        correlation_id: "cor-x39".into(),
+        module: "resident.maintenance".into(),
+        message: "retention sweep removed events".into(),
+        fields: serde_json::json!({ "events_pruned": 3 }),
+    };
+    let value = log_json(Log::Warn, &line);
+    assert_eq!(value["level"], "warn");
+    assert_eq!(value["at"], "2026-11-11T00:00:07.000Z");
+    assert_eq!(value["correlation_id"], "cor-x39");
+    assert_eq!(value["module"], "resident.maintenance");
+    assert_eq!(value["message"], "retention sweep removed events");
+    assert_eq!(value["fields"]["events_pruned"], 3);
+    for key in [
+        "level",
+        "at",
+        "correlation_id",
+        "module",
+        "message",
+        "fields",
+    ] {
+        assert!(value.get(key).is_some(), "{key} rides the envelope");
+    }
+}
+
+#[test]
+fn the_std_sink_prints_one_json_envelope_per_line() {
+    // The sink face (X-39): StdLogSink serializes the same envelope to stdout —
+    // captured here through the sink trait, not println spying.
+    let captured = Captured::default();
+    let _ = Logger::new(&captured, "cor-x39-sink".into()).log(
+        Log::Info,
+        "resident.boot",
+        "ready",
+        serde_json::json!({ "port": 8080 }),
+        "2026-11-11T00:00:00.000Z",
+    );
+    let line = captured.0.lock().expect("lines").pop().expect("one line");
+    let value = log_json(line.level, &line);
+    assert_eq!(value["correlation_id"], "cor-x39-sink");
+    assert_eq!(value["module"], "resident.boot");
+    assert_eq!(value["fields"]["port"], 8080);
+    assert_eq!(value["level"], "info");
+}
