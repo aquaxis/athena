@@ -21,7 +21,6 @@
 //! (`athena-api`) owns the clock and calls [`beat_once`] on its interval.
 
 use athena_events::envelope::Actor;
-use athena_events::events::CoreAgentHeartbeat;
 use athena_persistence::repository::{
     AgentRepository, EventRepository, RuntimeInstanceRepository, TaskRepository,
 };
@@ -98,12 +97,12 @@ pub fn beat_once(
         correlation_id: athena_events::redact::digest(&format!("heartbeat-{now}")),
         causation_id: None,
     };
-    let beat = athena_events::TypedEvent::new(
-        CoreAgentHeartbeat {
-            iteration,
-            focus_task_id: focus.clone(),
-            pending_requests,
-        },
+    // The builder this module's own documentation names (X-49: the construction used to be
+    // inlined here, so `CoreAgentHeartbeat`'s payload shape was assembled in two places).
+    let beat = crate::core_agent_session::heartbeat_event(
+        iteration,
+        focus.clone(),
+        pending_requests,
         context,
     )
     .map_err(|fault| BeatFault::Construction(fault.to_string()))?;

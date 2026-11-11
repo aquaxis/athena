@@ -36,7 +36,7 @@ use athena_persistence::repository::{
 };
 use athena_persistence::{AthenaStore, NewEvent};
 use athena_state::{ApprovalTrigger, TaskTrigger, approval_transition, task_transition};
-use athena_types::{Approval, ApprovalScope, EventId, TaskId, TaskState};
+use athena_types::{Approval, ApprovalScope, EventId, TaskState};
 
 /// One sweep cycle's outcome: what each bounded deletion removed, in counts (facts, not
 /// prose — the §32.1 log face renders them).
@@ -463,15 +463,6 @@ pub fn record_swept(
     EventRepository::append(store, &event)
         .map(|_stored| ())
         .map_err(|fault| SweepFault::Store(fault.to_string()))
-}
-
-/// Whether a Task is terminal (the state the sweep consults for the retention consults:
-/// a terminal Task's Events age out; a live Task's do not — the retention's own face).
-#[must_use]
-pub fn task_is_terminal(store: &AthenaStore, task: &TaskId) -> bool {
-    crate::TaskRepository::get(store, task)
-        .map(|row| row.is_some_and(|task_row| task_row.state.is_terminal()))
-        .unwrap_or(false)
 }
 
 fn step_fault(

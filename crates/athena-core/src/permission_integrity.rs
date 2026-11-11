@@ -24,7 +24,6 @@
 //!    [`athena_tools::PathBoundary`] refuses them (`ATH-SEC-010`, tested with P4-03).
 
 use crate::protocol::CoreRequest;
-use std::collections::HashSet;
 
 /// The permission vocabulary an agent-facing wire surface must never carry.
 const PERMISSION_VOCABULARY: [&str; 10] = [
@@ -125,34 +124,12 @@ fn walk(node: &serde_json::Value, path: &mut Vec<String>) -> Result<(), Finding>
     }
 }
 
-/// The property paths the audit walked (the auditor's self-check surface).
-#[must_use]
-pub fn schema_properties(schema: &serde_json::Value) -> HashSet<String> {
-    let mut seen = HashSet::new();
-    collect(schema, &mut Vec::new(), &mut seen);
-    seen
-}
-
-fn collect(node: &serde_json::Value, path: &mut Vec<String>, seen: &mut HashSet<String>) {
-    if let serde_json::Value::Object(map) = node {
-        for (key, value) in map {
-            if key == "properties"
-                && let Some(properties) = value.as_object()
-            {
-                for (property, setter) in properties {
-                    path.push(property.clone());
-                    seen.insert(path.join("."));
-                    collect(setter, path, seen);
-                    path.pop();
-                }
-                continue;
-            }
-            path.push(key.clone());
-            collect(value, path, seen);
-            path.pop();
-        }
-    }
-}
+// X-49: `schema_properties` (a second walk of the same schema tree, collecting every
+// property path "for the auditor's self-check") is retired. ATH-SEC-011's audit is
+// `review_core_request`'s exhaustive match plus `audit_wire_schema`'s own walk, both
+// tested below; the path collection answered no requirement, had no caller and no test,
+// and a second traversal of the audited tree is exactly the drift risk the audit exists
+// to remove.
 
 #[cfg(test)]
 mod tests {

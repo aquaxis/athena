@@ -126,16 +126,19 @@ pub struct StdLogSink;
 
 impl LogSink for StdLogSink {
     fn emit(&self, line: &LogLine) {
-        let json_line = serde_json::json!({
-            "level": line.level.wire(),
-            "at": line.at,
-            "correlation_id": line.correlation_id,
-            "module": line.module,
-            "message": line.message,
-            "fields": line.fields,
-        });
-        println!("{json_line}");
+        println!("{}", log_line_text(line));
     }
+}
+
+/// The exact text one `StdLogSink` line carries: the §30.1 envelope, serialized (X-49).
+///
+/// The sink used to rebuild the envelope itself, so the contract had two implementations
+/// and a revision to one could not reach the other. This is the single seam: `emit`
+/// prints this and nothing else, and a test can read the wire form without racing
+/// stdout.
+#[must_use]
+pub fn log_line_text(line: &LogLine) -> String {
+    log_json(line.level, line).to_string()
 }
 
 /// One line of the JSON envelope, serialized (the exported contract, spec §30.1 /
@@ -143,6 +146,10 @@ impl LogSink for StdLogSink {
 /// `correlation_id` (ATH-OBS-003), and the envelope is exactly the shape the sinks
 /// emit — `level`, `at`, `correlation_id`, `module`, `message`, `fields` — so a
 /// consumer never parses two shapes (X-39 made the resident and the studio speak it).
+///
+/// This is the contract's **only** implementation: [`StdLogSink`] emits through
+/// [`log_line_text`], which is this function serialized (X-49 — the sink used to rebuild
+/// the same six keys, so a revision reached one face and not the other).
 #[must_use]
 pub fn log_json(level: Log, line: &LogLine) -> serde_json::Value {
     let debug_only = (level == Log::Debug) || (line.level == Log::Debug);
