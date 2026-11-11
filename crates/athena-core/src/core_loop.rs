@@ -530,7 +530,12 @@ pub enum Interpreted {
         /// The draft steps, without identifiers (D-5; Core Host mints them).
         steps: Vec<athena_types::PlanStepDraft>,
     },
-    /// Any of the other nine: an observation of the agent's stated intention. The v1
+    /// `delegate`: the agent selected an agent for a PlanStep attempt (X-44). Like a plan
+    /// submission this is **not** an answer — the caller routes it through
+    /// `delegation::accept_delegation`, which admits or refuses it, and leaves the Task
+    /// running either way.
+    DelegationRequested(crate::delegation::DelegationRequest),
+    /// Any of the other eight: an observation of the agent's stated intention. The v1
     /// execution model (`ATH-DATA-004`) gives the answer itself as the product, so the
     /// request is surfaced for the caller to route — Core Host answers every `CoreRequest`
     /// (`ATH-CORE-034`), and the answer's face is the caller's next delivery, never a side
@@ -604,6 +609,23 @@ fn route(request: crate::protocol::CoreRequest) -> Interpreted {
             base_revision,
             steps,
         },
+        crate::protocol::CoreRequest::Delegate {
+            task_id,
+            plan_step_id,
+            agent_id,
+            skill_set,
+            idempotency_key,
+            // The delegation instruction is the *agent's* procedure reference, carried to
+            // the subordinate when its process starts — the admission decision this routes
+            // to does not consult it, so it is not projected into the request type.
+            instruction: _,
+        } => Interpreted::DelegationRequested(crate::delegation::DelegationRequest {
+            task_id,
+            plan_step_id,
+            agent_id,
+            skill_set,
+            idempotency_key,
+        }),
         other => Interpreted::Requested {
             kind: other.kind_tag(),
             request: other,

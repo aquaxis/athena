@@ -37,6 +37,10 @@ pub mod core_agent_session;
 pub mod core_loop;
 #[cfg(test)]
 mod core_loop_tests;
+pub mod delegation;
+#[cfg(test)]
+#[path = "delegation_tests.rs"]
+mod delegation_tests;
 pub mod event_filter;
 pub mod event_manager;
 pub mod failure;

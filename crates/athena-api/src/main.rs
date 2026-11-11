@@ -599,6 +599,12 @@ where
     D: ProcessDriver + 'static,
 {
     tokio::spawn(async move {
+        // The instances tree a delegation composes its Workspace under (X-44): computed
+        // once, since the home is fixed for the process's life (R-CFG-09 — configuration
+        // is applied at startup).
+        let instances_root = std::path::Path::new(&config.athena.home)
+            .join("var")
+            .join("instances");
         loop {
             tokio::time::sleep(EXECUTION_POLL).await;
 
@@ -982,6 +988,77 @@ where
                                         );
                                         pending_answer =
                                             Some(athena_core::plan_intake::refusal_response(
+                                                &correlation,
+                                                &correlation,
+                                                &fault,
+                                            ));
+                                    }
+                                }
+                            }
+                            // `delegate` (X-44): the admission rules answer, a row lands or
+                            // a refusal is recorded, and the Task **stays running** — a
+                            // delegation is work being handed down, not the Task's product.
+                            // Starting the admitted Instance is the `CREATED → STARTING`
+                            // edge, which the supervision/runtime side owns; the row this
+                            // arm writes is what makes that edge reachable at all.
+                            athena_core::core_loop::Interpreted::DelegationRequested(
+                                delegation,
+                            ) => {
+                                match athena_core::delegation::accept_delegation(
+                                    &mut guard,
+                                    delegation,
+                                    instances_root.as_path(),
+                                    &now,
+                                ) {
+                                    Ok(accepted) => {
+                                        resident_log(
+                                            Log::Info,
+                                            "resident.execution",
+                                            if accepted.replayed {
+                                                "the delegation replayed its claimed key"
+                                            } else {
+                                                "the delegation landed"
+                                            },
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": delegation.task_id.as_str(),
+                                                "plan_step_id": delegation.plan_step_id.as_str(),
+                                                "agent_id": delegation.agent_id.as_str(),
+                                                "instance_id": accepted.instance_id.as_str(),
+                                                "attempt": accepted.attempt,
+                                                "delegation_depth": accepted.delegation_depth,
+                                                "replayed": accepted.replayed
+                                            }),
+                                        );
+                                        pending_answer =
+                                            Some(athena_core::delegation::acceptance_response(
+                                                accepted.event_id.as_str(),
+                                                &accepted,
+                                            ));
+                                    }
+                                    Err(fault) => {
+                                        record_privileged_denial(
+                                            &mut guard,
+                                            &delegation.task_id,
+                                            "delegate",
+                                            fault.class(),
+                                            &fault.to_string(),
+                                            &now,
+                                            &correlation,
+                                        );
+                                        resident_log(
+                                            Log::Warn,
+                                            "resident.execution",
+                                            "the delegation was refused",
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": delegation.task_id.as_str(),
+                                                "plan_step_id": delegation.plan_step_id.as_str(),
+                                                "fault": fault.to_string()
+                                            }),
+                                        );
+                                        pending_answer =
+                                            Some(athena_core::delegation::refusal_response(
                                                 &correlation,
                                                 &correlation,
                                                 &fault,
