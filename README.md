@@ -156,6 +156,16 @@ Skill Manager / Skill Validator legs, `SkillUpdated`/`SkillValidated`/`SkillVali
 Every command accepts `--json` for scripting. The CLI talks to the Core API only (`/api/v1`);
 it never launches `agent-cli` directly (`ATH-CLI-001`/`002`).
 
+Observability: `GET /api/v1/metrics` answers the whole §30.3 catalog in Prometheus text —
+all 23 families, each from recorded facts. Task, instance, approval, message and Event rows
+feed the store-side families (counts by state, durations, failure and retry classes by
+`error_class`, Skill loads by `skill_id`, approvals by outcome, the Broker dwell gauge, the
+Core Agent's last-Event age), while the request families (`athena_api_requests_total`,
+`athena_api_request_duration_seconds`) come from the API's own served requests, labelled by
+matched route and status. A family no row answered renders a single zero so a scraper's
+charts never toggle on series presence; an open label value the store never answered is
+absent rather than invented.
+
 ## Updating
 
 Keep the tool and a project's definitions current:

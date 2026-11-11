@@ -360,6 +360,17 @@ pub trait MessageRepository {
     fn was_delivered(&self, to: &InstanceId, id: &athena_types::MessageId) -> Result<bool>;
     /// Delete delivery records older than a cutoff (`messaging.dedup_retention`).
     fn prune_deliveries_before(&mut self, cutoff_rfc3339: &str) -> Result<u64>;
+    /// The Broker's dwell count: addressed messages the store holds without an accepted
+    /// delivery record (the §30.3 `athena_message_queue_depth` gauge's data source).
+    ///
+    /// A message is dwelling when its `(to_instance_id, message_id)` delivery record is
+    /// absent, or present without `accepted_at`: the Broker inserts the row before marking
+    /// the delivery, and acceptance is the receiving side's own act. A row whose
+    /// `to_instance_id` is `None` (the single-instance addressing of `ATH-MSG-010`, where
+    /// the instance is resolved at delivery time) carries no derivable delivery key, so its
+    /// acceptance cannot be read here — such rows are **excluded from the count rather than
+    /// assumed dwelling**, because the store answers no fact about them.
+    fn count_dwelling(&self) -> Result<u64>;
 }
 
 /// A stored message (spec section 10.2).

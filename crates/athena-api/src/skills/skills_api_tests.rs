@@ -28,6 +28,7 @@ fn state(store: Option<SharedStore>) -> AppState {
         rows: store,
         standing: crate::standing::new_cell(),
         config: athena_core::Config::default(),
+        tally: crate::routes::api_tally(),
     }
 }
 
@@ -100,6 +101,7 @@ fn seeded_router(state_of: SkillState) -> (axum::Router, String, SharedStore) {
         rows: Some(store.clone()),
         standing: crate::standing::new_cell(),
         config: athena_core::Config::default(),
+        tally: crate::routes::api_tally(),
     });
     (app, admin, store)
 }

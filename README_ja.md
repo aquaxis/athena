@@ -156,6 +156,15 @@ Skill Validator 腿で `UPDATING`/`VALIDATING` 行を確定します —
 どのコマンドも `--json` を受け付けます。CLI は Core API(`/api/v1`)のみを経由し、
 `agent-cli` を直接起動することはありません(`ATH-CLI-001`/`002`)。
 
+観測: `GET /api/v1/metrics` は spec §30.3 のカタログ全体を Prometheus テキストで答えます —
+23 家族すべてが記録された事実から観測されます。Task・Instance・Approval・Message・Event の各行が
+ストア側の家族(状態別件数、所要時間、`error_class` 別の失敗と再試行、`skill_id` 別の Skill
+読込、outcome 別の承認、Broker 滞留数ゲージ、Core Agent の最終 Event 経過秒)を満たし、要求側の
+家族(`athena_api_requests_total`、`athena_api_request_duration_seconds`)は API 自身が応答した
+要求を一致ルートと状態コードで標識して数えます。どの行も答えなかった家族は 0 を 1 行だけ出力し
+(収集側のグラフが系列の有無で切り替わらないように)、ストアが答えなかった開いたラベル値は
+捏造せず不在のままとします。
+
 ## 更新
 
 ツールとプロジェクトの定義を最新に保ちます:

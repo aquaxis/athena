@@ -15,6 +15,7 @@ fn state() -> AppState {
         rows: None,
         standing: crate::standing::new_cell(),
         config: athena_core::Config::default(),
+        tally: crate::routes::api_tally(),
     }
 }
 

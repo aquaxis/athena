@@ -20,6 +20,7 @@ fn state() -> (AppState, String, String, String) {
         rows: None,
         standing: crate::standing::new_cell(),
         config: athena_core::Config::default(),
+        tally: crate::routes::api_tally(),
     };
     (st, viewer_token, operator_token, admin_token)
 }
@@ -212,6 +213,7 @@ async fn task_api_router() -> (axum::Router, String) {
         rows: Some(Arc::new(Mutex::new(store))),
         standing: crate::standing::new_cell(),
         config: athena_core::Config::default(),
+        tally: crate::routes::api_tally(),
     });
     (router, operator)
 }
@@ -456,6 +458,7 @@ async fn memory_api_router() -> (
         rows: Some(store.clone()),
         standing: crate::standing::new_cell(),
         config: athena_core::Config::default(),
+        tally: crate::routes::api_tally(),
     });
     (router, operator, store)
 }
@@ -604,6 +607,7 @@ async fn clarify_router() -> (
         rows: Some(store.clone()),
         standing: crate::standing::new_cell(),
         config: athena_core::Config::default(),
+        tally: crate::routes::api_tally(),
     });
     (router, operator, store)
 }
@@ -762,6 +766,7 @@ async fn approvals_router() -> (
         rows: Some(store.clone()),
         standing: crate::standing::new_cell(),
         config: athena_core::Config::default(),
+        tally: crate::routes::api_tally(),
     });
     (router, operator, store)
 }
@@ -925,6 +930,7 @@ async fn the_status_answer_carries_the_core_agents_standing() {
         rows: None,
         standing,
         config: athena_core::Config::default(),
+        tally: crate::routes::api_tally(),
     };
     let router = build_router(st);
     let mut request = Request::builder()
@@ -963,6 +969,7 @@ async fn the_status_answer_names_an_unobserved_core_agent_as_unobserved() {
         rows: None,
         standing: crate::standing::new_cell(),
         config: athena_core::Config::default(),
+        tally: crate::routes::api_tally(),
     };
     let router = build_router(st);
     let mut request = Request::builder()
@@ -996,6 +1003,7 @@ async fn agent_surface_router() -> (axum::Router, String, SharedTestStore) {
         rows: Some(store.clone()),
         standing: crate::standing::new_cell(),
         config: athena_core::Config::default(),
+        tally: crate::routes::api_tally(),
     });
     (router, admin, store)
 }
@@ -1250,6 +1258,7 @@ async fn memory_write_router() -> (
         rows: Some(store.clone()),
         standing: crate::standing::new_cell(),
         config: athena_core::Config::default(),
+        tally: crate::routes::api_tally(),
     });
     (router, operator, store, task.id)
 }
@@ -1383,6 +1392,7 @@ async fn the_memory_write_route_refuses_at_the_tier_gates() {
         rows: Some(store.clone()),
         standing: crate::standing::new_cell(),
         config: small_config,
+        tally: crate::routes::api_tally(),
     });
     for at in 0..2 {
         let filler = format!(
@@ -1428,6 +1438,7 @@ async fn the_memory_write_route_refuses_at_the_tier_gates() {
         rows: Some(store.clone()),
         standing: crate::standing::new_cell(),
         config: off_config,
+        tally: crate::routes::api_tally(),
     });
     let refused = off_router
         .oneshot(op_write_request("/api/v1/memory", &token_off, &anchored))

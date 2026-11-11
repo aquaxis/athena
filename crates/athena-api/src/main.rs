@@ -301,6 +301,7 @@ async fn main() {
         rows: Some(rows.clone()),
         standing: standing.clone(),
         config: config.clone(),
+        tally: athena_api::routes::api_tally(),
     };
 
     // 6. The composition root's Adapter link: the real process driver, the template

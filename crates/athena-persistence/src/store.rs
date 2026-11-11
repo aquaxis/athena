@@ -1575,6 +1575,34 @@ impl MessageRepository for AthenaStore {
             Ok(removed)
         })
     }
+
+    fn count_dwelling(&self) -> Result<u64> {
+        self.read(|view| {
+            let mut dwelling = 0_u64;
+            for (_, raw) in view.rows(tables::MESSAGES)? {
+                let message = decode_row::<MessageRow>("message", "row", &raw)?;
+                // An unaddressed row answers no delivery key (ATH-MSG-010) — excluded, not
+                // assumed; the trait's doc records why.
+                let Some(to) = message.to_instance_id.as_ref() else {
+                    continue;
+                };
+                let key = format!("{}|{}", to.as_str(), message.message_id.as_str());
+                let accepted = match view.get(tables::MESSAGE_DELIVERIES, &key)? {
+                    Some(record) => decode_row::<serde_json::Value>(
+                        "message_delivery",
+                        "row",
+                        &record,
+                    )?["accepted_at"]
+                        .is_string(),
+                    None => false,
+                };
+                if !accepted {
+                    dwelling += 1;
+                }
+            }
+            Ok(dwelling)
+        })
+    }
 }
 
 // --- HierarchyRepository -----------------------------------------------------------------

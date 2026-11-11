@@ -49,6 +49,11 @@ pub struct AppState {
     /// The resolved effective configuration (X-34): the memory write route's tier gate
     /// and retention ceiling read `memory.long_term.*` from here.
     pub config: athena_core::Config,
+    /// The API request tally (X-40): the role layer records every answered
+    /// `(route, status)` request and its served millis; the metrics render folds the
+    /// two `athena_api_*` families from it. The unauthenticated health face rides no
+    /// role layer and stays untallied by construction.
+    pub tally: crate::metrics::SharedTally,
 }
 
 /// A call-time seed for the correlation mint (locked monotonicity is fine here: the
@@ -59,6 +64,12 @@ fn request_wall_clock_seed() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(u64::MAX)
+}
+
+/// A fresh API request tally (X-40): one shared map per router build.
+#[must_use]
+pub fn api_tally() -> crate::metrics::SharedTally {
+    std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()))
 }
 
 /// Build the router: `/api/v1/healthz` anonymous; the `/api/v1` groups each gated by their
@@ -208,6 +219,7 @@ fn endpoint_layer(state: &AppState, required: Role, routes: Router<AppState>) ->
     use axum::{middleware::Next, response::Response};
     async fn enforce(
         State(state): State<AppState>,
+        matched: axum::extract::MatchedPath,
         required: Role,
         request: Request,
         next: Next,
@@ -232,7 +244,17 @@ fn endpoint_layer(state: &AppState, required: Role, routes: Router<AppState>) ->
                 // `"bearer"`).
                 let mut request = request;
                 request.extensions_mut().insert(caller);
+                let started = std::time::Instant::now();
                 let mut response = next.run(request).await;
+                // The API tally lane (X-40): every answered `(route, status)` request and
+                // its served millis rides into the shared tally the metrics render folds
+                // (`athena_api_requests_total` / `athena_api_request_duration_seconds`).
+                crate::metrics::tally_request(
+                    &state.tally,
+                    matched.as_str(),
+                    response.status().as_u16(),
+                    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                );
                 if let Ok(value) = axum::http::HeaderValue::from_str(&correlation) {
                     response
                         .headers_mut()
@@ -248,20 +270,29 @@ fn endpoint_layer(state: &AppState, required: Role, routes: Router<AppState>) ->
     match required {
         Role::Viewer => routes.route_layer(from_fn_with_state(
             state.clone(),
-            |state: State<AppState>, request: Request, next: Next| async move {
-                enforce(state, Role::Viewer, request, next).await
+            |state: State<AppState>,
+             matched: axum::extract::MatchedPath,
+             request: Request,
+             next: Next| async move {
+                enforce(state, matched, Role::Viewer, request, next).await
             },
         )),
         Role::Operator => routes.route_layer(from_fn_with_state(
             state.clone(),
-            |state: State<AppState>, request: Request, next: Next| async move {
-                enforce(state, Role::Operator, request, next).await
+            |state: State<AppState>,
+             matched: axum::extract::MatchedPath,
+             request: Request,
+             next: Next| async move {
+                enforce(state, matched, Role::Operator, request, next).await
             },
         )),
         Role::Admin => routes.route_layer(from_fn_with_state(
             state.clone(),
-            |state: State<AppState>, request: Request, next: Next| async move {
-                enforce(state, Role::Admin, request, next).await
+            |state: State<AppState>,
+             matched: axum::extract::MatchedPath,
+             request: Request,
+             next: Next| async move {
+                enforce(state, matched, Role::Admin, request, next).await
             },
         )),
     }
@@ -808,7 +839,7 @@ async fn metrics_row(State(state): State<AppState>) -> Response {
     };
     let rendered = {
         let guard = rows.lock().expect("metrics store");
-        crate::metrics::render_from(&guard)
+        crate::metrics::render_from(&guard, &state.tally, request_wall_clock_seed())
     };
     match rendered {
         Ok(text) => (

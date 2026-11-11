@@ -122,12 +122,14 @@ pub use ownership::{Entity, ModuleRole, OWNERSHIP};
 pub use event_filter::EventFilter;
 
 /// The repository surfaces the API needs, re-exported so `athena-api` needs no direct
-/// `athena-persistence` edge (spec §32.2 allows `athena-api → athena-core` only).
+/// `athena-persistence` edge (spec §32.2 allows `athena-api → athena-core` only). The
+/// message row rides the same rule: the dwell gauge's observation face (X-40) reaches it
+/// through here, never through a direct `athena-persistence` edge.
 pub use athena_persistence::{
     AgentRepository, ApprovalRepository, AthenaStore, ClarificationRepository,
     ConversationRepository, EventRepository, HierarchyRepository, IdempotencyRepository,
-    MemoryRepository, MessageRepository, Page, PersistenceError, PlanRepository, ResultRepository,
-    RuntimeInstanceRepository, SkillRepository, StoredEvent, TaskRepository,
+    MemoryRepository, MessageRepository, MessageRow, Page, PersistenceError, PlanRepository,
+    ResultRepository, RuntimeInstanceRepository, SkillRepository, StoredEvent, TaskRepository,
     ToolExecutionRepository,
 };
 
