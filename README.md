@@ -156,6 +156,14 @@ Skill Manager / Skill Validator legs, `SkillUpdated`/`SkillValidated`/`SkillVali
 Every command accepts `--json` for scripting. The CLI talks to the Core API only (`/api/v1`);
 it never launches `agent-cli` directly (`ATH-CLI-001`/`002`).
 
+Planning: when the Core Agent submits a plan, the resident accepts it as a plan — Core Host
+mints the `PlanId`/`PlanStepId` values, stamps the revision (a submission must name the
+revision it edited, and a stale one is refused with the current revision handed back), checks
+`depends_on` for cycles before anything is written, and records the confirmation as
+`PlanCreated` or `PlanRevised`. Earlier revisions are kept, never overwritten. A plan
+submission does **not** settle its Task: a plan is the work's shape, not its product, so the
+Task stays running and the agent receives a `control_response` naming what was minted.
+
 Retention: the resident sweeps on a one-minute cadence — Events past `events.retention_days`,
 expired clarifications, idempotency keys, delivery records, and each finished Instance's
 `.aiprj` work area once it ages past the same Event horizon. An area is deleted only when the

@@ -516,7 +516,21 @@ pub enum Interpreted {
         /// The options, when the question is a multiple choice.
         options: Option<Vec<String>>,
     },
-    /// Any of the other ten: an observation of the agent's stated intention. The v1
+    /// `submit_plan`: the agent submitted a full replacement plan at a revision (X-43).
+    /// This is **not** an answer — a plan is the work's shape, not its product — so the
+    /// caller must route it through `plan_intake::accept_plan` and leave the Task running.
+    /// Settling a Task on its own plan submission is the conflation this variant exists to
+    /// end (`ATH-PLAN-001`: the plan is the execution model, and it stays editable).
+    PlanSubmitted {
+        /// The Task the plan belongs to.
+        task_id: athena_types::TaskId,
+        /// The revision the agent edited against (`ATH-CORE-042` — Core Host compares it
+        /// with the current revision and refuses a mismatch).
+        base_revision: u64,
+        /// The draft steps, without identifiers (D-5; Core Host mints them).
+        steps: Vec<athena_types::PlanStepDraft>,
+    },
+    /// Any of the other nine: an observation of the agent's stated intention. The v1
     /// execution model (`ATH-DATA-004`) gives the answer itself as the product, so the
     /// request is surfaced for the caller to route — Core Host answers every `CoreRequest`
     /// (`ATH-CORE-034`), and the answer's face is the caller's next delivery, never a side
@@ -581,6 +595,15 @@ fn route(request: crate::protocol::CoreRequest) -> Interpreted {
         crate::protocol::CoreRequest::AskHuman {
             question, options, ..
         } => Interpreted::AskHuman { question, options },
+        crate::protocol::CoreRequest::SubmitPlan {
+            task_id,
+            base_revision,
+            steps,
+        } => Interpreted::PlanSubmitted {
+            task_id,
+            base_revision,
+            steps,
+        },
         other => Interpreted::Requested {
             kind: other.kind_tag(),
             request: other,

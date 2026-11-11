@@ -202,6 +202,58 @@ fn resident_log(
     );
 }
 
+/// Record one refused privileged request as the denial it is (`ATH-CORE-037`): the request
+/// kind, the §20.1 class and the fault's own text, on the Task's chain. The record is the
+/// audit the restarted context re-surfaces (`ATH-CORE-029`) and the source the
+/// `athena_privileged_requests_denied_total` family counts (X-40), so the payload's
+/// `request_kind` and `error_class` keys carry the vocabulary those readers expect.
+///
+/// A failure to record is logged and nothing else: the refusal has already been answered,
+/// and losing its audit line must not take the resident down.
+fn record_privileged_denial(
+    store: &mut AthenaStore,
+    task_id: &athena_types::TaskId,
+    request_kind: &str,
+    error_class: athena_core::ErrorClass,
+    fault: &str,
+    now: &str,
+    correlation: &str,
+) {
+    let denial = NewEvent {
+        event_id: athena_types::EventId::new(),
+        schema_version: 1,
+        event_type: "PrivilegedRequestDenied".into(),
+        occurred_at: now.to_string(),
+        task_id: Some(task_id.clone()),
+        plan_step_id: None,
+        agent_id: Some(athena_types::AgentId::core_agent()),
+        instance_id: None,
+        skill_id: None,
+        correlation_id: correlation.to_string(),
+        causation_id: None,
+        actor: "core-agent".into(),
+        payload_json: serde_json::json!({
+            "request_kind": request_kind,
+            "error_class": error_class.wire(),
+            "fault": fault,
+        })
+        .to_string(),
+    };
+    if let Err(fault) = athena_core::EventRepository::append(store, &denial) {
+        resident_log(
+            Log::Error,
+            "resident.execution",
+            "recording the privileged-request denial failed",
+            correlation,
+            serde_json::json!({
+                "task_id": task_id.as_str(),
+                "request_kind": request_kind,
+                "fault": fault.to_string()
+            }),
+        );
+    }
+}
+
 fn fail(message: &str) -> ! {
     resident_log(
         Log::Error,
@@ -750,188 +802,285 @@ where
                             continue;
                         }
                     };
-                    let Ok(mut guard) = rows.lock() else {
-                        continue;
-                    };
                     let correlation =
                         athena_core::digest(&format!("intake-{}-{now}", task_id.as_str()));
-                    match &interpreted {
-                        // `ask_human`: open the clarification (RUNNING → WAITING_INPUT);
-                        // the Task does not settle while a question waits — the answer
-                        // endpoint resumes it, and a later intake records the settled
-                        // product (`ATH-HITL-017..020`).
-                        athena_core::core_loop::Interpreted::AskHuman { question, .. } => {
-                            let deadline = athena_types::clock::format_rfc3339(
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|age| age.as_secs() + clarification_ttl_secs)
-                                    .unwrap_or(clarification_ttl_secs),
-                                0,
-                            );
-                            match athena_core::core_loop::open_clarification(
-                                &mut guard,
-                                &task_id,
-                                question,
-                                &deadline,
-                                &now,
-                                &correlation,
-                            ) {
-                                Ok(id) => resident_log(
-                                    Log::Info,
-                                    "resident.execution",
-                                    "the task asks a human",
-                                    &correlation,
-                                    serde_json::json!({
-                                        "task_id": task_id.as_str(),
-                                        "clarification_id": id.as_str()
-                                    }),
-                                ),
-                                Err(fault) => resident_log(
-                                    Log::Error,
-                                    "resident.execution",
-                                    "clarifying the task failed",
-                                    &correlation,
-                                    serde_json::json!({
-                                        "task_id": task_id.as_str(),
-                                        "fault": fault.to_string()
-                                    }),
-                                ),
-                            }
-                        }
-                        // Any completion face — a `complete_task` request or the v1 bare
-                        // prose product: record the Result and settle.
-                        athena_core::core_loop::Interpreted::Completed { .. } => {
-                            match athena_core::core_loop::ingest_answer(
-                                &mut guard,
-                                &task_id,
-                                &instance,
-                                &answer,
-                                &now,
-                                &correlation,
-                            ) {
-                                Ok(received) => {
-                                    let status = received.status;
-                                    match athena_core::core_loop::settle_task(
-                                        &mut guard,
-                                        &task_id,
-                                        status,
-                                        &now,
-                                        &correlation,
-                                    ) {
-                                        Ok(outcome) => resident_log(
-                                            Log::Info,
-                                            "resident.execution",
-                                            "the task settled",
-                                            &correlation,
-                                            serde_json::json!({
-                                                "task_id": task_id.as_str(),
-                                                "outcome": format!("{outcome:?}"),
-                                                "result_id": received.result_id.as_str()
-                                            }),
-                                        ),
-                                        Err(fault) => resident_log(
-                                            Log::Error,
-                                            "resident.execution",
-                                            "settling the task failed",
-                                            &correlation,
-                                            serde_json::json!({
-                                                "task_id": task_id.as_str(),
-                                                "fault": fault.to_string()
-                                            }),
-                                        ),
-                                    }
-                                }
-                                Err(fault) => resident_log(
-                                    Log::Error,
-                                    "resident.execution",
-                                    "recording the answer failed",
-                                    &correlation,
-                                    serde_json::json!({
-                                        "task_id": task_id.as_str(),
-                                        "fault": fault.to_string()
-                                    }),
-                                ),
-                            }
-                        }
-                        // A routed `CoreRequest`: `write_memory` is the one kind the Core
-                        // Host *answers* (X-34 — `athena_core::write_memory`'s face applies
-                        // the write under the resident's clock), the rest stay observed
-                        // (the v1 model gives the answer itself as the product, and one
-                        // answered kind already answers ATH-CORE-034's every-request face).
-                        athena_core::core_loop::Interpreted::Requested { kind, request } => {
-                            if let athena_core::protocol::CoreRequest::WriteMemory {
-                                tier,
-                                content,
-                            } = request
-                            {
-                                // The request carries no Task (ATH-CORE-033's own face);
-                                // the requesting Task anchors the write.
-                                let tier = match tier {
-                                    athena_core::WritableMemoryTier::Working => {
-                                        athena_core::write_memory::WritableTier::Working
-                                    }
-                                    athena_core::WritableMemoryTier::Long => {
-                                        athena_core::write_memory::WritableTier::Long
-                                    }
-                                };
-                                let requester =
-                                    athena_core::write_memory::Requester::CoreAgentJudgement;
-                                match athena_core::write_memory::apply_write_memory(
+                    // The answer a privileged request earns (ATH-CORE-034). It is collected
+                    // under the lock and sent after the lock's own block ends: the store
+                    // guard never spans an await, which is the same discipline the delivery
+                    // leg keeps (a `drop` would not satisfy the future's Send bound — the
+                    // guard's scope has to close).
+                    let mut pending_answer: Option<athena_core::CoreResponse> = None;
+                    {
+                        let Ok(mut guard) = rows.lock() else {
+                            continue;
+                        };
+                        match &interpreted {
+                            // `ask_human`: open the clarification (RUNNING → WAITING_INPUT);
+                            // the Task does not settle while a question waits — the answer
+                            // endpoint resumes it, and a later intake records the settled
+                            // product (`ATH-HITL-017..020`).
+                            athena_core::core_loop::Interpreted::AskHuman { question, .. } => {
+                                let deadline = athena_types::clock::format_rfc3339(
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|age| age.as_secs() + clarification_ttl_secs)
+                                        .unwrap_or(clarification_ttl_secs),
+                                    0,
+                                );
+                                match athena_core::core_loop::open_clarification(
                                     &mut guard,
-                                    &requester,
-                                    tier,
-                                    content,
                                     &task_id,
-                                    None,
-                                    config.memory.long_term.max_records,
+                                    question,
+                                    &deadline,
                                     &now,
                                     &correlation,
                                 ) {
-                                    Ok(report) => resident_log(
+                                    Ok(id) => resident_log(
                                         Log::Info,
                                         "resident.execution",
-                                        "the task requested a write_memory",
+                                        "the task asks a human",
                                         &correlation,
                                         serde_json::json!({
                                             "task_id": task_id.as_str(),
-                                            "tier": format!("{:?}", report.tier),
-                                            "record_id": report.record_id.as_str(),
-                                            "scope_id": report.scope_id.as_str()
+                                            "clarification_id": id.as_str()
                                         }),
                                     ),
-                                    Err(fault) => {
-                                        // The refusal is recorded (ATH-CORE-037), not
-                                        // swallowed; the record's fault text stays the
-                                        // whole story.
-                                        let denial = NewEvent {
-                                            event_id: athena_types::EventId::new(),
-                                            schema_version: 1,
-                                            event_type: "PrivilegedRequestDenied".into(),
-                                            occurred_at: now.to_string(),
-                                            task_id: Some(task_id.clone()),
-                                            plan_step_id: None,
-                                            agent_id: Some(athena_types::AgentId::core_agent()),
-                                            instance_id: None,
-                                            skill_id: None,
-                                            correlation_id: correlation.to_string(),
-                                            causation_id: None,
-                                            actor: "core-agent".into(),
-                                            payload_json: serde_json::json!({
-                                                "request_kind": "write_memory",
-                                                "error_class": "validation_error",
-                                                "policy_id": "memory.tier",
-                                                "fault": fault.to_string(),
-                                            })
-                                            .to_string(),
-                                        };
-                                        if let Err(fault) = athena_core::EventRepository::append(
-                                            &mut *guard,
-                                            &denial,
+                                    Err(fault) => resident_log(
+                                        Log::Error,
+                                        "resident.execution",
+                                        "clarifying the task failed",
+                                        &correlation,
+                                        serde_json::json!({
+                                            "task_id": task_id.as_str(),
+                                            "fault": fault.to_string()
+                                        }),
+                                    ),
+                                }
+                            }
+                            // Any completion face — a `complete_task` request or the v1 bare
+                            // prose product: record the Result and settle.
+                            athena_core::core_loop::Interpreted::Completed { .. } => {
+                                match athena_core::core_loop::ingest_answer(
+                                    &mut guard,
+                                    &task_id,
+                                    &instance,
+                                    &answer,
+                                    &now,
+                                    &correlation,
+                                ) {
+                                    Ok(received) => {
+                                        let status = received.status;
+                                        match athena_core::core_loop::settle_task(
+                                            &mut guard,
+                                            &task_id,
+                                            status,
+                                            &now,
+                                            &correlation,
                                         ) {
-                                            resident_log(
+                                            Ok(outcome) => resident_log(
+                                                Log::Info,
+                                                "resident.execution",
+                                                "the task settled",
+                                                &correlation,
+                                                serde_json::json!({
+                                                    "task_id": task_id.as_str(),
+                                                    "outcome": format!("{outcome:?}"),
+                                                    "result_id": received.result_id.as_str()
+                                                }),
+                                            ),
+                                            Err(fault) => resident_log(
                                                 Log::Error,
                                                 "resident.execution",
-                                                "recording the write_memory denial failed",
+                                                "settling the task failed",
+                                                &correlation,
+                                                serde_json::json!({
+                                                    "task_id": task_id.as_str(),
+                                                    "fault": fault.to_string()
+                                                }),
+                                            ),
+                                        }
+                                    }
+                                    Err(fault) => resident_log(
+                                        Log::Error,
+                                        "resident.execution",
+                                        "recording the answer failed",
+                                        &correlation,
+                                        serde_json::json!({
+                                            "task_id": task_id.as_str(),
+                                            "fault": fault.to_string()
+                                        }),
+                                    ),
+                                }
+                            }
+                            // `submit_plan` (X-43): the plan is accepted, recorded and answered
+                            // — and the Task **stays running**. A plan is the work's shape, not
+                            // its product, so neither `ingest_answer` nor `settle_task` runs
+                            // here: settling a Task on its own plan submission is the
+                            // conflation this arm ends (`ATH-PLAN-001`).
+                            athena_core::core_loop::Interpreted::PlanSubmitted {
+                                task_id: plan_task,
+                                base_revision,
+                                steps,
+                            } => {
+                                match athena_core::plan_intake::accept_plan(
+                                    &mut guard,
+                                    plan_task,
+                                    *base_revision,
+                                    steps.clone(),
+                                    &now,
+                                ) {
+                                    Ok(accepted) => {
+                                        resident_log(
+                                            Log::Info,
+                                            "resident.execution",
+                                            if accepted.first_revision {
+                                                "the task's plan landed"
+                                            } else {
+                                                "the task's plan was revised"
+                                            },
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": plan_task.as_str(),
+                                                "plan_id": accepted.plan_id.as_str(),
+                                                "revision": accepted.revision,
+                                                "step_count": accepted.step_count,
+                                                "rationale_source": accepted.rationale_source.as_str()
+                                            }),
+                                        );
+                                        // The answer the agent receives names what Core Host
+                                        // minted; the confirmation Event's id is the request
+                                        // identifier, so request, answer and record share one
+                                        // key (ATH-OBS-009).
+                                        pending_answer =
+                                            Some(athena_core::plan_intake::acceptance_response(
+                                                accepted.event_id.as_str(),
+                                                &accepted,
+                                            ));
+                                    }
+                                    Err(fault) => {
+                                        // A refusal is recorded as the denial it is
+                                        // (ATH-CORE-037) and answered with the specification's
+                                        // envelope — the class and code are the refusal's own.
+                                        record_privileged_denial(
+                                            &mut guard,
+                                            plan_task,
+                                            "submit_plan",
+                                            fault.class(),
+                                            &fault.to_string(),
+                                            &now,
+                                            &correlation,
+                                        );
+                                        resident_log(
+                                            Log::Warn,
+                                            "resident.execution",
+                                            "the task's plan was refused",
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": plan_task.as_str(),
+                                                "fault": fault.to_string()
+                                            }),
+                                        );
+                                        pending_answer =
+                                            Some(athena_core::plan_intake::refusal_response(
+                                                &correlation,
+                                                &correlation,
+                                                &fault,
+                                            ));
+                                    }
+                                }
+                            }
+                            // A routed `CoreRequest`: `write_memory` is the one kind whose
+                            // effect the Core Host applies (X-34 — `athena_core::write_memory`'s
+                            // face writes under the resident's clock), the rest stay observed
+                            // (the v1 model gives the answer itself as the product). Note that
+                            // neither path answers the agent with a `CoreResponse`; only the
+                            // plan arm above does, so ATH-CORE-034's every-request face is
+                            // still open for the remaining kinds.
+                            athena_core::core_loop::Interpreted::Requested { kind, request } => {
+                                if let athena_core::protocol::CoreRequest::WriteMemory {
+                                    tier,
+                                    content,
+                                } = request
+                                {
+                                    // The request carries no Task (ATH-CORE-033's own face);
+                                    // the requesting Task anchors the write.
+                                    let tier = match tier {
+                                        athena_core::WritableMemoryTier::Working => {
+                                            athena_core::write_memory::WritableTier::Working
+                                        }
+                                        athena_core::WritableMemoryTier::Long => {
+                                            athena_core::write_memory::WritableTier::Long
+                                        }
+                                    };
+                                    let requester =
+                                        athena_core::write_memory::Requester::CoreAgentJudgement;
+                                    match athena_core::write_memory::apply_write_memory(
+                                        &mut guard,
+                                        &requester,
+                                        tier,
+                                        content,
+                                        &task_id,
+                                        None,
+                                        config.memory.long_term.max_records,
+                                        &now,
+                                        &correlation,
+                                    ) {
+                                        Ok(report) => resident_log(
+                                            Log::Info,
+                                            "resident.execution",
+                                            "the task requested a write_memory",
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": task_id.as_str(),
+                                                "tier": format!("{:?}", report.tier),
+                                                "record_id": report.record_id.as_str(),
+                                                "scope_id": report.scope_id.as_str()
+                                            }),
+                                        ),
+                                        Err(fault) => {
+                                            // The refusal is recorded (ATH-CORE-037), not
+                                            // swallowed; the record's fault text stays the
+                                            // whole story.
+                                            let denial = NewEvent {
+                                                event_id: athena_types::EventId::new(),
+                                                schema_version: 1,
+                                                event_type: "PrivilegedRequestDenied".into(),
+                                                occurred_at: now.to_string(),
+                                                task_id: Some(task_id.clone()),
+                                                plan_step_id: None,
+                                                agent_id: Some(athena_types::AgentId::core_agent()),
+                                                instance_id: None,
+                                                skill_id: None,
+                                                correlation_id: correlation.to_string(),
+                                                causation_id: None,
+                                                actor: "core-agent".into(),
+                                                payload_json: serde_json::json!({
+                                                    "request_kind": "write_memory",
+                                                    "error_class": "validation_error",
+                                                    "policy_id": "memory.tier",
+                                                    "fault": fault.to_string(),
+                                                })
+                                                .to_string(),
+                                            };
+                                            if let Err(fault) = athena_core::EventRepository::append(
+                                                &mut *guard,
+                                                &denial,
+                                            ) {
+                                                resident_log(
+                                                    Log::Error,
+                                                    "resident.execution",
+                                                    "recording the write_memory denial failed",
+                                                    &correlation,
+                                                    serde_json::json!({
+                                                        "task_id": task_id.as_str(),
+                                                        "fault": fault.to_string()
+                                                    }),
+                                                );
+                                            }
+                                            resident_log(
+                                                Log::Warn,
+                                                "resident.execution",
+                                                "the write_memory request was refused",
                                                 &correlation,
                                                 serde_json::json!({
                                                     "task_id": task_id.as_str(),
@@ -939,75 +1088,101 @@ where
                                                 }),
                                             );
                                         }
-                                        resident_log(
-                                            Log::Warn,
-                                            "resident.execution",
-                                            "the write_memory request was refused",
-                                            &correlation,
-                                            serde_json::json!({
-                                                "task_id": task_id.as_str(),
-                                                "fault": fault.to_string()
-                                            }),
-                                        );
                                     }
                                 }
-                            }
-                            match athena_core::core_loop::ingest_answer(
-                                &mut guard,
-                                &task_id,
-                                &instance,
-                                &answer,
-                                &now,
-                                &correlation,
-                            ) {
-                                Ok(received) => {
-                                    let status = received.status;
-                                    match athena_core::core_loop::settle_task(
-                                        &mut guard,
-                                        &task_id,
-                                        status,
-                                        &now,
-                                        &correlation,
-                                    ) {
-                                        Ok(outcome) => resident_log(
-                                            Log::Info,
-                                            "resident.execution",
-                                            &format!(
-                                                "task {} settled ({outcome:?}, result {}, request {kind} observed)",
-                                                task_id.as_str(),
-                                                received.result_id.as_str()
-                                            ),
-                                            &correlation,
-                                            serde_json::json!({
-                                                "task_id": task_id.as_str(),
-                                                "outcome": format!("{outcome:?}"),
-                                                "result_id": received.result_id.as_str(),
-                                                "request_kind": kind
-                                            }),
-                                        ),
-                                        Err(fault) => resident_log(
-                                            Log::Error,
-                                            "resident.execution",
-                                            "settling the task failed",
-                                            &correlation,
-                                            serde_json::json!({
-                                                "task_id": task_id.as_str(),
-                                                "fault": fault.to_string()
-                                            }),
-                                        ),
-                                    }
-                                }
-                                Err(fault) => resident_log(
-                                    Log::Error,
-                                    "resident.execution",
-                                    "recording the answer failed",
+                                match athena_core::core_loop::ingest_answer(
+                                    &mut guard,
+                                    &task_id,
+                                    &instance,
+                                    &answer,
+                                    &now,
                                     &correlation,
-                                    serde_json::json!({
-                                        "task_id": task_id.as_str(),
-                                        "fault": fault.to_string()
-                                    }),
-                                ),
+                                ) {
+                                    Ok(received) => {
+                                        let status = received.status;
+                                        match athena_core::core_loop::settle_task(
+                                            &mut guard,
+                                            &task_id,
+                                            status,
+                                            &now,
+                                            &correlation,
+                                        ) {
+                                            Ok(outcome) => resident_log(
+                                                Log::Info,
+                                                "resident.execution",
+                                                &format!(
+                                                    "task {} settled ({outcome:?}, result {}, request {kind} observed)",
+                                                    task_id.as_str(),
+                                                    received.result_id.as_str()
+                                                ),
+                                                &correlation,
+                                                serde_json::json!({
+                                                    "task_id": task_id.as_str(),
+                                                    "outcome": format!("{outcome:?}"),
+                                                    "result_id": received.result_id.as_str(),
+                                                    "request_kind": kind
+                                                }),
+                                            ),
+                                            Err(fault) => resident_log(
+                                                Log::Error,
+                                                "resident.execution",
+                                                "settling the task failed",
+                                                &correlation,
+                                                serde_json::json!({
+                                                    "task_id": task_id.as_str(),
+                                                    "fault": fault.to_string()
+                                                }),
+                                            ),
+                                        }
+                                    }
+                                    Err(fault) => resident_log(
+                                        Log::Error,
+                                        "resident.execution",
+                                        "recording the answer failed",
+                                        &correlation,
+                                        serde_json::json!({
+                                            "task_id": task_id.as_str(),
+                                            "fault": fault.to_string()
+                                        }),
+                                    ),
+                                }
                             }
+                        }
+                    }
+                    // The lock is released before the answer travels: a `CoreResponse` is
+                    // agent IO, and the store guard never crosses an await.
+                    if let Some(response) = pending_answer {
+                        match athena_core::plan_intake::control_response_message(
+                            &task_id, &response,
+                        ) {
+                            Ok(message) => {
+                                if let Err(fault) = adapter.send(&instance, message).await {
+                                    // The record stands either way: the plan landed (or was
+                                    // refused) and its Event says so. A send fault is the
+                                    // agent's next read problem, logged, never a reason to
+                                    // undo what was recorded.
+                                    resident_log(
+                                        Log::Warn,
+                                        "resident.execution",
+                                        "answering the privileged request failed",
+                                        &correlation,
+                                        serde_json::json!({
+                                            "task_id": task_id.as_str(),
+                                            "fault": fault.to_string()
+                                        }),
+                                    );
+                                }
+                            }
+                            Err(fault) => resident_log(
+                                Log::Error,
+                                "resident.execution",
+                                "serializing the privileged-request answer failed",
+                                &correlation,
+                                serde_json::json!({
+                                    "task_id": task_id.as_str(),
+                                    "fault": fault.to_string()
+                                }),
+                            ),
                         }
                     }
                 }

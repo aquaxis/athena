@@ -56,6 +56,10 @@ pub mod observability;
 pub mod orphan;
 pub mod ownership;
 pub mod permission_integrity;
+pub mod plan_intake;
+#[cfg(test)]
+#[path = "plan_intake_tests.rs"]
+mod plan_intake_tests;
 pub mod policy_manager;
 pub mod protocol;
 pub mod result_manager;

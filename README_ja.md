@@ -156,6 +156,13 @@ Skill Validator 腿で `UPDATING`/`VALIDATING` 行を確定します —
 どのコマンドも `--json` を受け付けます。CLI は Core API(`/api/v1`)のみを経由し、
 `agent-cli` を直接起動することはありません(`ATH-CLI-001`/`002`)。
 
+計画: Core Agent が計画を提出すると、常駐はそれを計画として受理します — Core Host が
+`PlanId`/`PlanStepId` を発行し、リビジョンを刻み(提出は編集対象のリビジョンを名乗る必要があり、
+古い場合は現行リビジョンを返して拒否します)、`depends_on` の循環を書き込み前に検査し、確定を
+`PlanCreated` または `PlanRevised` として記録します。旧リビジョンは上書きせず保存されます。
+計画の提出は Task を**終了させません**: 計画は仕事の形であって成果物ではないため、Task は実行中の
+まま保たれ、Agent には発行結果を名指す `control_response` が返ります。
+
 保持期間の掃除: 常駐は 1 分周期で掃除を回します — `events.retention_days` を過ぎた Event、
 期限切れの確認要求、冪等キー、配送記録、そして終了した Instance の `.aiprj` 作業領域(同じ
 Event の保持期間を過ぎたもの)。領域の削除は、ストアの行とディスク上のディレクトリが揃って

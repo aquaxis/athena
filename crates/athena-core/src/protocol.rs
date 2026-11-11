@@ -284,6 +284,24 @@ pub enum ErrorClass {
     InternalError,
 }
 impl ErrorClass {
+    /// The wire word, matching this enum's serde form (`snake_case`) — the value that
+    /// rides an error envelope's `class` and a `PrivilegedRequestDenied` payload's
+    /// `error_class`, so a record and a response never disagree about the class's name.
+    #[must_use]
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::ValidationError => "validation_error",
+            Self::PermissionError => "permission_error",
+            Self::PolicyError => "policy_error",
+            Self::TransientError => "transient_error",
+            Self::TimeoutError => "timeout_error",
+            Self::AgentError => "agent_error",
+            Self::SkillError => "skill_error",
+            Self::RuntimeError => "runtime_error",
+            Self::InternalError => "internal_error",
+        }
+    }
+
     /// Every class, in specification order.
     pub const ALL: [Self; 9] = [
         Self::ValidationError,
