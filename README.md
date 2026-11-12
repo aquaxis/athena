@@ -223,6 +223,21 @@ screen change, and the Live screen follows the event stream through an authentic
 replay anchored on `Last-Event-ID`; the page itself creates no tasks — task creation stays
 with the CLI (the API's one-lease discipline).
 
+Subordinate agents are live: the `agents` list in `.athena/config.toml` is registered into
+the store at every startup (its `persona` file's front matter supplies `level` and
+`allowed_tools` when an entry omits them, and `provider`/`model` stay mandatory —
+`ATH-AGENT-008`), so a delegation can be admitted to a real definition (`ATH-AGENT-002`);
+the Core Agent is never listed there (instance #0 is `core.agent`'s own face,
+`ATH-CORE-022`). An admitted delegation is then **started**: the Instance row walks
+`CREATED → STARTING → IDLE` with its `AgentStarting` / `AgentStarted` Events on the Task's
+correlation chain, the Runtime Instance row is seeded 1:1 (`ATH-RT-012`) and the row records
+the Runtime's own id and the `AI_LOG` area it wrote; a refused start lands
+`STARTING → FAILED` with `AgentFailed` (`error_class` / `attempt` /
+`side_effects = unknown`) rather than leaving the row mid-flight. The Core Agent's own
+lifecycle now answers in catalog Events too (`CoreAgentStarted` / `CoreAgentRestarted` /
+`CoreAgentEscalated`, `ATH-CORE-031`), which is what makes
+`athena_core_agent_restarts_total` report observed restarts instead of a constant zero.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is

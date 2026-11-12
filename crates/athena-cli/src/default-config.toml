@@ -13,8 +13,30 @@
 # environment variables or a secret manager. `${athena.home}` expands to `<PROJECT_ROOT>
 # /.athena` before validation; no other variable reference is permitted (ATH-CFG-010).
 
-# Agent definitions registered statically. Define at least the Core Agent's runtime; the
-# provider and model go into `core.agent` below (ATH-AGENT-008).
+# Subordinate agent definitions, registered into the store at every startup. The Core
+# Agent is never listed here — instance #0 is `core.agent`'s own face (ATH-CORE-022) — and
+# a delegation can only be admitted to an agent this list (or a dynamic definition) has
+# registered (ATH-AGENT-002). Each entry:
+#
+#   id                   the slug a plan step assigns work to (unique)
+#   runtime              agent-cli | local-process | docker | ssh | kubernetes | cloud
+#   persona              a file under `${athena.home}/personas/`; its front matter
+#                        supplies `level` and `allowed_tools` when the entry omits them
+#   provider, model      mandatory, no default (ATH-AGENT-008)
+#   level                producer | director | lead | worker (optional: the persona's own
+#                        level is used when this is unset; a stated level must match it)
+#   capabilities         matched against a Task's requirements (ATH-AGENT-004)
+#   allowed_tools        the agent's own grant; minimal by default (ATH-SEC-008)
+#   delegable_tools      what it may grant downward, within the Core ceiling (ATH-SEC-024)
+#   skills               default Skills, as `{ id = "...", version = "..." }` entries
+#   max_delegation_depth the delegation ceiling (ATH-HIER-005; 4 when unset)
+#
+# Example (nothing is pre-configured — an empty list is the shipped state):
+#
+#   agents = [
+#     { id = "reviewer", runtime = "agent-cli", persona = "worker.md",
+#       provider = "ollama", model = "glm-5.3-flash:cloud", capabilities = ["review"] },
+#   ]
 agents = []
 
 [athena]

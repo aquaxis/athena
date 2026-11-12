@@ -6,7 +6,7 @@
 
 use crate::error::{ConfigError, Result};
 use crate::schema::{AuthMode, Config};
-use athena_types::ToolName;
+use athena_types::{AgentLevel, RuntimeType, ToolName};
 use std::time::Duration;
 
 /// Tools the Core Agent must never hold in its own `allowed_tools` (ATH-SEC-025).
@@ -142,6 +142,80 @@ pub fn validate(config: &Config) -> Result<()> {
             "runtime.default names {:?}, which has no settings block; known runtimes: {known:?}",
             config.runtime.default
         )));
+    }
+
+    // --- Static agent definitions (ATH-AGENT-001, ATH-AGENT-008) ---
+
+    // The `agents` list names subordinates only: instance #0 is built from `core.agent`'s
+    // own face (ATH-CORE-022), and a second registration of it would collide with the
+    // 1:1 residency rule (ATH-RT-012) rather than describe a second agent.
+    // Every refusal names the entry by its index, because a list whose `id` is the thing
+    // in question cannot be addressed by that id (the duplicate and empty-slug faces).
+    let mut seen_ids: Vec<&str> = Vec::new();
+    for (index, entry) in config.agents.iter().enumerate() {
+        let slug = entry.id.trim();
+        if slug.is_empty() {
+            return Err(fail(format!(
+                "agents[{index}].id: every entry must name a non-empty slug"
+            )));
+        }
+        if slug == athena_types::ids::AgentId::CORE_AGENT {
+            return Err(fail(format!(
+                "agents[{index}].id names {slug:?}: the Core Agent is registered by \
+                 `core.agent`, never by this list (ATH-CORE-022)"
+            )));
+        }
+        if seen_ids.contains(&slug) {
+            return Err(fail(format!(
+                "agents[{index}].id {slug:?}: duplicate id — one definition row per slug \
+                 (the store's rows are keyed by it)"
+            )));
+        }
+        seen_ids.push(slug);
+        if !RuntimeType::ALL
+            .iter()
+            .any(|kind| kind.as_str() == entry.runtime)
+        {
+            return Err(fail(format!(
+                "agents[{index}].runtime {:?}: the vocabulary is closed ({})",
+                entry.runtime,
+                RuntimeType::ALL
+                    .iter()
+                    .map(|kind| kind.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        if entry.persona.trim().is_empty() {
+            return Err(fail(format!(
+                "agents[{index}].persona: a definition names its persona \
+                 (ATH-AGENT-001); the file is resolved under `<ATHENA_HOME>/personas/`"
+            )));
+        }
+        // The level may be left to the persona file's front matter, but a stated level is
+        // read against the closed vocabulary here rather than at boot.
+        if !entry.level.trim().is_empty()
+            && !AgentLevel::ALL
+                .iter()
+                .any(|level| level.as_str() == entry.level)
+        {
+            return Err(fail(format!(
+                "agents[{index}].level {:?}: the vocabulary is closed ({})",
+                entry.level,
+                AgentLevel::ALL
+                    .iter()
+                    .map(|level| level.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        if entry.provider.trim().is_empty() || entry.model.trim().is_empty() {
+            return Err(fail(format!(
+                "agents[{index}].provider / agents[{index}].model: both must be set \
+                 explicitly; ATHENA holds no default provider or model for a subordinate \
+                 either (ATH-AGENT-008)"
+            )));
+        }
     }
 
     // --- Skills ---
@@ -567,6 +641,107 @@ mod tests {
         c.memory.summarizer = String::new();
         let err = validate(&c).expect_err("must be refused");
         assert!(err.to_string().contains("summarizer"), "{err}");
+    }
+
+    /// One listed agent, complete enough to pass every gate — the base each refusal
+    /// test breaks in exactly one place.
+    fn listed_agent() -> crate::schema::AgentEntry {
+        crate::schema::AgentEntry {
+            id: "x44-worker".into(),
+            runtime: "agent-cli".into(),
+            name: String::new(),
+            provider: "claude".into(),
+            model: "claude-opus-5".into(),
+            persona: "athena-worker.md".into(),
+            persona_version: None,
+            level: "worker".into(),
+            capabilities: vec![],
+            allowed_tools: vec![],
+            delegable_tools: vec![],
+            skills: vec![],
+            max_delegation_depth: None,
+        }
+    }
+
+    #[test]
+    fn a_complete_listed_agent_is_accepted() {
+        let mut c = valid();
+        c.agents.push(listed_agent());
+        validate(&c).expect("a complete entry passes");
+    }
+
+    #[test]
+    fn a_listed_agent_without_a_persona_is_refused() {
+        let mut c = valid();
+        c.agents.push(crate::schema::AgentEntry {
+            persona: String::new(),
+            ..listed_agent()
+        });
+        let err = validate(&c).expect_err("must be refused");
+        assert!(err.to_string().contains("agents[0].persona"), "{err}");
+    }
+
+    #[test]
+    fn a_listed_agent_with_an_out_of_vocabulary_level_is_refused() {
+        let mut c = valid();
+        c.agents.push(crate::schema::AgentEntry {
+            level: "superworker".into(),
+            ..listed_agent()
+        });
+        let err = validate(&c).expect_err("must be refused");
+        assert!(err.to_string().contains("agents[0].level"), "{err}");
+    }
+
+    #[test]
+    fn a_listed_agent_may_leave_the_level_to_its_persona() {
+        let mut c = valid();
+        c.agents.push(crate::schema::AgentEntry {
+            level: String::new(),
+            ..listed_agent()
+        });
+        validate(&c).expect("an unstated level is the persona's to answer");
+    }
+
+    #[test]
+    fn a_listed_agent_with_an_unknown_runtime_spelling_is_refused() {
+        let mut c = valid();
+        c.agents.push(crate::schema::AgentEntry {
+            runtime: "agnagent-cli".into(),
+            ..listed_agent()
+        });
+        let err = validate(&c).expect_err("must be refused");
+        assert!(err.to_string().contains("agents[0].runtime"), "{err}");
+    }
+
+    #[test]
+    fn a_listed_agent_without_model_coordinates_is_refused() {
+        let mut c = valid();
+        c.agents.push(crate::schema::AgentEntry {
+            model: String::new(),
+            ..listed_agent()
+        });
+        let err = validate(&c).expect_err("must be refused (ATH-AGENT-008)");
+        assert!(err.to_string().contains("agents[0].model"), "{err}");
+    }
+
+    #[test]
+    fn the_core_agent_is_never_listed_among_the_subordinates() {
+        let mut c = valid();
+        c.agents.push(crate::schema::AgentEntry {
+            id: "athena-core-agent".into(),
+            ..listed_agent()
+        });
+        let err = validate(&c).expect_err("must be refused (ATH-CORE-022)");
+        assert!(err.to_string().contains("ATH-CORE-022"), "{err}");
+    }
+
+    #[test]
+    fn two_listed_agents_may_not_share_one_id() {
+        let mut c = valid();
+        c.agents.push(listed_agent());
+        c.agents.push(listed_agent());
+        let err = validate(&c).expect_err("must be refused");
+        assert!(err.to_string().contains("duplicate id"), "{err}");
     }
 
     #[test]

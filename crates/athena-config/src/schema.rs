@@ -277,14 +277,59 @@ pub struct SkillEntry {
     pub version: String,
 }
 
-/// An agent definition reference in configuration.
+/// An agent definition reference in configuration (spec section 28.1, `agents`).
+///
+/// X-44(a): the entry widened to name what ATH-AGENT-001 requires, so a listed agent
+/// describes the definition the supply face registers — never a bare id/runtime pair.
+/// Everything beyond `id` and `runtime` is optional or defaulted: `agents = []` (the
+/// generated file's shipped value) stays valid, and a short entry still parses
+/// (`deny_unknown_fields` is untouched — a mistyped key must still abort startup,
+/// ATH-CFG-003).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentEntry {
-    /// Agent slug.
+    /// Agent slug. The Core Agent's slug is refused here: instance #0 is registered by
+    /// `core.agent`'s own face, never by this list (ATH-CORE-022).
     pub id: String,
-    /// Runtime type name.
+    /// Runtime type name — the closed `RuntimeType` vocabulary's wire form; any other
+    /// spelling is refused at the supply face, never defaulted.
     pub runtime: String,
+    /// LLM provider, e.g. `claude`. Mandatory for any listed agent (ATH-AGENT-008):
+    /// when unset the registration is refused as `ModelUnspecified`, never defaulted.
+    #[serde(default)]
+    pub provider: String,
+    /// Model name, e.g. `claude-opus-5`. Same mandatory rule as `provider`.
+    #[serde(default)]
+    pub model: String,
+    /// Display name recorded on the definition row. Empty means the slug itself.
+    #[serde(default)]
+    pub name: String,
+    /// Persona file reference, resolved under `<ATHENA_HOME>/personas/`.
+    #[serde(default)]
+    pub persona: String,
+    /// Persona version recorded in the definition's history (ATH-PERSONA-005). Unset
+    /// means the persona pairing's own baseline (`1.0.0`).
+    #[serde(default)]
+    pub persona_version: Option<String>,
+    /// Hierarchy level (ATH-AGENT-001). Empty means the persona's own level.
+    #[serde(default)]
+    pub level: String,
+    /// Declared capabilities (ATH-AGENT-004). Empty by default.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// Tools this agent may execute. Empty by default (deny-by-default, ATH-SEC-008).
+    #[serde(default)]
+    pub allowed_tools: Vec<ToolName>,
+    /// Tools this agent may grant downward, within the Core ceiling (ATH-SEC-024).
+    #[serde(default)]
+    pub delegable_tools: Vec<ToolName>,
+    /// Default Skills the definition carries, as `id` + `version` pairs (the same wire
+    /// shape the `skills.packages` list uses).
+    #[serde(default)]
+    pub skills: Vec<SkillEntry>,
+    /// Delegation-depth ceiling (ATH-HIER-005). Empty means the generated default (4).
+    #[serde(default)]
+    pub max_delegation_depth: Option<u64>,
 }
 
 /// `scheduler` section.

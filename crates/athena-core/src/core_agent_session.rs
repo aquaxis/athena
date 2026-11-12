@@ -205,6 +205,20 @@ impl RestartWindow {
         self.attempts_ms.len()
     }
 
+    /// When the window opened: the earliest counted attempt still inside it, as Unix
+    /// milliseconds — the required `window_start` fact
+    /// (`CoreAgentRestarted`'s payload, ATH-CORE-031). An empty window has not opened, so
+    /// it reports `None`: there is nothing to read back, and the caller names that in its
+    /// own answer rather than this getter inventing a stamp (never-invent).
+    ///
+    /// The read slides the window exactly as [`Self::counted`] does, so this value is
+    /// always consistent with the count the decision machinery recorded.
+    #[must_use]
+    pub fn window_start(&mut self, at_ms: u64) -> Option<u64> {
+        self.slide(at_ms);
+        self.attempts_ms.iter().min().copied()
+    }
+
     /// Entries older than the window drop off the count.
     fn slide(&mut self, now_ms: u64) {
         self.attempts_ms

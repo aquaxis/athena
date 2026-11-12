@@ -220,6 +220,20 @@ API (ループバックの Studio オリジンのみ許可) を読み、`session
 イベントストリームを追います。頁自体はタスクを作成しません — タスク作成は CLI の担当です
 (API の一 lease 規律)。
 
+下位エージェントも稼働します: `.athena/config.toml` の `agents` 一覧は起動ごとにストアへ
+登録され (`persona` ファイルの front matter が `level` と `allowed_tools` を補い、
+`provider`/`model` は必須のまま — `ATH-AGENT-008`)、委任は実在する定義に対してのみ
+受理されます (`ATH-AGENT-002`)。Core Agent はこの一覧には決して現れません
+(インスタンス #0 は `core.agent` 自身の面 — `ATH-CORE-022`)。受理された委任はそのまま
+**起動**されます: Instance 行は `CREATED → STARTING → IDLE` を歩き、`AgentStarting` /
+`AgentStarted` の各 Event が Task の相関チェーンに載り、Runtime Instance 行が 1:1 で
+作られ (`ATH-RT-012`)、行には Runtime 自身の ID と実際に書かれた `AI_LOG` の位置が
+記録されます。起動が拒否された場合は行を途中状態に残さず `STARTING → FAILED` と
+`AgentFailed` (`error_class` / `attempt` / `side_effects = unknown`) を記録します。
+Core Agent 自身のライフサイクルもカタログ Event で答えるようになりました
+(`CoreAgentStarted` / `CoreAgentRestarted` / `CoreAgentEscalated`、`ATH-CORE-031`) —
+これにより `athena_core_agent_restarts_total` は常時 0 ではなく実測の再起動数を報告します。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は

@@ -244,6 +244,20 @@ pub trait AgentRepository {
     /// value must be the path the Runtime *wrote*, never a reconstructed guess; `None`
     /// clears the reference, which is how a completed deletion records itself.
     fn set_aiprj_area(&mut self, id: &InstanceId, area: Option<&str>) -> Result<()>;
+    /// Record the backing Runtime Instance (`ATH-RT-012`, spec section 26.3): the row's
+    /// `runtime_instance_id` is the join key the heartbeat receipt (`ATH-CORE-047`) and
+    /// every supervision walk read it by.
+    ///
+    /// The write refuses a row that already carries a *different* runtime id — the 1 : 1
+    /// ownership is written once; re-writing the same id is the idempotent re-answer a
+    /// replayed start may produce. Absent rows refuse whole (never upsert: the row the
+    /// receipt addresses was written by the delegation intake, and a missing one is a
+    /// caller fault, not something to invent).
+    fn set_runtime_instance(
+        &mut self,
+        id: &InstanceId,
+        runtime: Option<&RuntimeInstanceId>,
+    ) -> Result<()>;
 }
 
 /// Results, artifacts and evaluations (spec section 19).

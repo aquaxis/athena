@@ -67,6 +67,10 @@ mod plan_intake_tests;
 pub mod policy_manager;
 pub mod protocol;
 pub mod result_manager;
+pub mod runtime_instance;
+#[cfg(test)]
+#[path = "runtime_instance_tests.rs"]
+mod runtime_instance_tests;
 pub mod runtime_manager;
 pub mod scheduler;
 #[cfg(test)]
@@ -79,6 +83,10 @@ pub mod stall_detection;
 #[cfg(test)]
 #[path = "stall_detection_tests.rs"]
 mod stall_detection_tests;
+pub mod supply;
+#[cfg(test)]
+#[path = "supply_tests.rs"]
+mod supply_tests;
 pub mod working_memory;
 
 pub mod schema;
@@ -99,6 +107,10 @@ mod inspection_tests;
 mod protocol_tests;
 
 pub use athena_events::redact::{digest, mask_text};
+/// The Event envelope's context and actor, re-exported for the resident's X-50 faces
+/// (ATH-CORE-031): a supervision Event is built and appended beside the poll that owns
+/// it. `core_agent_session`'s own import is private, so the re-export rides here.
+pub use athena_events::{EventContext, EventError, TypedEvent, envelope::Actor, events::Payload};
 pub use athena_persistence::now_rfc3339;
 pub use athena_persistence::{NewEvent, WorkspaceLeaseRepository};
 /// Task transition tables re-exported for the API's run / cancel handlers; the state
@@ -111,15 +123,21 @@ pub use athena_types::TaskState;
 pub use budgets::{BudgetSignal, Budgets, IterationEffect};
 pub use core_agent_session::{
     ContextDocument, ControlSurfaceChecksum, Recovery, RestartWindow, StartFailureKind,
-    SurfaceMismatch, recovery_decision, start_core_agent, verify_surface,
+    SurfaceMismatch, escalated_event, recovery_decision, restarted_event, start_core_agent,
+    started_event, verify_surface,
 };
 pub use core_loop::{
     Interpreted, LoopFault, PendingDelivery, Received, Settled, core_thread, deliver, fail_task,
     ingest_answer, interpret_answer, next_answer, open_clarification, prepare_delivery,
     queued_tasks, reported_status, running_tasks, settle_task,
 };
+pub use delegation::{DelegationAccepted, DelegationFault, DelegationRequest, accept_delegation};
 pub use inspection::{Inspection, InspectionFacts, Inspector, Reason, deny_envelope};
 pub use issuance::{IssuedPlan, PlanRefusal, PlanSubmission, submit_plan};
+pub use runtime_instance::{
+    StartFault, StartOutcome, begin_start, complete_start_failed, complete_start_started,
+};
+pub use supply::{AgentEntryWide, SupplyContext, SupplyFault, supply_definitions};
 
 pub use broker::{BrokerFault, broker_deliver};
 pub use observability::{

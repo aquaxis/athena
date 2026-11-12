@@ -134,6 +134,59 @@ fn core_context(config: &Config) -> StartContext {
     }
 }
 
+/// The context an X-50 supervision Event rides: actor core-agent, instance #0's own
+/// digest key minted per face (the boot/maintenance precedent; a `CoreAgent*` Event joins
+/// no Task's chain, ATH-STATE-012).
+fn core_agent_context(correlation: &str) -> athena_core::EventContext {
+    athena_core::EventContext {
+        event_id: athena_types::EventId::new(),
+        occurred_at: athena_types::now_rfc3339(),
+        actor: athena_core::Actor::CoreAgent,
+        task_id: None,
+        plan_step_id: None,
+        agent_id: Some(athena_types::AgentId::core_agent()),
+        instance_id: None,
+        skill_id: None,
+        correlation_id: correlation.to_string(),
+        causation_id: None,
+    }
+}
+
+/// One typed Event folded into a row (the X-50 face): the walk is the heartbeat/boot
+/// precedent's own `TypedEvent` → `NewEvent` fold, appended on the correlation the Event
+/// context carries; a fault is named on the resident's chain, never swallowed (the caller
+/// answers with its own log line — the Event is lost, the loss is recorded).
+fn record_typed_event<P: athena_core::Payload>(
+    store: &mut AthenaStore,
+    typed: athena_core::TypedEvent<P>,
+    module: &str,
+) {
+    let event = NewEvent {
+        event_id: typed.event_id.clone(),
+        schema_version: typed.schema_version,
+        event_type: typed.event_type.to_string(),
+        occurred_at: typed.occurred_at.clone(),
+        task_id: typed.task_id.clone(),
+        plan_step_id: typed.plan_step_id.clone(),
+        agent_id: typed.agent_id.clone(),
+        instance_id: typed.instance_id.clone(),
+        skill_id: typed.skill_id.clone(),
+        correlation_id: typed.correlation_id.clone(),
+        causation_id: typed.causation_id.clone(),
+        actor: typed.actor.as_str().to_string(),
+        payload_json: typed.payload_json.clone(),
+    };
+    if let Err(fault) = athena_core::EventRepository::append(store, &event) {
+        resident_log(
+            Log::Error,
+            module,
+            &format!("recording {} failed: {fault}", event.event_type),
+            resident_key(),
+            serde_json::json!({ "event_type": event.event_type }),
+        );
+    }
+}
+
 /// Stop every live Instance through the Runtime Interface — instance #0 included,
 /// whose `STOPPED` is the only legitimate route out of residency (ATH-STATE-024), and
 /// the subordinates release their resources at terminal state (ATH-RT-010).
@@ -314,6 +367,10 @@ async fn main() {
     // 4. `ConfigurationLoaded` — the resolved effective configuration, secrets excluded
     //    (R-CFG-02, ATH-CFG-004), appended in the same store everything else lives in.
     let snapshot = athena_core::config_redacted(&loaded.effective);
+    // X-50's correlation anchor: every boot-success face (`CoreAgentStarted`) mines its
+    // chain from this one digest, so the resident's `CoreAgent*` facts share one
+    // per-process chain shaped like the boot precedent (`digest("boot-…")`).
+    let boot_stamp = athena_core::digest(&format!("boot-{}", home.project_root().display()));
     let configuration_loaded = NewEvent {
         event_id: EventId::new(),
         schema_version: 1,
@@ -324,13 +381,30 @@ async fn main() {
         agent_id: None,
         instance_id: None,
         skill_id: None,
-        correlation_id: athena_core::digest(&format!("boot-{}", home.project_root().display())),
+        correlation_id: boot_stamp.clone(),
         causation_id: None,
         actor: "system".into(),
         payload_json: serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()),
     };
     if let Err(error) = athena_core::EventRepository::append(&mut store, &configuration_loaded) {
         fail(&format!("recording ConfigurationLoaded failed: {error}"));
+    }
+
+    // 7. The static supply (X-44a): every configured `agents` entry registers through
+    //    the store's `upsert_definition` — its first production caller. The rules live
+    //    in the testable module (D-35); a refusal is the boot's failure (ATH-CFG-003's
+    //    fail-fast shape), never something to patch over at runtime. `agents = []`
+    //    supplies nothing and instance #0's definition is `core_definition`'s — the list
+    //    must never carry the Core Agent (`spawn_core_agent`'s 1:1 refusal would make
+    //    two registration routes collide).
+    let supply_context = athena_core::supply::SupplyContext {
+        personas_root: &home.path.join("personas"),
+        marker: (),
+    };
+    if let Err(fault) =
+        athena_core::supply::supply_definitions(&mut store, &config, &supply_context)
+    {
+        fail(&format!("agent definition supply failed: {fault}"));
     }
 
     // From here the store lives behind the shared handle the API's handlers and the
@@ -421,16 +495,73 @@ async fn main() {
     )
     .await
     {
-        Ok(handle) => resident_log(
-            Log::Info,
-            "athena-api",
-            &format!(
-                "Core Agent resident (instance #0, runtime {})",
-                handle.runtime_instance_id.as_str()
-            ),
-            resident_key(),
-            serde_json::json!({ "runtime_instance_id": handle.runtime_instance_id.as_str() }),
-        ),
+        Ok(handle) => {
+            // X-50 (i): the boot's success answers with the typed `CoreAgentStarted`
+            // (ATH-CORE-031) on the heartbeat precedent — digest-minted correlation, actor
+            // core-agent, no Task chain (ATH-STATE-012) — appended through the shared
+            // handle before the poll cadences take it. A fault is named, never swallowed.
+            let now_boot = athena_types::now_rfc3339();
+            let correlation = boot_stamp.clone();
+            let typed = athena_core::core_agent_session::started_event(athena_core::EventContext {
+                event_id: athena_types::EventId::new(),
+                occurred_at: now_boot.clone(),
+                actor: athena_core::Actor::CoreAgent,
+                task_id: None,
+                plan_step_id: None,
+                agent_id: Some(athena_types::AgentId::core_agent()),
+                instance_id: None,
+                skill_id: None,
+                correlation_id: correlation.clone(),
+                causation_id: None,
+            });
+            match typed {
+                Ok(typed) => {
+                    if let Err(fault) = athena_core::EventRepository::append(
+                        &mut *rows.lock().expect("rows"),
+                        &NewEvent {
+                            event_id: typed.event_id.clone(),
+                            schema_version: typed.schema_version,
+                            event_type: typed.event_type.to_string(),
+                            occurred_at: typed.occurred_at.clone(),
+                            task_id: typed.task_id.clone(),
+                            plan_step_id: typed.plan_step_id.clone(),
+                            agent_id: typed.agent_id.clone(),
+                            instance_id: typed.instance_id.clone(),
+                            skill_id: typed.skill_id.clone(),
+                            correlation_id: typed.correlation_id.clone(),
+                            causation_id: typed.causation_id.clone(),
+                            actor: typed.actor.as_str().to_string(),
+                            payload_json: typed.payload_json.clone(),
+                        },
+                    ) {
+                        resident_log(
+                            Log::Error,
+                            "athena-api",
+                            &format!("recording CoreAgentStarted failed: {fault}"),
+                            &correlation,
+                            serde_json::json!({}),
+                        );
+                    }
+                }
+                Err(fault) => resident_log(
+                    Log::Error,
+                    "athena-api",
+                    &format!("building CoreAgentStarted failed: {fault}"),
+                    &correlation,
+                    serde_json::json!({}),
+                ),
+            }
+            resident_log(
+                Log::Info,
+                "athena-api",
+                &format!(
+                    "Core Agent resident (instance #0, runtime {})",
+                    handle.runtime_instance_id.as_str()
+                ),
+                resident_key(),
+                serde_json::json!({ "runtime_instance_id": handle.runtime_instance_id.as_str() }),
+            )
+        }
         Err(error) => resident_log(
             Log::Error,
             "athena-api",
@@ -816,6 +947,11 @@ where
                     // leg keeps (a `drop` would not satisfy the future's Send bound — the
                     // guard's scope has to close).
                     let mut pending_answer: Option<athena_core::CoreResponse> = None;
+                    // X-44b: an admitted start is carried out of the match, then driven
+                    // below it — the guard block stays inside the lock's own scope and the
+                    // walk's awaits never run under it (the Send-bound discipline this
+                    // file's delivery leg already keeps).
+                    let mut admitted: Option<athena_core::delegation::DelegationAccepted> = None;
                     {
                         let Ok(mut guard) = rows.lock() else {
                             continue;
@@ -998,13 +1134,13 @@ where
                             // `delegate` (X-44): the admission rules answer, a row lands or
                             // a refusal is recorded, and the Task **stays running** — a
                             // delegation is work being handed down, not the Task's product.
-                            // Starting the admitted Instance is the `CREATED → STARTING`
-                            // edge, which the supervision/runtime side owns; the row this
-                            // arm writes is what makes that edge reachable at all.
+                            //
+                            // X-44b: the admitted (non-replayed) Instance is started on the
+                            // spot, after the arm's guard closes (see below).
                             athena_core::core_loop::Interpreted::DelegationRequested(
                                 delegation,
                             ) => {
-                                match athena_core::delegation::accept_delegation(
+                                admitted = match athena_core::delegation::accept_delegation(
                                     &mut guard,
                                     delegation,
                                     instances_root.as_path(),
@@ -1035,6 +1171,7 @@ where
                                                 accepted.event_id.as_str(),
                                                 &accepted,
                                             ));
+                                        (!accepted.replayed).then_some(accepted)
                                     }
                                     Err(fault) => {
                                         record_privileged_denial(
@@ -1063,8 +1200,9 @@ where
                                                 &correlation,
                                                 &fault,
                                             ));
+                                        None
                                     }
-                                }
+                                };
                             }
                             // A routed `CoreRequest`: `write_memory` is the one kind whose
                             // effect the Core Host applies (X-34 — `athena_core::write_memory`'s
@@ -1262,6 +1400,63 @@ where
                             ),
                         }
                     }
+
+                    // X-44(b): the admitted Instance is started here — *after* the arm's
+                    // guard block closed, because the Runtime's own `start` is awaited and
+                    // the store lock never crosses an await (the delivery leg's discipline;
+                    // a `drop(guard)` would not satisfy the future's Send bound). The
+                    // composition owns both legs: the row walks `CREATED → STARTING` under
+                    // its own lock, the Runtime runs unlocked, and the completion leg lands
+                    // `IDLE` or `FAILED` — a refused start is a recorded failure leg, never
+                    // a resident fault, so the loop continues either way.
+                    if let Some(accepted) = admitted {
+                        let instance_id = accepted.instance_id.clone();
+                        match athena_core::runtime_instance::start_admitted(
+                            adapter.as_ref(),
+                            rows.as_ref(),
+                            &accepted,
+                            &config,
+                        )
+                        .await
+                        {
+                            Ok(report) => resident_log(
+                                Log::Info,
+                                "resident.runtime",
+                                &format!(
+                                    "instance {} started ({:?}, runtime instance {})",
+                                    report.outcome.instance_id.as_str(),
+                                    report.outcome.state,
+                                    report
+                                        .outcome
+                                        .runtime_instance_id
+                                        .as_ref()
+                                        .map_or("-", |id| id.as_str())
+                                ),
+                                &correlation,
+                                serde_json::json!({
+                                    "task_id": task_id.as_str(),
+                                    "instance_id": report.outcome.instance_id.as_str(),
+                                    "state": format!("{:?}", report.outcome.state),
+                                    "event_id": report.outcome.event_id.as_str()
+                                }),
+                            ),
+                            Err(fault) => resident_log(
+                                Log::Warn,
+                                "resident.runtime",
+                                &format!(
+                                    "starting instance {} refused: {fault}",
+                                    instance_id.as_str()
+                                ),
+                                &correlation,
+                                serde_json::json!({
+                                    "task_id": task_id.as_str(),
+                                    "instance_id": instance_id.as_str(),
+                                    "error_class": fault.class().wire(),
+                                    "code": fault.code()
+                                }),
+                            ),
+                        }
+                    }
                 }
             }
         }
@@ -1378,19 +1573,73 @@ where
                     }
                     let mut context = core_context(&recovered_config(&record));
                     context.context_document_ref = context_refs.first().cloned();
+                    // The Event's `context_document_ref` is the document the rebuild above
+                    // actually wrote (empty when none was), read before the context moves
+                    // into the start call — the payload states a fact, never a guess.
+                    let restarted_with = context.context_document_ref.clone().unwrap_or_default();
                     match start_core_agent(adapter.as_ref(), record.definition.clone(), context)
                         .await
                     {
-                        Ok(handle) => resident_log(
-                            Log::Info,
-                            "resident.supervision",
-                            &format!(
-                                "Core Agent restarted (attempt {attempt}, runtime {})",
-                                handle.runtime_instance_id.as_str()
-                            ),
-                            resident_key(),
-                            serde_json::json!({ "attempt": attempt }),
-                        ),
+                        Ok(handle) => {
+                            // X-50 (ii): the restart is a catalog Event (ATH-CORE-031) — the
+                            // window start is the window's own fact (its getter, never a
+                            // resident-minted stamp), the context document the rebuild actually
+                            // wrote, the fold the heartbeat face keeps. A restart joins no
+                            // Task's chain (ATH-STATE-012): instance #0's own digest key.
+                            match window.window_start(u64_ms()) {
+                                Some(start_ms) => {
+                                    let secs = start_ms / 1_000;
+                                    let milli = u32::try_from(start_ms % 1_000).unwrap_or(0);
+                                    let window_start =
+                                        athena_types::clock::format_rfc3339(secs, milli);
+                                    if let Ok(mut guard) = rows.lock() {
+                                        match athena_core::restarted_event(
+                                            attempt,
+                                            window_start,
+                                            restarted_with.clone(),
+                                            core_agent_context(&format!(
+                                                "core-agent-restart-{attempt}-{}",
+                                                u64_ms()
+                                            )),
+                                        ) {
+                                            Ok(typed) => {
+                                                record_typed_event(
+                                                    &mut guard,
+                                                    typed,
+                                                    "resident.supervision",
+                                                );
+                                            }
+                                            Err(fault) => resident_log(
+                                                Log::Error,
+                                                "resident.supervision",
+                                                &format!(
+                                                    "building CoreAgentRestarted failed: {fault}"
+                                                ),
+                                                resident_key(),
+                                                serde_json::json!({ "attempt": attempt }),
+                                            ),
+                                        }
+                                    }
+                                }
+                                None => resident_log(
+                                    Log::Error,
+                                    "resident.supervision",
+                                    "the restart window records no opening; CoreAgentRestarted withheld",
+                                    resident_key(),
+                                    serde_json::json!({ "attempt": attempt }),
+                                ),
+                            }
+                            resident_log(
+                                Log::Info,
+                                "resident.supervision",
+                                &format!(
+                                    "Core Agent restarted (attempt {attempt}, runtime {})",
+                                    handle.runtime_instance_id.as_str()
+                                ),
+                                resident_key(),
+                                serde_json::json!({ "attempt": attempt }),
+                            )
+                        }
                         Err(error) => resident_log(
                             Log::Error,
                             "resident.supervision",
@@ -1410,10 +1659,68 @@ where
                     );
                 }
                 athena_core::Recovery::Escalate(reason) => {
+                    // The record rides one minted correlation (the boot/maintenance
+                    // precedent, X-50): the escalation joins no Task's chain, so its own
+                    // digest key is the chain. A construction-gate refusal is fatal — the
+                    // poll returns immediately after this record.
+                    let now = athena_types::now_rfc3339();
+                    let correlation = athena_core::digest(&format!("escalation-{now}"));
+                    let context = athena_core::EventContext {
+                        event_id: athena_types::EventId::new(),
+                        occurred_at: now.clone(),
+                        actor: athena_core::Actor::CoreAgent,
+                        task_id: None,
+                        plan_step_id: None,
+                        agent_id: Some(athena_types::AgentId::core_agent()),
+                        instance_id: None,
+                        skill_id: None,
+                        correlation_id: correlation.clone(),
+                        causation_id: None,
+                    };
+                    if let Ok(mut guard) = rows.lock() {
+                        // The construction gate and the store append are one chain of facts,
+                        // never one `and_then`: the builder answers `EventError`, the store
+                        // `PersistenceError`, and folding them would misname the face that
+                        // refused. Each is named on the resident's own chain instead.
+                        let folded = match athena_core::core_agent_session::escalated_event(context)
+                        {
+                            Ok(typed) => Ok(NewEvent {
+                                event_id: typed.event_id.clone(),
+                                schema_version: typed.schema_version,
+                                event_type: typed.event_type.to_string(),
+                                occurred_at: typed.occurred_at.clone(),
+                                task_id: typed.task_id.clone(),
+                                plan_step_id: typed.plan_step_id.clone(),
+                                agent_id: typed.agent_id.clone(),
+                                instance_id: typed.instance_id.clone(),
+                                skill_id: typed.skill_id.clone(),
+                                correlation_id: typed.correlation_id.clone(),
+                                causation_id: typed.causation_id.clone(),
+                                actor: typed.actor.as_str().to_string(),
+                                payload_json: typed.payload_json.clone(),
+                            }),
+                            Err(fault) => Err(fault.to_string()),
+                        };
+                        match folded.and_then(|event| {
+                            athena_core::EventRepository::append(&mut *guard, &event)
+                                .map_err(|fault| fault.to_string())
+                        }) {
+                            Ok(_) => {}
+                            Err(fault) => resident_log(
+                                Log::Error,
+                                "resident.escalation",
+                                &format!("recording the escalation failed: {fault}"),
+                                resident_key(),
+                                serde_json::json!({}),
+                            ),
+                        }
+                    }
                     // The recovery reason already states the halt ("restart window
                     // exhausted; autonomous execution halts"), so the note appends nothing
                     // to it — the earlier doubled clause came from repeating it here
-                    // (R-DIAG-01 finding (d)).
+                    // (R-DIAG-01 finding (d)). The reason stays the log line only: the
+                    // `CoreAgentEscalated` payload is catalog-empty, and a payload change
+                    // would fail the §23.2 catalog tests (ATH-EVENT-009).
                     let reason = reason.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
                     resident_log(
                         Log::Error,

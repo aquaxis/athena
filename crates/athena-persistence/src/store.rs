@@ -843,6 +843,44 @@ impl AgentRepository for AthenaStore {
         })
     }
 
+    fn set_runtime_instance(
+        &mut self,
+        id: &InstanceId,
+        runtime_instance: Option<&RuntimeInstanceId>,
+    ) -> Result<()> {
+        self.commit(|tx| {
+            let raw = tx
+                .get(tables::AGENT_INSTANCES, id.as_str())?
+                .ok_or_else(|| PersistenceError::NotFound {
+                    entity: "agent_instance",
+                    id: id.as_str().into(),
+                })?;
+            let mut resolved = decode_row::<AgentInstance>("agent_instance", "row", &raw)?;
+            // ATH-RT-012 (1 : 1) is enforced in the same transaction as the write: a
+            // row whose runtime instance is already owned by another agent instance is
+            // never re-pointed. The scan reads this unit's own rows, so the ownership
+            // answer is atomic with the write (the same shape `insert_instance` keeps).
+            if let Some(runtime_id) = runtime_instance
+                && let Some(owner) = full_instance_by_runtime(tx, runtime_id)?
+                && owner != *id
+            {
+                return Err(PersistenceError::Conflict {
+                    detail: format!(
+                        "runtime instance {} is already owned by {} (ATH-RT-012)",
+                        runtime_id.as_str(),
+                        owner.as_str()
+                    ),
+                });
+            }
+            resolved.runtime_instance_id = runtime_instance.cloned();
+            tx.put(
+                tables::AGENT_INSTANCES,
+                id.as_str(),
+                &encode_row("agent_instance", "row", &resolved)?,
+            )
+        })
+    }
+
     fn list_non_terminal_instances(&self) -> Result<Vec<AgentInstance>> {
         self.read(|view| {
             let mut instances = Vec::new();
