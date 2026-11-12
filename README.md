@@ -270,6 +270,17 @@ so it can never accept a deliverable by itself (`ATH-EVAL-005`). A prose answer 
 deliverable and no evaluation still settles on the reported status: that is the case
 `ATH-EVAL-002` does not reach, and every settlement now records which ground decided it.
 
+A rejected approval no longer dead-ends. `transition_task` is accepted as a request Core
+Host executes: the optimistic `expected_state` is checked (`ATH-CORE-036`), the §17.1 table
+confirms the edge, and the Event is written with keys taken from store facts. The accepted
+edges are the replanning cycle — `WAITING_APPROVAL` / `WAITING_INPUT` / `EVALUATING` →
+`REPLANNING`, and `REPLANNING` → `RUNNING` — which are the rows the table assigns to the
+Core Agent. Replanning is refused until the superseding plan revision exists, so
+`TaskReplanning` never names a replacement that did not happen: submit the new plan first,
+then request the transition. Other edges are refused *by name* (acceptance belongs to the
+Result settlement, clarifications to `ask_human`, cancellation to the human), because a
+second path to a gated edge would be a hole in the gate.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is

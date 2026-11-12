@@ -1363,6 +1363,82 @@ where
                                     }
                                 }
                             }
+                            // X-51: `transition_task` is a request Core Host executes, and
+                            // the §17.1 rows it may walk name **Core Agent** as their
+                            // requester — which is why the human's reject endpoint could
+                            // never move a rejected Task to REPLANNING (D-51). The State
+                            // Manager decides; a refusal names the owner or the missing
+                            // fact so the agent can act on it.
+                            athena_core::core_loop::Interpreted::TransitionRequested {
+                                task_id: moved_task,
+                                to,
+                                expected_state,
+                            } => {
+                                match athena_core::state_manager::transition::accept_transition(
+                                    &mut guard,
+                                    moved_task,
+                                    *to,
+                                    *expected_state,
+                                    &now,
+                                    &correlation,
+                                ) {
+                                    Ok(transitioned) => {
+                                        resident_log(
+                                            Log::Info,
+                                            "resident.execution",
+                                            &format!(
+                                                "task {} moved {} → {} ({})",
+                                                transitioned.task_id.as_str(),
+                                                transitioned.from.as_str(),
+                                                transitioned.to.as_str(),
+                                                transitioned.event_type
+                                            ),
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": transitioned.task_id.as_str(),
+                                                "from": transitioned.from.as_str(),
+                                                "to": transitioned.to.as_str(),
+                                                "event_type": transitioned.event_type
+                                            }),
+                                        );
+                                        pending_answer = Some(
+                                            athena_core::state_manager::transition::acceptance_response(
+                                                &correlation,
+                                                &transitioned,
+                                            ),
+                                        );
+                                    }
+                                    Err(fault) => {
+                                        record_privileged_denial(
+                                            &mut guard,
+                                            moved_task,
+                                            "transition_task",
+                                            fault.class(),
+                                            &fault.to_string(),
+                                            &now,
+                                            &correlation,
+                                        );
+                                        resident_log(
+                                            Log::Warn,
+                                            "resident.execution",
+                                            "the transition was refused",
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": moved_task.as_str(),
+                                                "to": to.as_str(),
+                                                "fault": fault.to_string()
+                                            }),
+                                        );
+                                        pending_answer = Some(
+                                            athena_core::state_manager::transition::refusal_response(
+                                                &correlation,
+                                                &correlation,
+                                                &fault,
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
                             athena_core::core_loop::Interpreted::Requested { kind, request } => {
                                 if let athena_core::protocol::CoreRequest::WriteMemory {
                                     tier,

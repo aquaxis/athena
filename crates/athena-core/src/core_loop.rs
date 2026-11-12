@@ -590,6 +590,18 @@ pub enum Interpreted {
         /// The agent's reason (`ATH-CORE-016`).
         rationale: String,
     },
+    /// `transition_task`: the Task state change the agent asks for, optimistic on
+    /// `expected_state` (`ATH-CORE-036`). Like the plan and the evaluation this is a
+    /// **request Core Host executes**, not an observation — the State Manager's
+    /// `transition::accept_transition` decides it (X-51).
+    TransitionRequested {
+        /// The Task.
+        task_id: athena_types::TaskId,
+        /// The state the agent asks for.
+        to: athena_types::TaskState,
+        /// The state the agent believes holds (`ATH-STATE-014`).
+        expected_state: athena_types::TaskState,
+    },
     /// Any of the other eight: an observation of the agent's stated intention. The v1
     /// execution model (`ATH-DATA-004`) gives the answer itself as the product, so the
     /// request is surfaced for the caller to route — Core Host answers every `CoreRequest`
@@ -684,6 +696,15 @@ fn route(request: crate::protocol::CoreRequest) -> Interpreted {
                 idempotency_key,
             },
             instruction,
+        },
+        crate::protocol::CoreRequest::TransitionTask {
+            task_id,
+            to,
+            expected_state,
+        } => Interpreted::TransitionRequested {
+            task_id,
+            to,
+            expected_state,
         },
         crate::protocol::CoreRequest::SubmitEvaluation {
             task_id,

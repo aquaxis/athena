@@ -261,6 +261,16 @@ PlanStep は同一トランザクションで `ORPHANED` になります。こ�
 ことはできません (`ATH-EVAL-005`)。成果物も評価も無い散文の回答は従来どおり報告された状態で
 決着します (`ATH-EVAL-002` が及ばない場合)。どの根拠で決着したかは毎回記録されます。
 
+却下された承認が行き止まりになることもなくなりました。`transition_task` は Core Host が
+実行する要求として受理されます — 楽観的な `expected_state` を照合し (`ATH-CORE-036`)、
+§17.1 の表で辺を確認し、Event はストアの事実から鍵を組み立てて書きます。受理する辺は
+再計画の循環 — `WAITING_APPROVAL` / `WAITING_INPUT` / `EVALUATING` → `REPLANNING` と
+`REPLANNING` → `RUNNING` — で、いずれも表が Core Agent に割り当てている行です。再計画は
+**上書きする plan revision が存在するまで拒否**されるので、`TaskReplanning` が起きていない
+置換を名乗ることはありません (新しい plan を先に提出し、その後に遷移を要求する)。その他の辺は
+**所有者を名指して**拒否します (受理は Result の決着、確認質問は `ask_human`、取消は人間の担当) —
+ゲートのある辺に第 2 の経路を作ることは、そのゲートに穴を開けることだからです。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は

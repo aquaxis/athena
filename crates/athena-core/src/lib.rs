@@ -94,6 +94,9 @@ pub mod schema;
 mod session_tests;
 pub mod skills_bridge;
 pub mod state_manager;
+#[cfg(test)]
+#[path = "state_manager_tests.rs"]
+mod state_manager_tests;
 pub mod tool_manager;
 pub mod write_memory;
 #[cfg(test)]
