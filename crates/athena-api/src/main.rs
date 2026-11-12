@@ -1075,11 +1075,10 @@ where
                                     &correlation,
                                 ) {
                                     Ok(received) => {
-                                        let status = received.status;
                                         match athena_core::core_loop::settle_task(
                                             &mut guard,
                                             &task_id,
-                                            status,
+                                            &received.result_id,
                                             &now,
                                             &correlation,
                                         ) {
@@ -1281,6 +1280,89 @@ where
                             // neither path answers the agent with a `CoreResponse`; only the
                             // plan arm above does, so ATH-CORE-034's every-request face is
                             // still open for the remaining kinds.
+                            // X-48: `submit_evaluation` is a record, not an observation —
+                            // it is the substance `EVALUATING` otherwise lacked. The row
+                            // lands with the Core Agent named as the evaluator and the
+                            // method stated for what it is (`agent_judgement`, never one of
+                            // the objective five), so the settlement gate still demands a
+                            // real Verification for verifiable deliverables (ATH-EVAL-005).
+                            athena_core::core_loop::Interpreted::EvaluationSubmitted {
+                                task_id: evaluated_task,
+                                result_id,
+                                verdict,
+                                rationale,
+                            } => {
+                                match athena_core::result_manager::record::record_evaluation(
+                                    &mut guard,
+                                    evaluated_task,
+                                    result_id,
+                                    athena_core::result_manager::record::Judgement {
+                                        evaluator: athena_types::Evaluator::Agent {
+                                            agent_id: athena_types::AgentId::core_agent(),
+                                        },
+                                        method:
+                                            athena_core::result_manager::record::AGENT_JUDGEMENT,
+                                        verdict: *verdict,
+                                        rationale,
+                                    },
+                                    &now,
+                                    &correlation,
+                                ) {
+                                    Ok(evaluation_id) => {
+                                        resident_log(
+                                            Log::Info,
+                                            "resident.execution",
+                                            &format!(
+                                                "evaluation {} recorded ({verdict:?})",
+                                                evaluation_id.as_str()
+                                            ),
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": evaluated_task.as_str(),
+                                                "result_id": result_id.as_str(),
+                                                "evaluation_id": evaluation_id.as_str(),
+                                                "verdict": format!("{verdict:?}").to_lowercase()
+                                            }),
+                                        );
+                                        pending_answer = Some(
+                                            athena_core::result_manager::record::acceptance_response(
+                                                &correlation,
+                                                &evaluation_id,
+                                                *verdict,
+                                            ),
+                                        );
+                                    }
+                                    Err(fault) => {
+                                        record_privileged_denial(
+                                            &mut guard,
+                                            evaluated_task,
+                                            "submit_evaluation",
+                                            fault.class(),
+                                            &fault.to_string(),
+                                            &now,
+                                            &correlation,
+                                        );
+                                        resident_log(
+                                            Log::Warn,
+                                            "resident.execution",
+                                            "the evaluation was refused",
+                                            &correlation,
+                                            serde_json::json!({
+                                                "task_id": evaluated_task.as_str(),
+                                                "result_id": result_id.as_str(),
+                                                "fault": fault.to_string()
+                                            }),
+                                        );
+                                        pending_answer = Some(
+                                            athena_core::result_manager::record::refusal_response(
+                                                &correlation,
+                                                &correlation,
+                                                &fault,
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
                             athena_core::core_loop::Interpreted::Requested { kind, request } => {
                                 if let athena_core::protocol::CoreRequest::WriteMemory {
                                     tier,
@@ -1384,11 +1466,10 @@ where
                                     &correlation,
                                 ) {
                                     Ok(received) => {
-                                        let status = received.status;
                                         match athena_core::core_loop::settle_task(
                                             &mut guard,
                                             &task_id,
-                                            status,
+                                            &received.result_id,
                                             &now,
                                             &correlation,
                                         ) {

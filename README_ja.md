@@ -251,6 +251,16 @@ Instance を整合します (`ATH-CORE-048`)。前の常駐のプロセステー
 PlanStep は同一トランザクションで `ORPHANED` になります。これは再実行を客観的 Verification
 の後ろに置く状態そのものです (`ATH-STATE-029`)。再起動を生き延びたプロセスには触れません。
 
+`EVALUATING` に実体が入りました (§19.2: Agent が返した結果をそのまま最終結果としない)。
+`submit_evaluation` は実施者・方法・判定・理由を伴う **Evaluation 行** (`ATH-EVAL-003`) と
+`EvaluationPassed` / `EvaluationFailed` Event を記録し、Task は**記録に対して**決着します —
+客観的 Verification の受理は `SUCCESS` を駆動し、それ以外の記録済み判定は判定を保ったまま
+`FAILED` を駆動し、検証可能な成果物を含む Result は客観的 Verification の受理が無い限り
+決して `SUCCESS` になりません (`ATH-EVAL-002`)。Core Agent 自身の判断は `agent_judgement`
+という方法で記録されます — 客観的 5 手段にあえて含めないので、それ単独で成果物を受理する
+ことはできません (`ATH-EVAL-005`)。成果物も評価も無い散文の回答は従来どおり報告された状態で
+決着します (`ATH-EVAL-002` が及ばない場合)。どの根拠で決着したかは毎回記録されます。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は

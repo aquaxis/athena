@@ -236,7 +236,7 @@ async fn an_answer_carries_a_task_to_a_terminal_state() {
     let outcome = settle_task(
         &mut store,
         &task,
-        received.status,
+        &received.result_id,
         "2026-11-08T00:00:02Z",
         "cor-4",
     )

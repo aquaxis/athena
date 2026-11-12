@@ -352,20 +352,24 @@ pub fn ingest_answer(
     })
 }
 
-/// Settle a Task once its Result is in hand.
+/// Settle a Task once its Result is in hand — against what is **recorded** about that
+/// Result, not against the agent's word alone (X-48, §19.2).
 ///
-/// The verdict is the agent's own: `ResultStatus::Success` means the agent reports the
-/// criteria met, anything else means it does not. Core Host records the outcome and takes
-/// no view beyond it (`ATH-CORE-022`, `ATH-EVAL-005` — a self-declaration cannot make a
-/// deliverable *accepted*, but it is what decides which terminal row applies here).
+/// The decision is `result_manager::record::settlement`'s: an objective accepting
+/// Evaluation drives `SUCCESS`; any other recorded verdict drives `FAILED` with the
+/// verdict preserved; a Result carrying verifiable deliverables that no objective
+/// Verification accepted may not be `SUCCESS` at all (`ATH-EVAL-002`); and only when
+/// nothing is recorded and nothing verifiable was produced does the self-declared status
+/// decide, which is the case `ATH-EVAL-002` does not reach. Core Host still takes no view
+/// of its own (`ATH-CORE-022`) — it reads rows.
 ///
 /// # Errors
-/// [`LoopFault::NotInState`] when the Task is not `EVALUATING`, [`LoopFault::Store`] on a
-/// store fault.
+/// [`LoopFault::NotInState`] when the Task is not `EVALUATING` or the Result is absent,
+/// [`LoopFault::Store`] on a store fault.
 pub fn settle_task(
     store: &mut AthenaStore,
     task: &TaskId,
-    status: ResultStatus,
+    result_id: &ResultId,
     now: &str,
     correlation_id: &str,
 ) -> Result<Settled, LoopFault> {
@@ -382,11 +386,38 @@ pub fn settle_task(
         });
     }
 
-    let (to, event_type, trigger_note) = match status {
-        ResultStatus::Success => (TaskState::Success, "TaskCompleted", "criteria met"),
-        ResultStatus::Failure | ResultStatus::Partial => {
-            (TaskState::Failed, "TaskFailed", "criteria unmet")
+    let result = ResultRepository::get(store, result_id)?.ok_or_else(|| LoopFault::NotInState {
+        task: task.to_string(),
+        expected: "a recorded Result to settle against".into(),
+        actual: format!("result {} is absent", result_id.as_str()),
+    })?;
+    let evaluations = ResultRepository::list_evaluations_for_result(store, result_id)?;
+    let settled = crate::result_manager::record::settlement(&result, &evaluations);
+    let (to, event_type) = (settled.state, settled.event_type);
+    let ground = match &settled.ground {
+        crate::result_manager::record::Ground::Verified { method, verifier } => {
+            serde_json::json!({
+                "kind": "objective_verification",
+                "method": method,
+                "verifier": verifier,
+            })
         }
+        crate::result_manager::record::Ground::Verdict(verdict) => serde_json::json!({
+            "kind": "recorded_verdict",
+            "verdict": format!("{verdict:?}").to_lowercase(),
+        }),
+        crate::result_manager::record::Ground::UnverifiedDeliverables => serde_json::json!({
+            "kind": "unverified_deliverables",
+            "detail": "the Result carries verifiable deliverables and no objective \
+                       Verification accepted them (ATH-EVAL-002)",
+        }),
+        crate::result_manager::record::Ground::SelfDeclared(status) => serde_json::json!({
+            "kind": "self_declared",
+            "status": status.as_str(),
+            "detail": "no Evaluation bears on this Result and it carries no verifiable \
+                       deliverable (ATH-EVAL-005 is not stood on: nothing is accepted as \
+                       verified here)",
+        }),
     };
     let event = NewEvent {
         event_id: EventId::new(),
@@ -402,8 +433,10 @@ pub fn settle_task(
         causation_id: None,
         actor: "core-agent".into(),
         payload_json: serde_json::json!({
-            "self_declared_status": status.as_str(),
-            "basis": trigger_note,
+            "result_id": result_id.as_str(),
+            "self_declared_status": result.status.as_str(),
+            "evaluations": evaluations.len(),
+            "ground": ground,
         })
         .to_string(),
     };
@@ -543,6 +576,20 @@ pub enum Interpreted {
         /// X-46), so it travels with the request instead of being dropped here.
         instruction: String,
     },
+    /// `submit_evaluation`: the Core Agent's judgement of a Result against the completion
+    /// criteria (`ATH-EVAL-001`). Unlike the other observations this one is a **record**
+    /// the caller must write — the `EVALUATING` state's substance (X-48) — so it is
+    /// projected rather than left in the generic arm.
+    EvaluationSubmitted {
+        /// The Task whose Result is judged.
+        task_id: athena_types::TaskId,
+        /// The Result under evaluation.
+        result_id: ResultId,
+        /// One of the five verdicts (`ATH-EVAL-004`).
+        verdict: athena_types::Verdict,
+        /// The agent's reason (`ATH-CORE-016`).
+        rationale: String,
+    },
     /// Any of the other eight: an observation of the agent's stated intention. The v1
     /// execution model (`ATH-DATA-004`) gives the answer itself as the product, so the
     /// request is surfaced for the caller to route — Core Host answers every `CoreRequest`
@@ -637,6 +684,17 @@ fn route(request: crate::protocol::CoreRequest) -> Interpreted {
                 idempotency_key,
             },
             instruction,
+        },
+        crate::protocol::CoreRequest::SubmitEvaluation {
+            task_id,
+            result_id,
+            verdict,
+            rationale,
+        } => Interpreted::EvaluationSubmitted {
+            task_id,
+            result_id,
+            verdict,
+            rationale,
         },
         other => Interpreted::Requested {
             kind: other.kind_tag(),

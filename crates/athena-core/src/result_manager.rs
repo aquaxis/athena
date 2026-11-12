@@ -579,6 +579,378 @@ pub mod evaluation {
     }
 }
 
+// --- X-48: the `EVALUATING` state's substance ----------------------------------------------
+//
+// The gate above decides; nothing recorded a decision. `insert_evaluation` had no production
+// caller, so a Task walked `RUNNING → EVALUATING → SUCCESS` on the agent's own word — the one
+// thing §19.2 says must not happen ("the result the agent returned is not treated as the final
+// result"). These two faces close that: the Core Agent's `submit_evaluation` becomes an
+// Evaluation **row** plus its §23.2 Event, and the settlement reads the rows back through the
+// gate instead of reading the agent's self-declared status alone.
+
+pub mod record {
+    //! Recording an evaluation, and settling a Task against what is recorded.
+
+    use super::evaluation::{Gate, gate};
+    use athena_persistence::repository::{EventRepository, ResultRepository};
+    use athena_persistence::{AthenaStore, NewEvent};
+    use athena_types::{
+        Evaluation, EvaluationId, Evaluator, EventId, ExecutionResult, ResultId, ResultStatus,
+        TaskId, TaskState, Verdict,
+    };
+
+    /// The method recorded for the Core Agent's own judgement (`ATH-EVAL-001`).
+    ///
+    /// `submit_evaluation` carries no method, because the Core Agent's reading of the
+    /// completion criteria **is not** one of the objective five (test / lint / build /
+    /// review / simulation). Recording it under an objective name would manufacture the
+    /// very verification `ATH-EVAL-005` forbids standing alone, so the row says what it is
+    /// — and [`super::evaluation::objective`] answers `false` for it, which keeps the gate
+    /// demanding a real Verification for verifiable deliverables.
+    pub const AGENT_JUDGEMENT: &str = "agent_judgement";
+
+    /// Why an evaluation could not be recorded.
+    #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+    pub enum EvaluationFault {
+        /// No such Result.
+        #[error("result {0} is absent")]
+        ResultAbsent(String),
+        /// The Result belongs to another Task: an evaluation is a judgement about *this*
+        /// Task's product, and crossing that boundary would record a fact about work the
+        /// requester does not own (`ATH-DATA-003`).
+        #[error("result {result} belongs to task {owner}, not {requester}")]
+        ResultNotOwned {
+            /// The evaluated Result.
+            result: String,
+            /// The Task that owns it.
+            owner: String,
+            /// The Task that asked.
+            requester: String,
+        },
+        /// The rationale is empty: `ATH-CORE-016` requires the reason to ride the record,
+        /// and an evaluation without one records a verdict nobody can read back.
+        #[error("the evaluation rationale must not be empty (ATH-CORE-016)")]
+        RationaleMissing,
+        /// The store refused.
+        #[error("store fault: {0}")]
+        Store(String),
+        /// The Event refused against the catalog.
+        #[error("event construction: {0}")]
+        Construction(String),
+    }
+
+    impl EvaluationFault {
+        /// The §20.1 class.
+        #[must_use]
+        pub const fn class(&self) -> crate::protocol::ErrorClass {
+            match self {
+                Self::ResultAbsent(_) | Self::RationaleMissing => {
+                    crate::protocol::ErrorClass::ValidationError
+                }
+                Self::ResultNotOwned { .. } => crate::protocol::ErrorClass::PermissionError,
+                Self::Store(_) | Self::Construction(_) => {
+                    crate::protocol::ErrorClass::InternalError
+                }
+            }
+        }
+
+        /// The stable machine code.
+        #[must_use]
+        pub const fn code(&self) -> &'static str {
+            match self {
+                Self::ResultAbsent(_) => "RESULT_NOT_FOUND",
+                Self::ResultNotOwned { .. } => "RESULT_NOT_OWNED",
+                Self::RationaleMissing => "EVALUATION_RATIONALE_MISSING",
+                Self::Store(_) | Self::Construction(_) => "EVALUATION_RECORD_FAILED",
+            }
+        }
+    }
+
+    /// One judgement about a Result: who made it, by what means, with what verdict and on
+    /// what stated ground (`ATH-EVAL-003`'s four recordable facts, in one value).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Judgement<'a> {
+        /// Who evaluated (an agent names itself; a tool is a tool).
+        pub evaluator: Evaluator,
+        /// The means: one of the objective five, or [`AGENT_JUDGEMENT`] for the Core
+        /// Agent's own reading of the criteria.
+        pub method: &'a str,
+        /// One of the five verdicts (`ATH-EVAL-004`).
+        pub verdict: Verdict,
+        /// The reason, recorded verbatim (`ATH-CORE-016`).
+        pub rationale: &'a str,
+    }
+
+    /// Record one evaluation of a Result (`ATH-EVAL-003`: implementor, method and outcome
+    /// are all recorded), and emit its §23.2 Event — `EvaluationPassed` for an accepting
+    /// verdict, `EvaluationFailed` for the other four (`ATH-EVAL-004`).
+    ///
+    /// The Task's state is deliberately **not** a precondition: §19.2's picture has a
+    /// verification agent judging a coding agent's result while the work is still running,
+    /// and a Task that already settled can still receive the record of why. What is
+    /// checked is ownership — the Result must be this Task's.
+    ///
+    /// # Errors
+    /// [`EvaluationFault`], whole.
+    pub fn record_evaluation(
+        store: &mut AthenaStore,
+        task: &TaskId,
+        result_id: &ResultId,
+        judgement: Judgement<'_>,
+        now: &str,
+        correlation_id: &str,
+    ) -> Result<EvaluationId, EvaluationFault> {
+        let Judgement {
+            evaluator,
+            method,
+            verdict,
+            rationale,
+        } = judgement;
+        if rationale.trim().is_empty() {
+            return Err(EvaluationFault::RationaleMissing);
+        }
+        let result = ResultRepository::get(store, result_id)
+            .map_err(|fault| EvaluationFault::Store(fault.to_string()))?
+            .ok_or_else(|| EvaluationFault::ResultAbsent(result_id.as_str().to_string()))?;
+        if result.task_id != *task {
+            return Err(EvaluationFault::ResultNotOwned {
+                result: result_id.as_str().to_string(),
+                owner: result.task_id.as_str().to_string(),
+                requester: task.as_str().to_string(),
+            });
+        }
+
+        let evaluation = Evaluation {
+            id: EvaluationId::new(),
+            task_id: task.clone(),
+            result_id: result_id.clone(),
+            evaluator,
+            method: method.to_string(),
+            verdict,
+            rationale: rationale.to_string(),
+            created_at: now.to_string(),
+        };
+        ResultRepository::insert_evaluation(store, &evaluation)
+            .map_err(|fault| EvaluationFault::Store(fault.to_string()))?;
+
+        let evaluator_name = evaluator_wire(&evaluation.evaluator);
+        let context = athena_events::EventContext {
+            event_id: EventId::new(),
+            occurred_at: now.to_string(),
+            actor: athena_events::envelope::Actor::CoreAgent,
+            task_id: Some(task.clone()),
+            plan_step_id: result.plan_step_id.clone(),
+            agent_id: Some(result.agent_id.clone()),
+            instance_id: Some(result.instance_id.clone()),
+            skill_id: None,
+            correlation_id: correlation_id.to_string(),
+            causation_id: None,
+        };
+        let folded = if verdict == Verdict::Accept {
+            fold(athena_events::TypedEvent::new(
+                athena_events::events::EvaluationPassed {
+                    evaluation_id: evaluation.id.clone(),
+                    evaluator: evaluator_name.clone(),
+                    method: method.to_string(),
+                    verdict,
+                },
+                context,
+            ))
+        } else {
+            fold(athena_events::TypedEvent::new(
+                athena_events::events::EvaluationFailed {
+                    evaluation_id: evaluation.id.clone(),
+                    evaluator: evaluator_name,
+                    method: method.to_string(),
+                    verdict,
+                },
+                context,
+            ))
+        }?;
+        EventRepository::append(store, &folded)
+            .map_err(|fault| EvaluationFault::Store(fault.to_string()))?;
+        Ok(evaluation.id)
+    }
+
+    /// The wire word for an evaluator, plus the agent it names when there is one — the
+    /// Event payload records *who*, which for an agent is its id, not the word "agent"
+    /// (`ATH-EVAL-003`).
+    fn evaluator_wire(evaluator: &Evaluator) -> String {
+        match evaluator {
+            Evaluator::Agent { agent_id } => agent_id.as_str().to_string(),
+            Evaluator::Tool => "tool".to_string(),
+        }
+    }
+
+    fn fold<P: athena_events::events::Payload>(
+        typed: Result<athena_events::TypedEvent<P>, athena_events::EventError>,
+    ) -> Result<NewEvent, EvaluationFault> {
+        let typed = typed.map_err(|fault| EvaluationFault::Construction(fault.to_string()))?;
+        Ok(NewEvent {
+            event_id: typed.event_id.clone(),
+            schema_version: typed.schema_version,
+            event_type: typed.event_type.to_string(),
+            occurred_at: typed.occurred_at.clone(),
+            task_id: typed.task_id.clone(),
+            plan_step_id: typed.plan_step_id.clone(),
+            agent_id: typed.agent_id.clone(),
+            instance_id: typed.instance_id.clone(),
+            skill_id: typed.skill_id.clone(),
+            correlation_id: typed.correlation_id.clone(),
+            causation_id: typed.causation_id.clone(),
+            actor: typed.actor.as_str().to_string(),
+            payload_json: typed.payload_json.clone(),
+        })
+    }
+
+    /// The agent-facing answer for a recorded evaluation (`ATH-CORE-034`'s answer leg).
+    #[must_use]
+    pub fn acceptance_response(
+        request_id: &str,
+        evaluation_id: &EvaluationId,
+        verdict: Verdict,
+    ) -> crate::protocol::CoreResponse {
+        crate::protocol::CoreResponse::Ok {
+            request_id: request_id.to_string(),
+            data: serde_json::json!({
+                "evaluation_id": evaluation_id.as_str(),
+                "verdict": format!("{verdict:?}").to_lowercase(),
+                // The record states what it is: the Core Agent's own judgement, which is
+                // never by itself the objective Verification an acceptance needs
+                // (ATH-EVAL-005). An agent reading its own answer learns this.
+                "method": AGENT_JUDGEMENT,
+                "objective": false,
+            }),
+        }
+    }
+
+    /// The agent-facing answer for a refused evaluation; the class and code are the
+    /// fault's own (nothing is renamed).
+    #[must_use]
+    pub fn refusal_response(
+        request_id: &str,
+        correlation_id: &str,
+        fault: &EvaluationFault,
+    ) -> crate::protocol::CoreResponse {
+        crate::protocol::CoreResponse::Err {
+            request_id: request_id.to_string(),
+            error: crate::protocol::ErrorEnvelope {
+                class: fault.class(),
+                code: fault.code().to_string(),
+                message: fault.to_string(),
+                details: serde_json::Value::Null,
+                correlation_id: correlation_id.to_string(),
+            },
+        }
+    }
+
+    /// Where a Task goes out of `EVALUATING`, and on what ground.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Settlement {
+        /// The terminal (or next) state the Task takes.
+        pub state: TaskState,
+        /// The §23.2 Event the §17.1 row names for that pair.
+        pub event_type: &'static str,
+        /// What decided it, recorded in the Event payload and the resident's log.
+        pub ground: Ground,
+    }
+
+    /// What decided a settlement.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Ground {
+        /// An objective Verification accepted (`ATH-EVAL-002` satisfied).
+        Verified {
+            /// The accepting method.
+            method: String,
+            /// Who ran it.
+            verifier: String,
+        },
+        /// A recorded verdict other than accept drove the Task (`ATH-EVAL-004`).
+        Verdict(Verdict),
+        /// The Result carries verifiable deliverables and no objective Verification
+        /// accepted them: `SUCCESS` is refused (`ATH-EVAL-002`'s MUST NOT).
+        UnverifiedDeliverables,
+        /// No evaluation bears on it and the Result carries no verifiable deliverable, so
+        /// the agent's self-declared status is what the record has (`ATH-EVAL-005` is not
+        /// violated: nothing is being *accepted* as verified here).
+        SelfDeclared(ResultStatus),
+    }
+
+    /// Decide where an `EVALUATING` Task goes, from the Result and the Evaluations
+    /// recorded against it.
+    ///
+    /// The rule, and the reason it stops where it does:
+    ///
+    /// * an objective accepting row → `SUCCESS`;
+    /// * any other recorded verdict (retry / replan / fail / escalate) → `FAILED`, with the
+    ///   verdict preserved in the record. The §17.1 table also offers `RETRYING` and
+    ///   `REPLANNING` out of `EVALUATING`, and this deliberately does not drive them: no
+    ///   production path consumes either state today, so a Task routed there would hang,
+    ///   and `TaskReplanning`'s payload requires a `to_revision` nothing knows at this
+    ///   moment (the lesson D-51 recorded). A terminal the operator can see, with the
+    ///   verdict on the row, is the honest answer until those paths exist;
+    /// * verifiable deliverables with no objective acceptance → `FAILED`: `ATH-EVAL-002`
+    ///   forbids `SUCCESS`, and the ground says exactly why;
+    /// * nothing recorded and nothing verifiable → the self-declared status decides, as it
+    ///   always has. `ATH-EVAL-002` scopes its MUST NOT to Results *carrying verifiable
+    ///   deliverables*; a prose answer carries none, so the rule does not bite and
+    ///   inventing a refusal would stall every Task the shipped loop runs.
+    #[must_use]
+    pub fn settlement(result: &ExecutionResult, evaluations: &[Evaluation]) -> Settlement {
+        let rows: Vec<(Verdict, String, String)> = evaluations
+            .iter()
+            .map(|row| {
+                (
+                    row.verdict,
+                    row.method.clone(),
+                    evaluator_wire(&row.evaluator),
+                )
+            })
+            .collect();
+        match gate(result, &rows) {
+            Gate::Accept {
+                method, verifier, ..
+            } => Settlement {
+                state: TaskState::Success,
+                event_type: "TaskCompleted",
+                ground: Ground::Verified { method, verifier },
+            },
+            Gate::Follow(verdict) => Settlement {
+                state: TaskState::Failed,
+                event_type: "TaskFailed",
+                ground: Ground::Verdict(verdict),
+            },
+            Gate::Unverified { .. } => {
+                let verifiable = result.artifacts.iter().any(|artifact| {
+                    matches!(
+                        artifact.kind,
+                        athena_types::ArtifactKind::File | athena_types::ArtifactKind::Patch
+                    )
+                });
+                if verifiable {
+                    Settlement {
+                        state: TaskState::Failed,
+                        event_type: "TaskFailed",
+                        ground: Ground::UnverifiedDeliverables,
+                    }
+                } else if result.status == ResultStatus::Success {
+                    Settlement {
+                        state: TaskState::Success,
+                        event_type: "TaskCompleted",
+                        ground: Ground::SelfDeclared(result.status),
+                    }
+                } else {
+                    Settlement {
+                        state: TaskState::Failed,
+                        event_type: "TaskFailed",
+                        ground: Ground::SelfDeclared(result.status),
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod evaluation_gate_tests {
     use super::evaluation::{self, Gate};
@@ -692,5 +1064,330 @@ mod evaluation_gate_tests {
             assert!(evaluation::objective(method), "{method}");
         }
         assert!(!evaluation::objective("looked at it"));
+    }
+}
+
+#[cfg(test)]
+mod record_tests {
+    //! X-48: the `EVALUATING` state's substance — the recorded Evaluation, its Event, and
+    //! the settlement the record drives.
+
+    use super::record::{
+        AGENT_JUDGEMENT, EvaluationFault, Ground, Judgement, record_evaluation, settlement,
+    };
+    use athena_persistence::AthenaStore;
+    use athena_persistence::repository::{EventRepository, ResultRepository, TaskRepository};
+    use athena_types::{
+        AgentId, Artifact, ArtifactBase, ArtifactKind, Evaluator, ExecutionResult, InstanceId,
+        Priority, ResultId, ResultStatus, RiskLevel, Task, TaskId, TaskState, Verdict,
+    };
+
+    const NOW: &str = "2026-11-12T14:00:00.000Z";
+
+    fn task_row() -> Task {
+        Task {
+            id: TaskId::new(),
+            parent_id: None,
+            title: "x48".into(),
+            instruction: "evaluate what came back".into(),
+            workspace: "/repo/x48".into(),
+            goal: None,
+            constraints: vec![],
+            completion_criteria: vec!["the suite passes".into()],
+            state: TaskState::Evaluating,
+            priority: Priority::Normal,
+            plan_id: None,
+            risk_level: RiskLevel::Medium,
+            attempt_count: 0,
+            max_attempts: 3,
+            iteration_count: 0,
+            max_iterations: 50,
+            deadline: None,
+            created_by: "test".into(),
+            created_at: NOW.into(),
+            updated_at: NOW.into(),
+            finished_at: None,
+        }
+    }
+
+    fn result_for(
+        task: &TaskId,
+        status: ResultStatus,
+        artifacts: Vec<Artifact>,
+    ) -> ExecutionResult {
+        ExecutionResult {
+            id: ResultId::new(),
+            task_id: task.clone(),
+            plan_step_id: None,
+            agent_id: AgentId::core_agent(),
+            instance_id: InstanceId::new(),
+            status,
+            output: "the work is done".into(),
+            artifacts,
+            logs_ref: None,
+            skills_used: vec![],
+            model: None,
+            started_at: NOW.into(),
+            finished_at: NOW.into(),
+            execution_time_ms: 0,
+            metadata: serde_json::json!({ "self_declared": true }),
+        }
+    }
+
+    fn file_artifact(result: &ResultId) -> Artifact {
+        Artifact {
+            result_id: result.clone(),
+            kind: ArtifactKind::File,
+            base: ArtifactBase::WorkTarget,
+            path: "src/lib.rs".into(),
+            bytes: None,
+            checksum: None,
+            created_at: NOW.into(),
+        }
+    }
+
+    fn seeded(status: ResultStatus, with_artifact: bool) -> (AthenaStore, Task, ExecutionResult) {
+        let mut store = AthenaStore::in_memory().expect("store");
+        let task = task_row();
+        TaskRepository::insert(&mut store, &task).expect("task");
+        let id = ResultId::new();
+        let artifacts = if with_artifact {
+            vec![file_artifact(&id)]
+        } else {
+            vec![]
+        };
+        let mut result = result_for(&task.id, status, artifacts);
+        result.id = id.clone();
+        for artifact in &mut result.artifacts {
+            artifact.result_id = id.clone();
+        }
+        ResultRepository::insert(&mut store, &result).expect("result");
+        (store, task, result)
+    }
+
+    #[test]
+    fn a_submitted_evaluation_lands_a_row_and_its_event() {
+        let (mut store, task, result) = seeded(ResultStatus::Success, false);
+        let id = record_evaluation(
+            &mut store,
+            &task.id,
+            &result.id,
+            Judgement {
+                evaluator: Evaluator::Agent {
+                    agent_id: AgentId::core_agent(),
+                },
+                method: AGENT_JUDGEMENT,
+                verdict: Verdict::Accept,
+                rationale: "the criteria read as met",
+            },
+            NOW,
+            "cor-x48",
+        )
+        .expect("recorded");
+
+        let rows = ResultRepository::list_evaluations_for_result(&store, &result.id).expect("read");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, id);
+        assert_eq!(rows[0].method, AGENT_JUDGEMENT);
+        assert_eq!(rows[0].verdict, Verdict::Accept);
+        assert_eq!(rows[0].rationale, "the criteria read as met");
+
+        // ATH-EVAL-003's record rides the Event too, on the Task's chain.
+        let events: Vec<String> = EventRepository::list_for_task(&store, &task.id)
+            .expect("events")
+            .into_iter()
+            .map(|event| event.event_type)
+            .collect();
+        assert_eq!(events, vec!["EvaluationPassed".to_string()]);
+    }
+
+    #[test]
+    fn a_non_accepting_verdict_rides_the_failed_event() {
+        let (mut store, task, result) = seeded(ResultStatus::Success, false);
+        record_evaluation(
+            &mut store,
+            &task.id,
+            &result.id,
+            Judgement {
+                evaluator: Evaluator::Tool,
+                method: "test",
+                verdict: Verdict::Retry,
+                rationale: "three cases still fail",
+            },
+            NOW,
+            "cor-x48",
+        )
+        .expect("recorded");
+        let events: Vec<String> = EventRepository::list_for_task(&store, &task.id)
+            .expect("events")
+            .into_iter()
+            .map(|event| event.event_type)
+            .collect();
+        assert_eq!(events, vec!["EvaluationFailed".to_string()]);
+    }
+
+    #[test]
+    fn an_evaluation_of_another_tasks_result_is_refused() {
+        let (mut store, task, result) = seeded(ResultStatus::Success, false);
+        let other = TaskId::new();
+        let fault = record_evaluation(
+            &mut store,
+            &other,
+            &result.id,
+            Judgement {
+                evaluator: Evaluator::Tool,
+                method: "test",
+                verdict: Verdict::Accept,
+                rationale: "not mine to judge",
+            },
+            NOW,
+            "cor-x48",
+        )
+        .expect_err("refused");
+        assert!(
+            matches!(fault, EvaluationFault::ResultNotOwned { .. }),
+            "{fault}"
+        );
+        assert_eq!(fault.code(), "RESULT_NOT_OWNED");
+        // Nothing was written on the refusal.
+        assert!(
+            ResultRepository::list_evaluations_for_result(&store, &result.id)
+                .expect("read")
+                .is_empty()
+        );
+        let _ = task;
+    }
+
+    #[test]
+    fn an_evaluation_without_a_rationale_is_refused() {
+        let (mut store, task, result) = seeded(ResultStatus::Success, false);
+        let fault = record_evaluation(
+            &mut store,
+            &task.id,
+            &result.id,
+            Judgement {
+                evaluator: Evaluator::Tool,
+                method: "test",
+                verdict: Verdict::Accept,
+                rationale: "   ",
+            },
+            NOW,
+            "cor-x48",
+        )
+        .expect_err("refused");
+        assert!(
+            matches!(fault, EvaluationFault::RationaleMissing),
+            "{fault}"
+        );
+    }
+
+    #[test]
+    fn an_objective_acceptance_settles_the_task_successful() {
+        let (mut store, task, result) = seeded(ResultStatus::Success, true);
+        record_evaluation(
+            &mut store,
+            &task.id,
+            &result.id,
+            Judgement {
+                evaluator: Evaluator::Tool,
+                method: "test",
+                verdict: Verdict::Accept,
+                rationale: "the suite passes",
+            },
+            NOW,
+            "cor-x48",
+        )
+        .expect("recorded");
+        let evaluations =
+            ResultRepository::list_evaluations_for_result(&store, &result.id).expect("read");
+        let decision = settlement(&result, &evaluations);
+        assert_eq!(decision.state, TaskState::Success);
+        assert_eq!(decision.event_type, "TaskCompleted");
+        assert!(
+            matches!(&decision.ground, Ground::Verified { method, .. } if method == "test"),
+            "{:?}",
+            decision.ground
+        );
+    }
+
+    #[test]
+    fn verifiable_deliverables_without_verification_never_succeed() {
+        // ATH-EVAL-002's MUST NOT, exercised on the shape it names: the agent says
+        // success, the Result carries a file, and nothing objective accepted it.
+        let (store, _task, result) = seeded(ResultStatus::Success, true);
+        let decision = settlement(&result, &[]);
+        assert_eq!(decision.state, TaskState::Failed);
+        assert_eq!(decision.ground, Ground::UnverifiedDeliverables);
+        let _ = store;
+    }
+
+    #[test]
+    fn the_agents_own_judgement_cannot_accept_a_deliverable_by_itself() {
+        // ATH-EVAL-005: `submit_evaluation` records a judgement, not a Verification —
+        // the method it rides under is not one of the objective five, so the gate still
+        // refuses the acceptance.
+        let (mut store, task, result) = seeded(ResultStatus::Success, true);
+        record_evaluation(
+            &mut store,
+            &task.id,
+            &result.id,
+            Judgement {
+                evaluator: Evaluator::Agent {
+                    agent_id: AgentId::core_agent(),
+                },
+                method: AGENT_JUDGEMENT,
+                verdict: Verdict::Accept,
+                rationale: "it looks right to me",
+            },
+            NOW,
+            "cor-x48",
+        )
+        .expect("recorded");
+        let evaluations =
+            ResultRepository::list_evaluations_for_result(&store, &result.id).expect("read");
+        assert!(!super::evaluation::objective(AGENT_JUDGEMENT));
+        let decision = settlement(&result, &evaluations);
+        assert_eq!(decision.state, TaskState::Failed);
+        assert_eq!(decision.ground, Ground::UnverifiedDeliverables);
+    }
+
+    #[test]
+    fn a_recorded_non_accepting_verdict_drives_the_task_failed() {
+        let (mut store, task, result) = seeded(ResultStatus::Success, false);
+        record_evaluation(
+            &mut store,
+            &task.id,
+            &result.id,
+            Judgement {
+                evaluator: Evaluator::Tool,
+                method: "lint",
+                verdict: Verdict::Replan,
+                rationale: "the approach does not satisfy the criteria",
+            },
+            NOW,
+            "cor-x48",
+        )
+        .expect("recorded");
+        let evaluations =
+            ResultRepository::list_evaluations_for_result(&store, &result.id).expect("read");
+        let decision = settlement(&result, &evaluations);
+        assert_eq!(decision.state, TaskState::Failed);
+        assert_eq!(decision.ground, Ground::Verdict(Verdict::Replan));
+    }
+
+    #[test]
+    fn a_prose_answer_with_nothing_recorded_still_settles_on_the_reported_status() {
+        // The case ATH-EVAL-002 does not reach: no verifiable deliverable, no evaluation.
+        // The shipped loop's every Task looks like this, and refusing it would stall them
+        // all — the ground records exactly what decided.
+        let (_store, _task, success) = seeded(ResultStatus::Success, false);
+        let decision = settlement(&success, &[]);
+        assert_eq!(decision.state, TaskState::Success);
+        assert_eq!(decision.ground, Ground::SelfDeclared(ResultStatus::Success));
+
+        let (_store, _task, failure) = seeded(ResultStatus::Failure, false);
+        let decision = settlement(&failure, &[]);
+        assert_eq!(decision.state, TaskState::Failed);
+        assert_eq!(decision.ground, Ground::SelfDeclared(ResultStatus::Failure));
     }
 }

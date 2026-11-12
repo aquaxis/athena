@@ -258,6 +258,18 @@ resident's process table died with it; a row whose process cannot be named is fi
 same transaction, which is precisely the state that gates any re-run behind an objective
 Verification (`ATH-STATE-029`). A process that survived the restart is left alone.
 
+`EVALUATING` now has substance (§19.2: the result an agent returned is not the final
+result). `submit_evaluation` lands an **Evaluation row** with its evaluator, method,
+verdict and rationale (`ATH-EVAL-003`) plus an `EvaluationPassed` / `EvaluationFailed`
+Event, and the Task settles against what is recorded: an objective Verification that
+accepted drives `SUCCESS`; any other recorded verdict drives `FAILED` with the verdict
+preserved; and a Result carrying verifiable deliverables that no objective Verification
+accepted can never be `SUCCESS` (`ATH-EVAL-002`). The Core Agent's own judgement is
+recorded under the method `agent_judgement` — deliberately not one of the objective five —
+so it can never accept a deliverable by itself (`ATH-EVAL-005`). A prose answer with no
+deliverable and no evaluation still settles on the reported status: that is the case
+`ATH-EVAL-002` does not reach, and every settlement now records which ground decided it.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is
