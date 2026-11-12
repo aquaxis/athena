@@ -188,6 +188,18 @@ impl<D: ProcessDriver + 'static> AgentCliAdapter<D> {
     pub fn subordinate_records(&self) -> Vec<Record> {
         self.manager.subordinate_records()
     }
+
+    /// Whether one OS pid is live, asked of the driver directly.
+    ///
+    /// The record-keyed faces above answer about processes *this* resident tracks; the
+    /// boot reconciliation (`ATH-CORE-048`) asks about processes a **previous** resident
+    /// started, for which the only surviving evidence is the pid the store recorded. The
+    /// probe therefore takes the pid, not a record. A recycled pid reading alive is the
+    /// residual risk the driver's own doc states.
+    #[must_use]
+    pub fn pid_is_alive(&self, pid: u32) -> bool {
+        self.manager.driver_is_alive(pid)
+    }
 }
 
 /// The command builder (P3-02's spawn line): `agent-cli` runs with cwd = workspace, the

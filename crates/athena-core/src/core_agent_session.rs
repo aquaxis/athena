@@ -522,6 +522,110 @@ pub fn reconcile_boot_states(
     Ok(output)
 }
 
+/// The pid the store records for one Instance's backing process, when it records any.
+///
+/// The chain is the one the rows themselves hold: the Agent Instance names its Runtime
+/// Instance (`runtime_instance_id`, backfilled by the start face), and the §26.6 Runtime
+/// Instance row names the pid. A row that never started names no Runtime Instance; a
+/// Runtime Instance whose pid the Runtime did not report names no pid. Both answer `None`,
+/// which is **not** the same as "the process is gone" — it is "the store knows of no
+/// process", and the caller decides what that means (see [`boot_process_fact`]).
+///
+/// # Errors
+/// Store failures, surfaced whole.
+pub fn recorded_pid(
+    store: &AthenaStore,
+    instance: &AgentInstance,
+) -> Result<Option<u32>, PersistenceError> {
+    let Some(runtime_instance_id) = instance.runtime_instance_id.as_ref() else {
+        return Ok(None);
+    };
+    Ok(
+        athena_persistence::repository::RuntimeInstanceRepository::get(store, runtime_instance_id)?
+            .and_then(|row| row.pid),
+    )
+}
+
+/// The Instances a boot can actually observe as live, from the store plus an OS probe
+/// (`ATH-CORE-048`'s "the corresponding process does not exist").
+///
+/// A resident restart loses the in-memory process table, so the only evidence that
+/// survives is what the store wrote: the Runtime Instance row's pid. The rule this
+/// encodes — **a process the store cannot name is a process nobody can observe** —
+/// resolves the unobservable case toward finalization, and deliberately so: finalizing
+/// records `FAILED` with side effects *unknown*, which is exactly the state the spec gates
+/// behind an objective Verification before any re-run (`ATH-STATE-029`), and which a later
+/// fact can still correct. Keeping the row instead would assert a live process on no
+/// evidence at all, and would leave its step wedged behind single flight forever.
+///
+/// The residual risk is the Runtime probe's own (a recycled pid reading alive); it is the
+/// same risk the supervision poll already accepts, and the Verification gate stands behind
+/// it.
+///
+/// The answer is collected *before* the sweep writes anything, so the reconciliation reads
+/// one consistent set rather than probing while it mutates.
+///
+/// # Errors
+/// Store failures, surfaced whole.
+pub fn observed_alive(
+    store: &AthenaStore,
+    probe: impl Fn(u32) -> bool,
+) -> Result<Vec<InstanceId>, PersistenceError> {
+    let mut alive = Vec::new();
+    for instance in AgentRepository::list_non_terminal_instances(store)? {
+        if recorded_pid(store, &instance)?.is_some_and(&probe) {
+            alive.push(instance.id.clone());
+        }
+    }
+    Ok(alive)
+}
+
+/// The boot reconciliation across **every** Task the store holds non-terminal rows for
+/// (`ATH-CORE-048`), which is what a resident has at startup: not one Task, but whatever
+/// the previous process left behind.
+///
+/// The per-Task rule is [`reconcile_boot_states`]'s, unchanged — this walks the distinct
+/// Tasks those rows name and applies it to each, so one sweep cannot miss a Task whose
+/// rows outlived the resident. A non-terminal row carrying **no** Task is left alone and
+/// reported: the per-Task routing has nothing to attach its orphaned step to, and
+/// inventing a Task for it would be worse than naming the row (today no such row is
+/// written — the delegation intake always records the Task — so this is a guard, not a
+/// path).
+///
+/// # Errors
+/// Store failures, surfaced whole.
+pub fn reconcile_boot(
+    store: &mut AthenaStore,
+    alive: impl Fn(&AgentInstance) -> bool,
+    now: &str,
+    correlation_id: &'static str,
+) -> Result<Vec<Reconciliation>, PersistenceError> {
+    let mut tasks: Vec<TaskId> = Vec::new();
+    let mut taskless: Vec<InstanceId> = Vec::new();
+    for instance in AgentRepository::list_non_terminal_instances(store)? {
+        match instance.task_id.as_ref() {
+            Some(task) if !tasks.contains(task) => tasks.push(task.clone()),
+            Some(_) => {}
+            None => taskless.push(instance.id.clone()),
+        }
+    }
+    let mut output = Vec::new();
+    for task in &tasks {
+        output.extend(reconcile_boot_states(
+            store,
+            task,
+            &alive,
+            now,
+            correlation_id,
+        )?);
+    }
+    output.extend(taskless.into_iter().map(|instance| Reconciliation::Kept {
+        instance,
+        reason: "the row names no Task; boot reconciliation routes per Task",
+    }));
+    Ok(output)
+}
+
 /// The heartbeat lease between Core Host and every Agent Instance (ATH-CORE-047).
 ///
 /// A 60 s lapse (default) is the point the *instance self-terminates*; the tracker records

@@ -135,6 +135,13 @@ impl<D: ProcessDriver + 'static> ProcessManager<D> {
         }
     }
 
+    /// The driver's own liveness probe for a bare pid (the boot reconciliation's need:
+    /// a process a previous resident started has no record here).
+    #[must_use]
+    pub fn driver_is_alive(&self, pid: u32) -> bool {
+        self.driver.is_alive(pid)
+    }
+
     /// Spawn the definition's process in its Workspace and record it (P3-02).
     ///
     /// # Errors

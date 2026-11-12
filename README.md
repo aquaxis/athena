@@ -250,6 +250,14 @@ as acceptance (`ATH-MSG-014`), and both halves emit `AgentMessageSent` /
 `AgentMessageReceived` (`ATH-MSG-007`). A message the peer never took stays dwelling, which
 is exactly what `athena_message_queue_depth` reports.
 
+And a restart no longer leaves ghosts: at boot the resident settles whatever the previous
+process left non-terminal (`ATH-CORE-048`). The liveness fact comes from the store's own
+record — the Runtime Instance row's pid, probed against the OS — because the previous
+resident's process table died with it; a row whose process cannot be named is finalized
+`FAILED` with side effects **unknown** and its `RUNNING` PlanStep goes `ORPHANED` in the
+same transaction, which is precisely the state that gates any re-run behind an objective
+Verification (`ATH-STATE-029`). A process that survived the restart is left alone.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is

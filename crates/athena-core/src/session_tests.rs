@@ -838,3 +838,203 @@ fn the_heartbeat_event_also_feeds_the_absence_detector() {
     assert_eq!(beat.payload.iteration, 7);
     assert!(beat.payload.focus_task_id.is_some());
 }
+
+// --- X-47: the boot reconciliation's production shape -------------------------------------
+//
+// The per-Task rule above is unchanged; what these pin is the sweep a resident actually
+// performs at startup — every Task at once, with the liveness fact read from the store's
+// own record (the Runtime Instance row's pid) rather than from a process table that died
+// with the previous resident.
+
+/// Seed a §26.6 Runtime Instance row for an Agent Instance, carrying the pid (or none).
+fn seed_runtime_row(store: &mut AthenaStore, instance: &InstanceId, pid: Option<u32>) {
+    let row = AgentRepository::get_instance(store, instance)
+        .expect("fetch")
+        .expect("row");
+    let runtime_instance_id = row
+        .runtime_instance_id
+        .clone()
+        .expect("the seeded row names its runtime instance");
+    athena_persistence::repository::RuntimeInstanceRepository::insert(
+        store,
+        &athena_types::RuntimeInstance {
+            id: runtime_instance_id,
+            runtime_type: athena_types::RuntimeType::AgentCli,
+            instance_id: instance.clone(),
+            state: row.state,
+            pid,
+            last_heartbeat_at: Some(now_rfc3339()),
+            started_at: now_rfc3339(),
+            stopped_at: None,
+            stop_reason: None,
+            exit_code: None,
+            side_effects: athena_types::SideEffects::None,
+        },
+    )
+    .expect("runtime instance row seeds");
+}
+
+#[test]
+fn a_row_whose_pid_the_store_never_recorded_is_not_observable() {
+    // The never-invent rule at the probe: with no pid on record there is no process to
+    // ask about, so the row cannot be reported alive — whatever the OS says about any
+    // other pid.
+    let mut store = AthenaStore::in_memory().expect("store");
+    let task = seed_task(&mut store);
+    let [_done, running] = seed_plan(&mut store, &task);
+    let instance = seed_instance(&mut store, &task, Some(&running), AgentInstanceState::Busy);
+    // No Runtime Instance row at all: the chain stops at the first link.
+    let alive = crate::core_agent_session::observed_alive(&store, |_| true).expect("probed");
+    assert!(alive.is_empty(), "{alive:?}");
+
+    // With a row but no pid, the same: the store names no process.
+    seed_runtime_row(&mut store, &instance, None);
+    let alive = crate::core_agent_session::observed_alive(&store, |_| true).expect("probed");
+    assert!(alive.is_empty(), "{alive:?}");
+
+    assert_eq!(
+        crate::core_agent_session::recorded_pid(
+            &store,
+            &AgentRepository::get_instance(&store, &instance)
+                .expect("fetch")
+                .expect("row")
+        )
+        .expect("read"),
+        None
+    );
+}
+
+#[test]
+fn a_recorded_pid_is_reported_alive_only_when_the_probe_says_so() {
+    let mut store = AthenaStore::in_memory().expect("store");
+    let task = seed_task(&mut store);
+    let [_done, running] = seed_plan(&mut store, &task);
+    let instance = seed_instance(&mut store, &task, Some(&running), AgentInstanceState::Busy);
+    seed_runtime_row(&mut store, &instance, Some(4242));
+
+    let alive =
+        crate::core_agent_session::observed_alive(&store, |pid| pid == 4242).expect("probed");
+    assert_eq!(alive, vec![instance.clone()]);
+
+    let dead = crate::core_agent_session::observed_alive(&store, |_| false).expect("probed");
+    assert!(dead.is_empty(), "{dead:?}");
+}
+
+#[test]
+fn the_boot_sweep_reaches_every_task_the_rows_name() {
+    // The per-Task function is given one Task; a resident has none in particular. The
+    // sweep walks the distinct Tasks its own non-terminal rows name, so a second Task's
+    // orphan cannot be missed — the failure this face exists to prevent.
+    let mut store = AthenaStore::in_memory().expect("store");
+    let first_task = seed_task(&mut store);
+    let [_d1, first_step] = seed_plan(&mut store, &first_task);
+    let first = seed_instance(
+        &mut store,
+        &first_task,
+        Some(&first_step),
+        AgentInstanceState::Busy,
+    );
+    let second_task = seed_task(&mut store);
+    let [_d2, second_step] = seed_plan(&mut store, &second_task);
+    let second = seed_instance(
+        &mut store,
+        &second_task,
+        Some(&second_step),
+        AgentInstanceState::Busy,
+    );
+
+    let decisions = crate::core_agent_session::reconcile_boot(
+        &mut store,
+        |_row| false,
+        &now_rfc3339(),
+        "boot-reconciliation",
+    )
+    .expect("reconciled");
+    assert_eq!(decisions.len(), 2, "{decisions:?}");
+
+    for (instance, step) in [(&first, &first_step), (&second, &second_step)] {
+        let row = AgentRepository::get_instance(&store, instance)
+            .expect("fetch")
+            .expect("row");
+        assert_eq!(row.state, AgentInstanceState::Failed);
+        let step_row = crate::PlanRepository::get_step(&store, step)
+            .expect("fetch")
+            .expect("step");
+        assert_eq!(step_row.state, athena_types::PlanStepState::Orphaned);
+    }
+}
+
+#[test]
+fn the_boot_sweep_keeps_what_the_probe_observes_alive() {
+    // Fault injection, the other direction: a surviving process must not be finalized —
+    // the sweep settles the dead, never the living.
+    let mut store = AthenaStore::in_memory().expect("store");
+    let task = seed_task(&mut store);
+    let [_done, running] = seed_plan(&mut store, &task);
+    let survivor = seed_instance(&mut store, &task, Some(&running), AgentInstanceState::Busy);
+    seed_runtime_row(&mut store, &survivor, Some(777));
+
+    let alive =
+        crate::core_agent_session::observed_alive(&store, |pid| pid == 777).expect("probed");
+    let decisions = crate::core_agent_session::reconcile_boot(
+        &mut store,
+        |row| alive.contains(&row.id),
+        &now_rfc3339(),
+        "boot-reconciliation",
+    )
+    .expect("reconciled");
+    assert!(
+        decisions.is_empty(),
+        "a live row is not even a decision: {decisions:?}"
+    );
+
+    let row = AgentRepository::get_instance(&store, &survivor)
+        .expect("fetch")
+        .expect("row");
+    assert_eq!(row.state, AgentInstanceState::Busy);
+    let step_row = crate::PlanRepository::get_step(&store, &running)
+        .expect("fetch")
+        .expect("step");
+    assert_eq!(step_row.state, athena_types::PlanStepState::Running);
+}
+
+#[test]
+fn an_orphaned_step_is_re_armed_only_behind_an_objective_verification() {
+    // The consequence the finalization hands to the Core Agent (ATH-STATE-029): after the
+    // sweep the step is `ORPHANED`, and the orphan review refuses a re-run until an
+    // objective Verification accepts. This is the gate the boot sweep's "side effects
+    // unknown" verdict leans on, exercised end to end from the real store state.
+    let mut store = AthenaStore::in_memory().expect("store");
+    let task = seed_task(&mut store);
+    let [_done, running] = seed_plan(&mut store, &task);
+    seed_instance(&mut store, &task, Some(&running), AgentInstanceState::Busy);
+    crate::core_agent_session::reconcile_boot(
+        &mut store,
+        |_row| false,
+        &now_rfc3339(),
+        "boot-reconciliation",
+    )
+    .expect("reconciled");
+    let step_row = crate::PlanRepository::get_step(&store, &running)
+        .expect("fetch")
+        .expect("step");
+    assert_eq!(step_row.state, athena_types::PlanStepState::Orphaned);
+
+    assert!(matches!(
+        crate::orphan::authorize_orphan_retry(step_row.state, None),
+        crate::orphan::OrphanRoute::Refused(crate::orphan::OrphanFault::Unverified)
+    ));
+    let accepted = crate::orphan::SideEffectVerification {
+        evaluator: athena_types::Evaluator::Tool,
+        method: "cargo test --workspace".into(),
+        verdict: athena_types::Verdict::Accept,
+        rationale: "the step's writes were re-run and match the recorded outputs".into(),
+    };
+    assert!(matches!(
+        crate::orphan::authorize_orphan_retry(step_row.state, Some(&accepted)),
+        crate::orphan::OrphanRoute::Rearmed(_)
+    ));
+    // And the one-instance-per-attempt rule the re-arm then faces (ATH-STATE-030).
+    let existing = crate::AgentRepository::list_non_terminal_instances(&store).expect("rows");
+    assert!(crate::orphan::fresh_instance_for_attempt(&running, 1, &existing).is_ok());
+}

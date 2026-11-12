@@ -540,8 +540,9 @@ fn fail_started(
 /// The `R` generic is the Runtime trait the composition root links (spec §32.2: the
 /// binary declares the adapter; `athena-core` never names one). The Runtime kind itself is
 /// never a caller argument — `begin_start` reads the definition's own `runtime` fact
-/// (`ATH-AGENT-001`). The pid is not guessed here: the §26.6 row records what the
-/// Runtime's own record answers, and the resident's status face reads the process truth.
+/// (`ATH-AGENT-001`). The pid is not guessed here either: `pid_of` asks the composition
+/// root what its process table holds for the handle the Runtime just answered with, and
+/// a Runtime that reports none records none.
 ///
 /// # Errors
 /// [`StartError`] whole; the caller logs and continues — a refused start is a recorded
@@ -551,6 +552,7 @@ pub async fn start_admitted<R: Runtime>(
     store: &std::sync::Mutex<AthenaStore>,
     accepted: &crate::delegation::DelegationAccepted,
     config: &crate::Config,
+    pid_of: impl Fn(&athena_runtime::RuntimeInstanceRef) -> Option<u32>,
 ) -> Result<StartReport, StartError> {
     // 1. The walk, under the first lock; the lock is released when this block closes.
     let begin = {
@@ -605,8 +607,13 @@ pub async fn start_admitted<R: Runtime>(
             //    row seeded, the `AI_LOG` area reference recorded (X-41).
             let mut guard = lock_the(store).map_err(StartError::Fault)?;
             let now = athena_persistence::now_rfc3339();
+            // The pid is the Runtime's own fact, asked of the composition root that owns
+            // the process table (D-35's split). It matters beyond observability: the boot
+            // reconciliation of a *later* resident has no process table, so the recorded
+            // pid is the only evidence that this process ever existed (ATH-CORE-048).
+            let pid = pid_of(&handle);
             let outcome =
-                complete_start_started(&mut guard, &begin.instance_id, &handle, None, &now)
+                complete_start_started(&mut guard, &begin.instance_id, &handle, pid, &now)
                     .map_err(StartError::Fault)?;
             Ok(StartReport { outcome })
         }

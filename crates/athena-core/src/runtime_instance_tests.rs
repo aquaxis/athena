@@ -237,7 +237,7 @@ async fn a_started_instance_walks_to_idle_and_records_its_runtime_facts() {
     let store = Mutex::new(store);
     let config = crate::Config::default();
 
-    let report = start_admitted(&runtime, &store, &accepted, &config)
+    let report = start_admitted(&runtime, &store, &accepted, &config, |_| Some(4242))
         .await
         .expect("started");
 
@@ -302,9 +302,15 @@ async fn the_context_the_runtime_receives_carries_the_rows_own_facts() {
     let (runtime, _) = ScriptedRuntime::started(&accepted.instance_id);
     let store = Mutex::new(store);
 
-    start_admitted(&runtime, &store, &accepted, &crate::Config::default())
-        .await
-        .expect("started");
+    start_admitted(
+        &runtime,
+        &store,
+        &accepted,
+        &crate::Config::default(),
+        |_| Some(4242),
+    )
+    .await
+    .expect("started");
 
     let context = runtime.context().expect("the Runtime was called");
     // Task-bound (unlike instance #0's own context), rooted in the row's workspace, and
@@ -325,9 +331,15 @@ async fn a_refused_runtime_start_lands_the_failure_leg_before_it_surfaces() {
     let runtime = ScriptedRuntime::refusing(RuntimeError::Failure("exit 139".into()));
     let store = Mutex::new(store);
 
-    let error = start_admitted(&runtime, &store, &accepted, &crate::Config::default())
-        .await
-        .expect_err("the Runtime refused");
+    let error = start_admitted(
+        &runtime,
+        &store,
+        &accepted,
+        &crate::Config::default(),
+        |_| Some(4242),
+    )
+    .await
+    .expect_err("the Runtime refused");
     assert!(matches!(error, StartError::Runtime(_)), "{error}");
     assert_eq!(error.class().wire(), "runtime_error");
 
@@ -373,9 +385,15 @@ async fn a_definition_without_model_coordinates_never_reaches_the_runtime() {
     let (runtime, _) = ScriptedRuntime::started(&accepted.instance_id);
     let store = Mutex::new(store);
 
-    let error = start_admitted(&runtime, &store, &accepted, &crate::Config::default())
-        .await
-        .expect_err("refused by the gate");
+    let error = start_admitted(
+        &runtime,
+        &store,
+        &accepted,
+        &crate::Config::default(),
+        |_| Some(4242),
+    )
+    .await
+    .expect_err("refused by the gate");
     assert_eq!(error.class().wire(), "validation_error");
     assert!(
         runtime.context().is_none(),
@@ -396,12 +414,12 @@ async fn a_second_start_of_one_instance_is_refused_by_the_tables_own_rule() {
     let store = Mutex::new(store);
     let config = crate::Config::default();
 
-    start_admitted(&runtime, &store, &accepted, &config)
+    start_admitted(&runtime, &store, &accepted, &config, |_| Some(4242))
         .await
         .expect("started");
     // The row is `IDLE` now; `CREATED → STARTING` is the only edge the face walks, so the
     // re-entry refuses on the row's current state (single flight across admission→start).
-    let error = start_admitted(&runtime, &store, &accepted, &config)
+    let error = start_admitted(&runtime, &store, &accepted, &config, |_| Some(4242))
         .await
         .expect_err("the second start is refused");
     assert_eq!(error.class().wire(), "policy_error");

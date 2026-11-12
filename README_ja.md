@@ -244,6 +244,13 @@ thread に乗り (`ATH-MSG-013`)、`timeout.message_reply` の応答期限を持
 `AgentMessageReceived` を発行します (`ATH-MSG-007`)。相手が受け取らなかった Message は
 滞留したままとなり、それがそのまま `athena_message_queue_depth` の値になります。
 
+再起動後に幽霊が残ることもありません: 常駐は起動時に、前のプロセスが非終端のまま残した
+Instance を整合します (`ATH-CORE-048`)。前の常駐のプロセステーブルは失われているため、
+生存判定はストア自身の記録 — Runtime Instance 行の pid — を OS に問い合わせて行います。
+プロセスを名指せない行は副作用**不明**のまま `FAILED` として確定し、その `RUNNING`
+PlanStep は同一トランザクションで `ORPHANED` になります。これは再実行を客観的 Verification
+の後ろに置く状態そのものです (`ATH-STATE-029`)。再起動を生き延びたプロセスには触れません。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は

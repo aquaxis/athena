@@ -460,6 +460,67 @@ async fn main() {
         .with_ipc_transport(Arc::new(RealIpc)),
     );
 
+    // 6.5 Boot reconciliation (ATH-CORE-048): whatever the previous resident left
+    //     non-terminal is settled before anything new is admitted or started. That
+    //     resident's process table died with it, so the liveness fact comes from the
+    //     store's own record — the Runtime Instance row's pid — probed against the OS
+    //     through the Adapter's driver. A row whose process cannot be named is finalized
+    //     `FAILED` with side effects **unknown**, the state the spec gates behind an
+    //     objective Verification before any re-run (ATH-STATE-029), and its `RUNNING`
+    //     PlanStep goes `ORPHANED` in the same transaction. The liveness set is collected
+    //     before the sweep writes, so one consistent answer drives the whole walk.
+    //
+    //     A fault here is logged, never fatal: a store that cannot be swept is something
+    //     the operator must see, while failing the boot would leave those rows wedged for
+    //     good.
+    {
+        let Ok(mut guard) = rows.lock() else {
+            fail("the store mutex is poisoned before boot reconciliation");
+        };
+        let now = athena_types::now_rfc3339();
+        let alive = athena_core::core_agent_session::observed_alive(&guard, |pid| {
+            adapter.pid_is_alive(pid)
+        });
+        match alive.and_then(|alive| {
+            athena_core::core_agent_session::reconcile_boot(
+                &mut guard,
+                |row| alive.contains(&row.id),
+                &now,
+                "boot-reconciliation",
+            )
+        }) {
+            Ok(decisions) => {
+                let finalized = decisions
+                    .iter()
+                    .filter(|decision| {
+                        matches!(
+                            decision,
+                            athena_core::core_agent_session::Reconciliation::Finalized { .. }
+                        )
+                    })
+                    .count();
+                if finalized > 0 {
+                    resident_log(
+                        Log::Warn,
+                        "resident.boot",
+                        &format!(
+                            "boot reconciliation finalized {finalized} process-less                              instance(s) (ATH-CORE-048; side effects unknown, any re-run                              gated behind Verification)"
+                        ),
+                        &boot_stamp,
+                        serde_json::json!({ "finalized": finalized }),
+                    );
+                }
+            }
+            Err(error) => resident_log(
+                Log::Error,
+                "resident.boot",
+                &format!("boot reconciliation failed: {error}"),
+                &boot_stamp,
+                serde_json::json!({}),
+            ),
+        }
+    }
+
     // 7. Bind before instance #0 boots: readiness (NFR-11) is the API answering, and the
     //    Core Agent's registration must not hold the listener hostage.
     let listener = match tokio::net::TcpListener::bind((host.as_str(), port)).await {
@@ -1425,6 +1486,11 @@ where
                             rows.as_ref(),
                             &accepted,
                             &config,
+                            |handle| {
+                                adapter
+                                    .process_record(handle.runtime_instance_id.as_str())
+                                    .map(|record| record.pid)
+                            },
                         )
                         .await
                         {
