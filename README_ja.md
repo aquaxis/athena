@@ -234,6 +234,16 @@ Core Agent 自身のライフサイクルもカタログ Event で答えるよ�
 (`CoreAgentStarted` / `CoreAgentRestarted` / `CoreAgentEscalated`、`ATH-CORE-031`) —
 これにより `athena_core_agent_restarts_total` は常時 0 ではなく実測の再起動数を報告します。
 
+起動した Instance には**指示が届きます**: Core Agent が書いた委任指示は Broker 経由の
+`instruction` Message として届き (`ATH-MSG-001` — 直結経路は作りません)、その委任自身の
+thread に乗り (`ATH-MSG-013`)、`timeout.message_reply` の応答期限を持ち (`ATH-MSG-005`)、
+経路は階層で照合されます (親子は常に可、兄弟は Core Agent が記録した許可リストのみ —
+`ATH-MSG-006`/`018`)。滞留上限 (`messaging.max_queue_depth`、`ATH-MSG-009`) を超える場合は
+一時的エラーとして拒否します。行と配送記録は送信の受理より先に永続化され (`ATH-MSG-012`)、
+相手が受け取った事実は受理として記録され (`ATH-MSG-014`)、両者は `AgentMessageSent` /
+`AgentMessageReceived` を発行します (`ATH-MSG-007`)。相手が受け取らなかった Message は
+滞留したままとなり、それがそのまま `athena_message_queue_depth` の値になります。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は

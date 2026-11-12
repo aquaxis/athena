@@ -951,7 +951,10 @@ where
                     // below it — the guard block stays inside the lock's own scope and the
                     // walk's awaits never run under it (the Send-bound discipline this
                     // file's delivery leg already keeps).
-                    let mut admitted: Option<athena_core::delegation::DelegationAccepted> = None;
+                    let mut admitted: Option<(
+                        athena_core::delegation::DelegationAccepted,
+                        String,
+                    )> = None;
                     {
                         let Ok(mut guard) = rows.lock() else {
                             continue;
@@ -1137,9 +1140,10 @@ where
                             //
                             // X-44b: the admitted (non-replayed) Instance is started on the
                             // spot, after the arm's guard closes (see below).
-                            athena_core::core_loop::Interpreted::DelegationRequested(
-                                delegation,
-                            ) => {
+                            athena_core::core_loop::Interpreted::DelegationRequested {
+                                request: delegation,
+                                instruction,
+                            } => {
                                 admitted = match athena_core::delegation::accept_delegation(
                                     &mut guard,
                                     delegation,
@@ -1171,7 +1175,12 @@ where
                                                 accepted.event_id.as_str(),
                                                 &accepted,
                                             ));
-                                        (!accepted.replayed).then_some(accepted)
+                                        // X-46: the instruction travels with the admitted
+                                        // row — it is the body of the `instruction`
+                                        // Message the Broker delivers once the Instance is
+                                        // started. A replay neither starts nor re-sends.
+                                        (!accepted.replayed)
+                                            .then_some((accepted, instruction.clone()))
                                     }
                                     Err(fault) => {
                                         record_privileged_denial(
@@ -1409,7 +1418,7 @@ where
                     // its own lock, the Runtime runs unlocked, and the completion leg lands
                     // `IDLE` or `FAILED` — a refused start is a recorded failure leg, never
                     // a resident fault, so the loop continues either way.
-                    if let Some(accepted) = admitted {
+                    if let Some((accepted, instruction)) = admitted {
                         let instance_id = accepted.instance_id.clone();
                         match athena_core::runtime_instance::start_admitted(
                             adapter.as_ref(),
@@ -1419,27 +1428,54 @@ where
                         )
                         .await
                         {
-                            Ok(report) => resident_log(
-                                Log::Info,
-                                "resident.runtime",
-                                &format!(
-                                    "instance {} started ({:?}, runtime instance {})",
-                                    report.outcome.instance_id.as_str(),
-                                    report.outcome.state,
-                                    report
-                                        .outcome
-                                        .runtime_instance_id
-                                        .as_ref()
-                                        .map_or("-", |id| id.as_str())
-                                ),
-                                &correlation,
-                                serde_json::json!({
-                                    "task_id": task_id.as_str(),
-                                    "instance_id": report.outcome.instance_id.as_str(),
-                                    "state": format!("{:?}", report.outcome.state),
-                                    "event_id": report.outcome.event_id.as_str()
-                                }),
-                            ),
+                            Ok(report) => {
+                                resident_log(
+                                    Log::Info,
+                                    "resident.runtime",
+                                    &format!(
+                                        "instance {} started ({:?}, runtime instance {})",
+                                        report.outcome.instance_id.as_str(),
+                                        report.outcome.state,
+                                        report
+                                            .outcome
+                                            .runtime_instance_id
+                                            .as_ref()
+                                            .map_or("-", |id| id.as_str())
+                                    ),
+                                    &correlation,
+                                    serde_json::json!({
+                                        "task_id": task_id.as_str(),
+                                        "instance_id": report.outcome.instance_id.as_str(),
+                                        "state": format!("{:?}", report.outcome.state),
+                                        "event_id": report.outcome.event_id.as_str()
+                                    }),
+                                );
+                                // X-46: a started Instance is told what to do — through the
+                                // Broker, never a direct path (ATH-MSG-001). The row and its
+                                // delivery record land first (ATH-MSG-012's ack contract),
+                                // then the Runtime carries the body to the process, and the
+                                // peer's taking it is what `accept_delivery` records
+                                // (ATH-MSG-014). A send that never lands leaves the message
+                                // delivered-but-unaccepted — exactly what the dwell gauge
+                                // counts, and what a retry would re-answer by id.
+                                if let Some(handle) = report.outcome.runtime_instance_id.clone() {
+                                    let target = RuntimeInstanceRef {
+                                        runtime_type: RuntimeType::AgentCli,
+                                        runtime_instance_id: handle,
+                                        instance_id: report.outcome.instance_id.clone(),
+                                    };
+                                    deliver_instruction(
+                                        &rows,
+                                        adapter.as_ref(),
+                                        &instance.instance_id,
+                                        &target,
+                                        &instruction,
+                                        &config,
+                                        &correlation,
+                                    )
+                                    .await;
+                                }
+                            }
                             Err(fault) => resident_log(
                                 Log::Warn,
                                 "resident.runtime",
@@ -1461,6 +1497,143 @@ where
             }
         }
     })
+}
+
+/// X-46: hand a started Instance its delegation instruction, through the Broker.
+///
+/// Three acts, in the only order the contracts allow: the Broker persists the row and its
+/// delivery record (`ATH-MSG-012`'s ack contract — `dispatch_instruction` also walks the
+/// route check of `ATH-MSG-006`/`018`, the dwell ceiling of `ATH-MSG-009` and the
+/// `AgentMessageSent` record of `ATH-MSG-007`), the Runtime carries the body to the peer
+/// process (`ATH-MSG-015`: the retry responsibility is the Adapter's, never the agent's),
+/// and the peer's taking it is recorded as acceptance (`ATH-MSG-014`).
+///
+/// Nothing here fails the Task: a refusal or a send fault is named on the resident's own
+/// chain and the message stays in the store, dwelling, where the gauge counts it and a
+/// later retry answers the same `message_id` by dedup.
+async fn deliver_instruction<D>(
+    rows: &Arc<Mutex<AthenaStore>>,
+    adapter: &AgentCliAdapter<D>,
+    core_instance: &athena_types::InstanceId,
+    target: &RuntimeInstanceRef,
+    instruction: &str,
+    config: &athena_core::Config,
+    correlation: &str,
+) where
+    D: ProcessDriver + 'static,
+{
+    // ATH-MSG-005/016: an `instruction` carries a reply deadline, and its value is the
+    // configuration's (`timeout.message_reply`), never a literal chosen here.
+    let deadline_ms = u64_ms().saturating_add(
+        u64::try_from(config.timeout.message_reply.as_millis()).unwrap_or(u64::MAX),
+    );
+    let deadline = athena_types::clock::format_rfc3339(
+        deadline_ms / 1_000,
+        u32::try_from(deadline_ms % 1_000).unwrap_or(0),
+    );
+
+    let dispatched = {
+        let Ok(mut guard) = rows.lock() else {
+            return;
+        };
+        let now = athena_types::now_rfc3339();
+        match athena_core::broker::dispatch_instruction(
+            &mut guard,
+            athena_core::broker::Correspondents {
+                from_instance: core_instance,
+                core_agent_instance: core_instance,
+                to_instance: &target.instance_id,
+            },
+            instruction,
+            Some(deadline.clone()),
+            config.messaging.max_queue_depth,
+            &now,
+        ) {
+            Ok(dispatched) => dispatched,
+            Err(fault) => {
+                resident_log(
+                    Log::Warn,
+                    "resident.broker",
+                    &format!(
+                        "dispatching the instruction to {} refused: {fault}",
+                        target.instance_id.as_str()
+                    ),
+                    correlation,
+                    serde_json::json!({
+                        "instance_id": target.instance_id.as_str(),
+                        "error_class": fault.class(),
+                        "code": fault.code()
+                    }),
+                );
+                return;
+            }
+        }
+    };
+
+    let message = athena_core::broker::instruction_message(
+        &dispatched,
+        core_instance,
+        instruction,
+        Some(deadline),
+    );
+    if let Err(fault) = adapter.send(target, message).await {
+        // Persisted but untaken: the row dwells and the gauge says so. Recorded, not
+        // undone — the ack contract already holds for the sender.
+        resident_log(
+            Log::Warn,
+            "resident.broker",
+            &format!(
+                "the instruction reached the store but not instance {}: {fault}",
+                target.instance_id.as_str()
+            ),
+            correlation,
+            serde_json::json!({
+                "instance_id": target.instance_id.as_str(),
+                "message_id": dispatched.message_id.as_str(),
+                "thread_id": dispatched.thread_id
+            }),
+        );
+        return;
+    }
+
+    let Ok(mut guard) = rows.lock() else {
+        return;
+    };
+    let now = athena_types::now_rfc3339();
+    if let Err(fault) = athena_core::broker::accept_delivery(
+        &mut guard,
+        &target.instance_id,
+        &dispatched.message_id,
+        &now,
+    ) {
+        resident_log(
+            Log::Error,
+            "resident.broker",
+            &format!("recording the acceptance failed: {fault}"),
+            correlation,
+            serde_json::json!({
+                "instance_id": target.instance_id.as_str(),
+                "message_id": dispatched.message_id.as_str()
+            }),
+        );
+        return;
+    }
+    resident_log(
+        Log::Info,
+        "resident.broker",
+        &format!(
+            "instruction {} accepted by instance {} (thread {})",
+            dispatched.message_id.as_str(),
+            target.instance_id.as_str(),
+            dispatched.thread_id
+        ),
+        correlation,
+        serde_json::json!({
+            "instance_id": target.instance_id.as_str(),
+            "message_id": dispatched.message_id.as_str(),
+            "thread_id": dispatched.thread_id
+        }),
+    );
 }
 
 /// The supervision poll: detect instance #0's death, run the deterministic recovery

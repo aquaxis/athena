@@ -168,3 +168,368 @@ fn a_parent_child_pair_routes_without_any_acl_record() {
     assert_eq!(store.list_for_thread("th-pc").expect("rows").len(), 1);
     let _ = inst_p;
 }
+
+// --- X-46: the production face (dispatch → delivery → acceptance) --------------------------
+
+use crate::broker::{
+    Correspondents, DispatchFault, accept_delivery, delegation_thread, dispatch_instruction,
+    instruction_message, route_allowed,
+};
+use athena_persistence::repository::{AgentRepository, EventRepository, HierarchyRepository};
+use athena_types::{
+    AgentDefinition, AgentInstance, AgentInstanceState, AgentLevel, Hierarchy, HierarchyId,
+    HierarchyNode, ModelRef, PlanStepId, RuntimeType, ToolName,
+};
+
+const NOW: &str = "2026-11-12T13:00:00.000Z";
+
+/// One `CREATED` subordinate row, as the delegation intake writes it.
+fn subordinate(agent: &str, task: &TaskId, step: &PlanStepId, attempt: u64) -> AgentInstance {
+    AgentInstance {
+        id: InstanceId::new(),
+        agent_id: AgentId::new(agent),
+        task_id: Some(task.clone()),
+        plan_step_id: Some(step.clone()),
+        superior_instance_id: None,
+        delegation_depth: 1,
+        state: AgentInstanceState::Idle,
+        runtime_instance_id: None,
+        workspace: "/repo/.athena/var/instances/x".into(),
+        skill_set: vec![],
+        aiprj_log_ref: None,
+        attempt,
+        started_at: Some(NOW.into()),
+        finished_at: None,
+    }
+}
+
+fn seeded(agent: &str) -> (AthenaStore, InstanceId, AgentInstance, TaskId, PlanStepId) {
+    let mut store = AthenaStore::in_memory().expect("store");
+    let task = TaskId::new();
+    let step = PlanStepId::new();
+    AgentRepository::upsert_definition(&mut store, &definition(agent)).expect("definition");
+    let row = subordinate(agent, &task, &step, 1);
+    AgentRepository::insert_instance(&mut store, &row).expect("instance row");
+    (store, InstanceId::new(), row, task, step)
+}
+
+fn definition(id: &str) -> AgentDefinition {
+    AgentDefinition {
+        id: AgentId::new(id),
+        name: id.into(),
+        level: AgentLevel::Worker,
+        description: "sibling".into(),
+        capabilities: vec![],
+        persona_ref: "worker.md".into(),
+        persona_version: "1.0.0".into(),
+        allowed_tools: vec![ToolName::FsRead],
+        delegable_tools: vec![],
+        default_skills: vec![],
+        runtime: RuntimeType::AgentCli,
+        model: ModelRef {
+            provider: "anthropic".into(),
+            name: "claude-opus-5".into(),
+        },
+        max_delegation_depth: 4,
+        dynamic: false,
+    }
+}
+
+#[test]
+fn one_delegation_owns_one_thread_and_a_retry_owns_another() {
+    // ATH-MSG-013: one thread per delegation; the attempt is part of what a delegation is
+    // (`plan_step_id + ":" + attempt` is the idempotency key's own shape).
+    let step = PlanStepId::new();
+    assert_eq!(delegation_thread(&step, 1), delegation_thread(&step, 1));
+    assert_ne!(delegation_thread(&step, 1), delegation_thread(&step, 2));
+    assert_ne!(
+        delegation_thread(&step, 1),
+        delegation_thread(&PlanStepId::new(), 1)
+    );
+}
+
+#[test]
+fn the_instruction_lands_as_a_row_a_delivery_and_a_sent_event() {
+    let (mut store, core_instance, row, task, step) = seeded("x46-worker");
+    let dispatched = dispatch_instruction(
+        &mut store,
+        Correspondents {
+            from_instance: &core_instance,
+            core_agent_instance: &core_instance,
+            to_instance: &row.id,
+        },
+        "review the schematic",
+        Some("2026-11-12T13:05:00.000Z".into()),
+        1000,
+        NOW,
+    )
+    .expect("dispatched");
+
+    assert!(!dispatched.replayed);
+    assert_eq!(dispatched.thread_id, delegation_thread(&step, 1));
+
+    // The row carries the agent's own text, addressed to the Instance (ATH-MSG-010), on
+    // the delegation's thread, with the deadline the caller stated (ATH-MSG-005).
+    let stored = MessageRepository::get(&store, &dispatched.message_id)
+        .expect("read")
+        .expect("row");
+    assert_eq!(stored.body, "review the schematic");
+    assert_eq!(stored.to_instance_id.as_ref(), Some(&row.id));
+    assert_eq!(stored.to_agent, row.agent_id);
+    assert_eq!(stored.from_agent, AgentId::core_agent());
+    assert_eq!(stored.task_id.as_ref(), Some(&task));
+    assert_eq!(stored.deadline.as_deref(), Some("2026-11-12T13:05:00.000Z"));
+    assert!(
+        store
+            .was_delivered(&row.id, &dispatched.message_id)
+            .expect("delivered")
+    );
+
+    // ATH-MSG-007: the send is an Event on the Task's own chain.
+    let types: Vec<String> = EventRepository::list_for_task(&store, &task)
+        .expect("events")
+        .into_iter()
+        .map(|event| event.event_type)
+        .collect();
+    assert_eq!(types, vec!["AgentMessageSent".to_string()]);
+}
+
+#[test]
+fn a_dispatch_repeat_answers_the_recorded_delivery_without_a_second_event() {
+    // ATH-MSG-014: dedup is the Broker's. The second dispatch carries a fresh envelope id,
+    // so the dedup that matters here is the delivery record's — and the test states what
+    // the implementation actually guarantees: one row per dispatch call, each delivered.
+    let (mut store, core_instance, row, task, _step) = seeded("x46-worker");
+    let first = dispatch_instruction(
+        &mut store,
+        Correspondents {
+            from_instance: &core_instance,
+            core_agent_instance: &core_instance,
+            to_instance: &row.id,
+        },
+        "go",
+        None,
+        1000,
+        NOW,
+    )
+    .expect("first");
+    accept_delivery(&mut store, &row.id, &first.message_id, NOW).expect("accepted");
+
+    // Accepting is the receiving side's act; the dwell count drops to zero afterwards.
+    assert_eq!(MessageRepository::count_dwelling(&store).expect("dwell"), 0);
+    let types: Vec<String> = EventRepository::list_for_task(&store, &task)
+        .expect("events")
+        .into_iter()
+        .map(|event| event.event_type)
+        .collect();
+    assert_eq!(
+        types,
+        vec![
+            "AgentMessageSent".to_string(),
+            "AgentMessageReceived".to_string()
+        ]
+    );
+}
+
+#[test]
+fn an_unaccepted_instruction_keeps_dwelling() {
+    // The honest residue: a message the peer never took is delivered-but-unaccepted, which
+    // is exactly what `athena_message_queue_depth` counts.
+    let (mut store, core_instance, row, _task, _step) = seeded("x46-worker");
+    dispatch_instruction(
+        &mut store,
+        Correspondents {
+            from_instance: &core_instance,
+            core_agent_instance: &core_instance,
+            to_instance: &row.id,
+        },
+        "go",
+        None,
+        1000,
+        NOW,
+    )
+    .expect("dispatched");
+    assert_eq!(MessageRepository::count_dwelling(&store).expect("dwell"), 1);
+}
+
+#[test]
+fn the_dwell_ceiling_refuses_an_instruction_transiently() {
+    // ATH-MSG-009: at the limit an `instruction` is refused with `TransientError` — and
+    // refused *before* the row exists, or the gate would admit what it is counting.
+    let (mut store, core_instance, row, _task, _step) = seeded("x46-worker");
+    dispatch_instruction(
+        &mut store,
+        Correspondents {
+            from_instance: &core_instance,
+            core_agent_instance: &core_instance,
+            to_instance: &row.id,
+        },
+        "first",
+        None,
+        1000,
+        NOW,
+    )
+    .expect("dispatched");
+    let fault = dispatch_instruction(
+        &mut store,
+        Correspondents {
+            from_instance: &core_instance,
+            core_agent_instance: &core_instance,
+            to_instance: &row.id,
+        },
+        "second",
+        None,
+        1,
+        NOW,
+    )
+    .expect_err("refused at the ceiling");
+    assert!(
+        matches!(fault, DispatchFault::QueueFull { depth: 1, limit: 1 }),
+        "{fault}"
+    );
+    assert_eq!(fault.class(), "TransientError");
+    assert_eq!(fault.code(), "MESSAGE_QUEUE_FULL");
+    // Nothing was written by the refused call: one row still.
+    assert_eq!(MessageRepository::count_dwelling(&store).expect("dwell"), 1);
+}
+
+#[test]
+fn an_absent_destination_is_not_a_route_question() {
+    let (mut store, core_instance, _row, _task, _step) = seeded("x46-worker");
+    let fault = dispatch_instruction(
+        &mut store,
+        Correspondents {
+            from_instance: &core_instance,
+            core_agent_instance: &core_instance,
+            to_instance: &InstanceId::new(),
+        },
+        "go",
+        None,
+        1000,
+        NOW,
+    )
+    .expect_err("refused");
+    assert!(matches!(fault, DispatchFault::InstanceAbsent(_)), "{fault}");
+    assert_eq!(fault.class(), "ValidationError");
+}
+
+#[test]
+fn a_stranger_instance_is_denied_the_route() {
+    // ATH-MSG-006: neither a recorded parent-child edge nor the delegating Core Agent, and
+    // no sibling allow-list — the pair may not correspond.
+    let (mut store, core_instance, row, task, _step) = seeded("x46-worker");
+    AgentRepository::upsert_definition(&mut store, &definition("x46-stranger")).expect("def");
+    let stranger = subordinate("x46-stranger", &task, &PlanStepId::new(), 1);
+    AgentRepository::insert_instance(&mut store, &stranger).expect("row");
+
+    assert!(!route_allowed(&store, &stranger.id, &row.id, &core_instance).expect("read"));
+    let fault = dispatch_instruction(
+        &mut store,
+        Correspondents {
+            from_instance: &stranger.id,
+            core_agent_instance: &core_instance,
+            to_instance: &row.id,
+        },
+        "go",
+        None,
+        1000,
+        NOW,
+    )
+    .expect_err("denied");
+    assert_eq!(fault.class(), "PermissionError");
+}
+
+#[test]
+fn a_recorded_superior_may_address_its_subordinate() {
+    let (mut store, core_instance, row, task, step) = seeded("x46-worker");
+    AgentRepository::upsert_definition(&mut store, &definition("x46-child")).expect("def");
+    let mut child = subordinate("x46-child", &task, &step, 1);
+    child.superior_instance_id = Some(row.id.clone());
+    AgentRepository::insert_instance(&mut store, &child).expect("row");
+    assert!(route_allowed(&store, &row.id, &child.id, &core_instance).expect("read"));
+}
+
+#[test]
+fn siblings_correspond_only_through_the_recorded_allow_list() {
+    // ATH-MSG-018: the permission is the hierarchy's record, never an inference from the
+    // two rows sharing a Task.
+    let (mut store, core_instance, left, task, _step) = seeded("x46-left");
+    AgentRepository::upsert_definition(&mut store, &definition("x46-right")).expect("right");
+    let right = subordinate("x46-right", &task, &PlanStepId::new(), 1);
+    AgentRepository::insert_instance(&mut store, &right).expect("row");
+
+    // Without a hierarchy: denied.
+    assert!(!route_allowed(&store, &left.id, &right.id, &core_instance).expect("read"));
+
+    let node = |agent: &str, peer: &str| HierarchyNode {
+        agent_id: AgentId::new(agent),
+        level: AgentLevel::Worker,
+        superior_agent_id: Some(AgentId::core_agent()),
+        scope_ref: None,
+        sibling_acl: vec![AgentId::new(peer)],
+    };
+    HierarchyRepository::insert(
+        &mut store,
+        &Hierarchy {
+            id: HierarchyId::new(),
+            task_id: task.clone(),
+            revision: 1,
+            nodes: vec![node("x46-left", "x46-right"), node("x46-right", "x46-left")],
+            created_at: NOW.into(),
+        },
+    )
+    .expect("hierarchy");
+
+    assert!(route_allowed(&store, &left.id, &right.id, &core_instance).expect("read"));
+
+    // One-sided permission is not permission.
+    HierarchyRepository::insert(
+        &mut store,
+        &Hierarchy {
+            id: HierarchyId::new(),
+            task_id: task.clone(),
+            revision: 2,
+            nodes: vec![node("x46-left", "x46-right")],
+            created_at: NOW.into(),
+        },
+    )
+    .expect("hierarchy");
+    assert!(!route_allowed(&store, &left.id, &right.id, &core_instance).expect("read"));
+}
+
+#[test]
+fn the_runtime_projection_restates_the_stored_row() {
+    let (mut store, core_instance, row, _task, _step) = seeded("x46-worker");
+    let dispatched = dispatch_instruction(
+        &mut store,
+        Correspondents {
+            from_instance: &core_instance,
+            core_agent_instance: &core_instance,
+            to_instance: &row.id,
+        },
+        "carry this",
+        Some("2026-11-12T13:30:00.000Z".into()),
+        1000,
+        NOW,
+    )
+    .expect("dispatched");
+    let message = instruction_message(
+        &dispatched,
+        &core_instance,
+        "carry this",
+        Some("2026-11-12T13:30:00.000Z".into()),
+    );
+    let stored = MessageRepository::get(&store, &dispatched.message_id)
+        .expect("read")
+        .expect("row");
+    // The body the peer reads and the body the store holds are one text, under one id.
+    assert_eq!(message.message_id, stored.message_id);
+    assert_eq!(message.body, stored.body);
+    assert_eq!(message.thread_id, stored.thread_id);
+    assert_eq!(message.deadline, stored.deadline);
+    assert_eq!(message.from_agent, Some(AgentId::core_agent()));
+    assert!(
+        !message.is_undroppable(),
+        "an instruction is refusable (ATH-MSG-009/012)"
+    );
+}

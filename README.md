@@ -238,6 +238,18 @@ lifecycle now answers in catalog Events too (`CoreAgentStarted` / `CoreAgentRest
 `CoreAgentEscalated`, `ATH-CORE-031`), which is what makes
 `athena_core_agent_restarts_total` report observed restarts instead of a constant zero.
 
+A started Instance is then **told what to do**: the delegation instruction the Core Agent
+wrote travels to it as an `instruction` Message through the Broker (`ATH-MSG-001` — never a
+direct path), on the delegation's own thread (`ATH-MSG-013`), under the
+`timeout.message_reply` deadline (`ATH-MSG-005`), with the route checked against the
+hierarchy (parent-child always, siblings only through the allow-list the Core Agent recorded
+— `ATH-MSG-006`/`018`) and the dwell ceiling honoured (`messaging.max_queue_depth`,
+`ATH-MSG-009`, answered as a transient refusal). The row and its delivery record are
+persisted before the send is acknowledged (`ATH-MSG-012`), the peer's taking it is recorded
+as acceptance (`ATH-MSG-014`), and both halves emit `AgentMessageSent` /
+`AgentMessageReceived` (`ATH-MSG-007`). A message the peer never took stays dwelling, which
+is exactly what `athena_message_queue_depth` reports.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is

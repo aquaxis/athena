@@ -534,7 +534,15 @@ pub enum Interpreted {
     /// submission this is **not** an answer — the caller routes it through
     /// `delegation::accept_delegation`, which admits or refuses it, and leaves the Task
     /// running either way.
-    DelegationRequested(crate::delegation::DelegationRequest),
+    DelegationRequested {
+        /// The admission request: what `delegation::accept_delegation` decides on.
+        request: crate::delegation::DelegationRequest,
+        /// The delegation instruction — the agent's own procedure reference. The
+        /// admission does not consult it; it is the **body of the `instruction` Message**
+        /// the Broker delivers to the Instance once it has started (`ATH-MSG-001`,
+        /// X-46), so it travels with the request instead of being dropped here.
+        instruction: String,
+    },
     /// Any of the other eight: an observation of the agent's stated intention. The v1
     /// execution model (`ATH-DATA-004`) gives the answer itself as the product, so the
     /// request is surfaced for the caller to route — Core Host answers every `CoreRequest`
@@ -615,17 +623,21 @@ fn route(request: crate::protocol::CoreRequest) -> Interpreted {
             agent_id,
             skill_set,
             idempotency_key,
-            // The delegation instruction is the *agent's* procedure reference, carried to
-            // the subordinate when its process starts — the admission decision this routes
-            // to does not consult it, so it is not projected into the request type.
-            instruction: _,
-        } => Interpreted::DelegationRequested(crate::delegation::DelegationRequest {
-            task_id,
-            plan_step_id,
-            agent_id,
-            skill_set,
-            idempotency_key,
-        }),
+            // The delegation instruction is the *agent's* procedure reference. The
+            // admission decision does not consult it, so it stays out of the request type
+            // — but it is what the started Instance must be told, so it rides beside it
+            // and the caller brokers it as the `instruction` Message (X-46).
+            instruction,
+        } => Interpreted::DelegationRequested {
+            request: crate::delegation::DelegationRequest {
+                task_id,
+                plan_step_id,
+                agent_id,
+                skill_set,
+                idempotency_key,
+            },
+            instruction,
+        },
         other => Interpreted::Requested {
             kind: other.kind_tag(),
             request: other,
