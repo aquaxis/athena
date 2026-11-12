@@ -164,12 +164,14 @@ Skill Validator 腿で `UPDATING`/`VALIDATING` 行を確定します —
 まま保たれ、Agent には発行結果を名指す `control_response` が返ります。
 
 保持期間の掃除: 常駐は 1 分周期で掃除を回します — `events.retention_days` を過ぎた Event、
-期限切れの確認要求、冪等キー、配送記録、そして終了した Instance の `.aiprj` 作業領域(同じ
+期限切れの確認要求、期限切れの承認、冪等キー、配送記録、そして終了した Instance の `.aiprj` 作業領域(同じ
 Event の保持期間を過ぎたもの)。領域の削除は、ストアの行とディスク上のディレクトリが揃って
 「ATHENA がその Instance のために作った領域」と認められた場合に限ります(記録されたパス、
 または `var/instances/<id>/.aiprj` の厳密な一致 — かつ instances ツリー内に解決され、Runtime が
 残す `AI_LOG/` の形を備えること)。それ以外は件数として報告し、ディスク上に残します。各周期の
-件数は掃除の監査 Event に載ります。
+件数は掃除の監査 Event に載ります。承認は期限が過ぎると**拒否**として解決され、沈黙が同意に
+なることはありません — 2 つの期限切れ辺(応答のないまま期限が来た要求と、消費前に失効した許可
+スコープ)がともに `EXPIRED` へ遷移し、それを待っていた Task は待ち続けずに失敗します。
 
 観測: `GET /api/v1/metrics` は spec §30.3 のカタログ全体を Prometheus テキストで答えます —
 23 家族すべてが記録された事実から観測されます。Task・Instance・Approval・Message・Event の各行が
