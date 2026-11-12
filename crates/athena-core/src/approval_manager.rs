@@ -39,7 +39,10 @@ pub mod scope {
             pattern: String,
             /// The uses the scope carries (≥ 1; `CONSUMED` at zero, `R-ST-13`).
             uses_remaining: u64,
-            /// The scope's expiry, bounded by `policy.max_approval_ttl`.
+            /// The scope's expiry, bounded by `policy.max_approval_ttl`, as an RFC 3339
+            /// UTC string (`ATH-DATA-002`) — the same form the persisted
+            /// `ApprovalScope::Pattern.expires_at` carries, so the deadline readers'
+            /// lexical comparison holds end to end (X-52).
             expires_at: String,
         },
     }
@@ -106,7 +109,18 @@ pub mod scope {
                 Ok(Staged::Pattern {
                     pattern,
                     uses_remaining,
-                    expires_at: format!("{expires_epoch_ms}"),
+                    // RFC 3339, because that is what every consumer of this value reads:
+                    // the row persists it as `ApprovalScope::Pattern.expires_at`
+                    // (`ATH-DATA-002`), and both deadline readers — `deadline_passed` here
+                    // and `ApprovalRepository::list_expired` in the store — compare it
+                    // *lexically* against a `now` in the same form. An epoch-milliseconds
+                    // string survives the type system (both are `String`) and then makes
+                    // those comparisons meaningless, so the conversion belongs here, at the
+                    // one place the staged value is minted (X-52).
+                    expires_at: athena_types::clock::format_rfc3339(
+                        expires_epoch_ms / 1_000,
+                        u32::try_from(expires_epoch_ms % 1_000).unwrap_or(0),
+                    ),
                 })
             }
         }
@@ -330,6 +344,49 @@ mod scope_tests {
         assert_eq!(staged, Staged::OperationOnly);
         // Consumption: one use, then the scope is gone (R-ST-13).
         assert_eq!(consume(1), (0, true));
+    }
+
+    #[test]
+    fn the_staged_expiry_is_the_form_its_readers_compare() {
+        // X-52: the staged `expires_at` is minted in RFC 3339, because every consumer
+        // compares it lexically against a `now` in that form — `deadline_passed` here and
+        // `ApprovalRepository::list_expired` in the store. Both the staged value and the
+        // persisted one are `String`, so nothing but this test stands between the two
+        // representations and a deadline check that silently never fires.
+        let one_hour_ms = 3_600_000_u64;
+        let now_ms = 1_794_441_600_000_u64; // 2026-11-12T00:00:00.000Z
+        let staged = super::scope::stage(
+            ScopeRequest::Pattern {
+                pattern: "git_push_to_origin_main".into(),
+                uses_remaining: 1,
+                expires_epoch_ms: now_ms + one_hour_ms,
+            },
+            &configured(),
+            3600,
+            now_ms,
+        )
+        .expect("staged");
+        let Staged::Pattern { expires_at, .. } = staged else {
+            panic!("a pattern request stages a pattern scope");
+        };
+        assert_eq!(
+            expires_at, "2026-11-12T01:00:00.000Z",
+            "the staged expiry is RFC 3339, not an epoch-milliseconds string"
+        );
+
+        // The readers' view: before the deadline it has not passed, after it has. An
+        // epoch-ms string would compare as `"1794445200000" <= "2026-11-12T…"`, which is
+        // always true — the deadline would read as already past, every time.
+        let before = athena_types::clock::format_rfc3339(now_ms / 1_000, 0);
+        let after = athena_types::clock::format_rfc3339((now_ms + 2 * one_hour_ms) / 1_000, 0);
+        assert!(
+            !super::staging::deadline_passed(&expires_at, &before),
+            "an hour before its expiry the scope is live"
+        );
+        assert!(
+            super::staging::deadline_passed(&expires_at, &after),
+            "an hour after its expiry the scope has lapsed"
+        );
     }
 
     #[test]
