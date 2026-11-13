@@ -34,7 +34,7 @@
 # Example (nothing is pre-configured — an empty list is the shipped state):
 #
 #   agents = [
-#     { id = "reviewer", runtime = "agent-cli", persona = "worker.md",
+#     { id = "reviewer", runtime = "agent-cli", persona = "worker_ja.md",
 #       provider = "ollama", model = "glm-5.3-flash:cloud", capabilities = ["review"] },
 #   ]
 agents = []
@@ -67,7 +67,7 @@ iteration_timeout = "30m"
 require_verification = true
 
 [core.agent]
-persona = "${athena.home}/personas/producer.md"
+persona = "${athena.home}/personas/producer_ja.md"
 workspace = "${athena.home}/var/core-agent"
 runtime = "agent-cli"
 provider = "" # MUST set — no ATHENA-side default (ATH-AGENT-008)

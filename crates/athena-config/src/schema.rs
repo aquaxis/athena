@@ -196,7 +196,9 @@ impl Default for EvaluationSection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct CoreAgentSection {
-    /// Producer persona (ATH-CORE-024).
+    /// Producer persona (ATH-CORE-024). The shipped default points at the Japanese face
+    /// `personas/producer_ja.md` — the repository's distributed personas are themselves
+    /// Japanese, with no English original beside them (X-59).
     pub persona: String,
     /// Dedicated Workspace, never shared with subordinates (ATH-CORE-023).
     pub workspace: String,
@@ -222,7 +224,7 @@ pub struct CoreAgentSection {
 impl Default for CoreAgentSection {
     fn default() -> Self {
         Self {
-            persona: "${athena.home}/personas/producer.md".into(),
+            persona: "${athena.home}/personas/producer_ja.md".into(),
             workspace: "${athena.home}/var/core-agent".into(),
             runtime: "agent-cli".into(),
             // Deliberately empty: there is no ATHENA-side default provider or model, and

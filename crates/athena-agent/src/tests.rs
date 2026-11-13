@@ -416,17 +416,17 @@ fn the_sibling_acl_rides_the_settled_nodes_untouched() {
 
 #[test]
 fn the_shipped_level_personas_load_through_the_persona_loader() {
-    // P2-19's drift guard: the distributed defaults (`personas/director.md`,
-    // `personas/lead.md`, `personas/worker.md`) must parse through the real loader, pair
-    // their level, and stay inside the minimal granted set a definition carries
-    // (R-PER-03). Any future edit that breaks the front-matter contract or the
-    // minimal-tool policy fails here before it can ship.
+    // P2-19's drift guard: the distributed defaults (`personas/director_ja.md`,
+    // `personas/lead_ja.md`, `personas/worker_ja.md` — the shipped Japanese faces, X-59)
+    // must parse through the real loader, pair their level, and stay inside the minimal
+    // granted set a definition carries (R-PER-03). Any future edit that breaks the
+    // front-matter contract or the minimal-tool policy fails here before it can ship.
     use crate::persona::load_persona_from_text;
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../personas");
     let cases = [
-        ("director.md", AgentLevel::Director),
-        ("lead.md", AgentLevel::Lead),
-        ("worker.md", AgentLevel::Worker),
+        ("director_ja.md", AgentLevel::Director),
+        ("lead_ja.md", AgentLevel::Lead),
+        ("worker_ja.md", AgentLevel::Worker),
     ];
     // The minimal working set: read and write inside the Workspace, and send reports
     // (ATH-SEC-008's minimal-default policy; the aiprj convention needs exactly this).

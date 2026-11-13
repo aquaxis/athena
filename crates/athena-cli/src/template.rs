@@ -14,28 +14,31 @@
 //!    The quoted rule files are the project's operation conventions; the command wrappers are
 //!    the `/setup_ai /ai /update_ai /next_ai /close_ai` entries `install.sh` expands.
 
-/// The producer persona (repo default, P1-44).
+/// The producer persona (repo default, P1-44). The shipped persona is the Japanese
+/// face (X-59): the repository distributes and references `personas/*_ja.md` only —
+/// the four level personas are themselves Japanese, with no English original beside
+/// them.
 pub const PERSONA_PRODUCER: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../personas/producer.md"
+    "/../../personas/producer_ja.md"
 ));
 
-/// The director persona (repo default, P2-19).
+/// The director persona (repo default, P2-19) — the shipped Japanese face (X-59).
 pub const PERSONA_DIRECTOR: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../personas/director.md"
+    "/../../personas/director_ja.md"
 ));
 
-/// The lead persona (repo default, P2-19).
+/// The lead persona (repo default, P2-19) — the shipped Japanese face (X-59).
 pub const PERSONA_LEAD: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../personas/lead.md"
+    "/../../personas/lead_ja.md"
 ));
 
-/// The worker persona (repo default, P2-19).
+/// The worker persona (repo default, P2-19) — the shipped Japanese face (X-59).
 pub const PERSONA_WORKER: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../personas/worker.md"
+    "/../../personas/worker_ja.md"
 ));
 
 /// The Core Agent loop procedure (repo default).

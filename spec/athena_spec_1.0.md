@@ -4452,7 +4452,7 @@ require_verification = true
 
 # Core Agent（agent-cli instance #0）
 [core.agent]
-persona = "${athena.home}/personas/producer.md"
+persona = "${athena.home}/personas/producer_ja.md"
 workspace = "${athena.home}/var/core-agent"
 runtime = "agent-cli"
 provider = "claude"

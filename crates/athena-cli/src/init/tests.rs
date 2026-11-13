@@ -58,10 +58,10 @@ fn a_fresh_init_creates_the_full_athena_and_aiprj_tree() {
         home.join("agents")
             .join("producer")
             .join("core-requests.md"),
-        home.join("personas").join("producer.md"),
-        home.join("personas").join("director.md"),
-        home.join("personas").join("lead.md"),
-        home.join("personas").join("worker.md"),
+        home.join("personas").join("producer_ja.md"),
+        home.join("personas").join("director_ja.md"),
+        home.join("personas").join("lead_ja.md"),
+        home.join("personas").join("worker_ja.md"),
         home.join(".gitignore"),
         root.join(".aiprj").join("instructions.md"),
         root.join(".aiprj").join("rules").join("exec_job.md"),
@@ -99,7 +99,7 @@ fn a_re_run_adds_only_missing_elements_and_overwrites_nothing() {
     fs::write(&config, "operator's configuration").expect("mutate");
     let instructions = root.join(".aiprj").join("instructions.md");
     fs::write(&instructions, "the project's own instructions").expect("mutate");
-    let persona = root.join(".athena").join("personas").join("producer.md");
+    let persona = root.join(".athena").join("personas").join("producer_ja.md");
     fs::write(&persona, "operator's persona").expect("mutate");
 
     let report = run_init(&root).expect("second");
@@ -181,24 +181,24 @@ fn template_and_default_definitions_carry_the_repository_defaults() {
     run_init(&root).expect("init");
     let home = root.join(".athena");
     assert_eq!(
-        read(&home.join("personas").join("producer.md")),
+        read(&home.join("personas").join("producer_ja.md")),
         template::PERSONA_PRODUCER,
-        "the persona default is the repository's producer persona"
+        "the persona default is the repository's Japanese producer persona (X-59)"
     );
     assert_eq!(
-        read(&home.join("personas").join("director.md")),
+        read(&home.join("personas").join("director_ja.md")),
         template::PERSONA_DIRECTOR,
-        "the persona default is the repository's director persona (P2-19)"
+        "the persona default is the repository's Japanese director persona (P2-19)"
     );
     assert_eq!(
-        read(&home.join("personas").join("lead.md")),
+        read(&home.join("personas").join("lead_ja.md")),
         template::PERSONA_LEAD,
-        "the persona default is the repository's lead persona (P2-19)"
+        "the persona default is the repository's Japanese lead persona (P2-19)"
     );
     assert_eq!(
-        read(&home.join("personas").join("worker.md")),
+        read(&home.join("personas").join("worker_ja.md")),
         template::PERSONA_WORKER,
-        "the persona default is the repository's worker persona (P2-19)"
+        "the persona default is the repository's Japanese worker persona (P2-19)"
     );
     assert_eq!(
         read(
