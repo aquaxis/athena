@@ -332,6 +332,23 @@ Event 面です。事実が Core に届く経路は pid と同じで、合成の
 仕様が固定する `RuntimeInstanceRef` / `RuntimeInstanceStatus` にフィールドは増えません。
 manager が記録を持たない handle は、その異常として記録され、初期化を主張しません。
 
+## X-57: Core Agent の停止を記録する
+
+`CoreAgentFailed`（`ATH-CORE-031`、MUST）に本番の送出点が入りました。`ATH-CORE-031` が名指す
+4 つの Event のうち、`CoreAgentStarted` / `Restarted` / `Escalated` は X-50 で結線済みでしたが、
+本行だけはどこにも送出点がありませんでした。
+
+記録する場所は 2 箇所で、いずれも**障害が観測される地点**です（判定される地点ではありません）:
+監督ポールの死検出（`ATH-CORE-028`）— チェックサム・再起動ウィンドウ・復旧判断のいずれよりも
+**前**に書きます — と、instance #0 を立ち上げられなかったブート（ポールは起動しなかった Agent の
+記録を見つけられないため、ここだけが記録できる地点）。payload はカタログの `empty()`
+（`ATH-EVENT-009` は閉じたまま — 理由は常駐のログに乗せ、フィールドをでっち上げません）、actor は
+Core Agent、envelope は Task 鎖に加わりません（`ATH-STATE-012`）。
+
+停止の記録はそれ以上を主張しません: 続く再起動は `CoreAgentRestarted`、ウィンドウ枯渇による停止は
+`CoreAgentEscalated`（`ATH-CORE-030`）であり、障害からそれらを推論しません。ブート腕がエスカレー
+ションを記録しないのは、その腕がウィンドウを参照していないからです。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は

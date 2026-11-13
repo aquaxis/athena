@@ -21,7 +21,7 @@
 
 use athena_events::envelope::Actor;
 use athena_events::events::{
-    CoreAgentEscalated, CoreAgentHeartbeat, CoreAgentRestarted, CoreAgentStarted,
+    CoreAgentEscalated, CoreAgentFailed, CoreAgentHeartbeat, CoreAgentRestarted, CoreAgentStarted,
 };
 use athena_events::{EventContext, EventError, TypedEvent};
 use athena_persistence::AthenaStore;
@@ -308,6 +308,23 @@ pub async fn start_core_agent(
 /// Event joins one (ATH-OBS-004, enforced at construction).
 pub fn started_event(context: EventContext) -> Result<TypedEvent<CoreAgentStarted>, EventError> {
     TypedEvent::new(CoreAgentStarted {}, context)
+}
+
+/// `CoreAgentFailed` — instance #0 is observed `FAILED` (X-57, `ATH-CORE-031`'s stop face).
+///
+/// Written where the failure is *observed*, before the deterministic recovery decides
+/// anything: the supervision poll's death detection (`ATH-CORE-028`) and a boot that never
+/// brought instance #0 up. It records the stop, not a verdict — the restart that may follow
+/// is `CoreAgentRestarted`, and the window-exhaustion halt is `CoreAgentEscalated`
+/// (`ATH-CORE-030`); neither may be inferred from this Event.
+///
+/// The payload is the catalog's `empty()` (`ATH-EVENT-009`'s closed catalog): the reason the
+/// resident observed rides its log, not an invented field.
+///
+/// # Errors
+/// [`EventError::InvalidEnvelope`] for a correlation-less context.
+pub fn failed_event(context: EventContext) -> Result<TypedEvent<CoreAgentFailed>, EventError> {
+    TypedEvent::new(CoreAgentFailed {}, context)
 }
 
 /// `CoreAgentRestarted` with its restart-window record (ATH-CORE-031).

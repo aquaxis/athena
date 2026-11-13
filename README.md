@@ -350,6 +350,24 @@ and the spec-pinned `RuntimeInstanceRef` / `RuntimeInstanceStatus` gain no field
 the manager holds no record for is logged as the anomaly it is and claims no
 initialization.
 
+## X-57: the Core Agent's stop is recorded
+
+`CoreAgentFailed` (`ATH-CORE-031`, MUST) now has production emitters — it was the one row of
+the four that `ATH-CORE-031` names without an emitter anywhere, while
+`CoreAgentStarted` / `Restarted` / `Escalated` were wired by X-50.
+
+Two sites record it, both where the failure is **observed** rather than where it is judged:
+the supervision poll's death detection (`ATH-CORE-028`), written before the checksum, the
+restart window and the recovery decide anything; and a boot that never brought instance #0
+up — the only place that can record it, since the poll finds no record for an agent that
+never started. The payload is the catalog's `empty()` (`ATH-EVENT-009` stays closed — the
+reason rides the resident's log, no field invented), the actor is the Core Agent, and the
+envelope joins no Task chain (`ATH-STATE-012`).
+
+Recording the stop claims nothing further: a restart that follows is `CoreAgentRestarted`,
+and a window-exhausted halt is `CoreAgentEscalated` (`ATH-CORE-030`) — neither is inferred
+from the failure, and the boot arm records no escalation because it consults no window.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is

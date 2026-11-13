@@ -316,6 +316,77 @@ fn resident_key() -> &'static String {
     })
 }
 
+/// Instance #0's own Event envelope (X-57): the Core Agent as actor, no Task chain
+/// (`ATH-STATE-012` — instance #0 never joins one), on the caller's correlation key.
+fn core_event_context(now: &str, correlation_id: String) -> athena_core::EventContext {
+    athena_core::EventContext {
+        event_id: athena_types::EventId::new(),
+        occurred_at: now.to_string(),
+        actor: athena_core::Actor::CoreAgent,
+        task_id: None,
+        plan_step_id: None,
+        agent_id: Some(athena_types::AgentId::core_agent()),
+        instance_id: None,
+        skill_id: None,
+        correlation_id,
+        causation_id: None,
+    }
+}
+
+/// Append one built `CoreAgent*` Event, naming whichever face refused (X-57).
+///
+/// The construction gate and the store append stay one chain of facts, never one
+/// `and_then`: the builder answers `EventError` and the store `PersistenceError`, and
+/// folding them would misname the face that refused. A failure to *record* a failure is
+/// logged and never swallowed — and never escalated into a second failure Event, which
+/// would record a fiction.
+fn append_core_event<P: athena_core::Payload>(
+    rows: &Arc<Mutex<AthenaStore>>,
+    built: Result<athena_core::TypedEvent<P>, athena_core::EventError>,
+    module: &str,
+    failure_message: &str,
+) {
+    let folded = match built {
+        Ok(typed) => Ok(NewEvent {
+            event_id: typed.event_id.clone(),
+            schema_version: typed.schema_version,
+            event_type: typed.event_type.to_string(),
+            occurred_at: typed.occurred_at.clone(),
+            task_id: typed.task_id.clone(),
+            plan_step_id: typed.plan_step_id.clone(),
+            agent_id: typed.agent_id.clone(),
+            instance_id: typed.instance_id.clone(),
+            skill_id: typed.skill_id.clone(),
+            correlation_id: typed.correlation_id.clone(),
+            causation_id: typed.causation_id.clone(),
+            actor: typed.actor.as_str().to_string(),
+            payload_json: typed.payload_json.clone(),
+        }),
+        Err(fault) => Err(fault.to_string()),
+    };
+    let Ok(mut guard) = rows.lock() else {
+        resident_log(
+            Log::Error,
+            module,
+            failure_message,
+            resident_key(),
+            serde_json::json!({ "fault": "the store lock is poisoned" }),
+        );
+        return;
+    };
+    if let Err(fault) = folded.and_then(|event| {
+        athena_core::EventRepository::append(&mut *guard, &event).map_err(|fault| fault.to_string())
+    }) {
+        resident_log(
+            Log::Error,
+            module,
+            failure_message,
+            resident_key(),
+            serde_json::json!({ "fault": fault }),
+        );
+    }
+}
+
 /// One structured line on the resident chain: level, module, message, the correlation
 /// key that carries it, and the structured fields — one JSON envelope per line (X-39).
 fn resident_log(
@@ -747,13 +818,31 @@ async fn main() {
                 serde_json::json!({ "runtime_instance_id": handle.runtime_instance_id.as_str() }),
             )
         }
-        Err(error) => resident_log(
-            Log::Error,
-            "athena-api",
-            &format!("Core Agent boot failed (escalation face, ATH-CORE-031): {error}"),
-            resident_key(),
-            serde_json::json!({}),
-        ),
+        Err(error) => {
+            resident_log(
+                Log::Error,
+                "athena-api",
+                &format!("Core Agent boot failed (ATH-CORE-031): {error}"),
+                resident_key(),
+                serde_json::json!({}),
+            );
+            // X-57: a boot that never brought instance #0 up is the stop face
+            // `ATH-CORE-031` requires recording, and this arm is the only place that can
+            // record it — the supervision poll finds no `core_record()` for a Core Agent
+            // that never started, so it publishes `alive: false` and polls on without ever
+            // reaching a recovery. `CoreAgentFailed` states what was observed; it does not
+            // claim the escalation (`ATH-CORE-030`'s window verdict), because no window was
+            // consulted here.
+            append_core_event(
+                &rows,
+                athena_core::core_agent_session::failed_event(core_event_context(
+                    &athena_types::now_rfc3339(),
+                    boot_stamp.clone(),
+                )),
+                "resident.boot",
+                "recording the Core Agent boot failure failed",
+            );
+        }
     }
 
     // The checksum captures the *placed* surface (ATH-CORE-044): computed after the
@@ -2375,6 +2464,21 @@ where
                 "instance #0 process death observed (ATH-CORE-028)",
                 resident_key(),
                 serde_json::json!({}),
+            );
+            // X-57: the observed stop is recorded *here* — before the checksum, the
+            // window and the recovery decide anything — because `ATH-CORE-031` requires
+            // the stop itself as an Event, and a restart that follows is a separate fact
+            // (`CoreAgentRestarted`), as is a window-exhausted halt (`CoreAgentEscalated`,
+            // `ATH-CORE-030`). Recording after the decision would lose the failures whose
+            // recovery escalates or refuses, which are exactly the ones worth replaying.
+            append_core_event(
+                &rows,
+                athena_core::core_agent_session::failed_event(core_event_context(
+                    &athena_types::now_rfc3339(),
+                    resident_key().clone(),
+                )),
+                "resident.supervision",
+                "recording the Core Agent failure failed",
             );
             // 1. The control-surface checksum (ATH-CORE-044): a mismatch escalates —
             //    nothing restarts through a tampered surface.

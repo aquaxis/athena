@@ -386,8 +386,66 @@ fn the_core_agent_events_carry_their_payload_and_type() {
     let beat = heartbeat_event(2, Some(TaskId::new()), 3, context.clone()).expect("beat");
     assert_eq!(beat.event_type, "CoreAgentHeartbeat");
     assert_eq!(beat.payload.pending_requests, 3);
-    let escalated = crate::core_agent_session::escalated_event(context).expect("escalate");
+    let escalated = crate::core_agent_session::escalated_event(context.clone()).expect("escalate");
     assert_eq!(escalated.event_type, "CoreAgentEscalated");
+    // X-57: the fourth face `ATH-CORE-031` names — the stop itself.
+    let failed = crate::core_agent_session::failed_event(context).expect("fail");
+    assert_eq!(failed.event_type, "CoreAgentFailed");
+}
+
+#[test]
+fn the_core_agent_failure_records_the_stop_without_claiming_a_verdict() {
+    // X-57 / ATH-CORE-031: `CoreAgentFailed` is the *observed stop*. It carries the
+    // catalog's `empty()` payload (ATH-EVENT-009's closed catalog — the reason rides the
+    // resident's log, no field is invented), the Core Agent as actor, and no Task chain
+    // (instance #0 never joins one, ATH-STATE-012).
+    let context = EventContext {
+        event_id: athena_types::EventId::new(),
+        occurred_at: now_rfc3339(),
+        actor: Actor::CoreAgent,
+        task_id: None,
+        plan_step_id: None,
+        agent_id: Some(AgentId::core_agent()),
+        instance_id: None,
+        skill_id: None,
+        correlation_id: "cor-supervision".into(),
+        causation_id: None,
+    };
+    let failed = crate::core_agent_session::failed_event(context).expect("fail");
+
+    assert_eq!(failed.event_type, "CoreAgentFailed");
+    assert_eq!(failed.actor, Actor::CoreAgent);
+    assert_eq!(failed.agent_id.as_ref(), Some(&AgentId::core_agent()));
+    assert_eq!(failed.task_id, None, "instance #0 joins no Task chain");
+    assert_eq!(failed.correlation_id, "cor-supervision");
+    assert_eq!(
+        failed.payload_json, "{}",
+        "the catalog's empty() payload: no reason field is invented"
+    );
+
+    // The stop is not the restart and not the escalation: three distinct catalog rows,
+    // and recording one must never be read as recording another.
+    assert_ne!(failed.event_type, "CoreAgentRestarted");
+    assert_ne!(failed.event_type, "CoreAgentEscalated");
+}
+
+#[test]
+fn a_correlation_less_context_refuses_the_failure_event() {
+    // ATH-OBS-004: every Event joins a chain — enforced at construction, so a resident
+    // that lost its key records nothing rather than an unchained fact.
+    let context = EventContext {
+        event_id: athena_types::EventId::new(),
+        occurred_at: now_rfc3339(),
+        actor: Actor::CoreAgent,
+        task_id: None,
+        plan_step_id: None,
+        agent_id: Some(AgentId::core_agent()),
+        instance_id: None,
+        skill_id: None,
+        correlation_id: String::new(),
+        causation_id: None,
+    };
+    assert!(crate::core_agent_session::failed_event(context).is_err());
 }
 
 // --- P1-32: the context document rebuild -------------------------------------------------
