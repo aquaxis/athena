@@ -130,9 +130,11 @@ pub use core_agent_session::{
     started_event, verify_surface,
 };
 pub use core_loop::{
-    Interpreted, LoopFault, PendingDelivery, Received, Settled, core_thread, deliver, fail_task,
-    ingest_answer, interpret_answer, next_answer, open_clarification, prepare_delivery,
-    queued_tasks, reported_status, running_tasks, settle_task,
+    Interpreted, LoopFault, OutstandingReply, PendingDelivery, Received, Received2, ReceptionFault,
+    Settled, core_thread, deliver, expire_outstanding_replies, fail_task, ingest_answer,
+    interpret_answer, next_answer, open_clarification, prepare_delivery, queued_tasks,
+    receive_subordinate_messages, record_relay_observations, reported_status, running_tasks,
+    settle_task,
 };
 pub use delegation::{DelegationAccepted, DelegationFault, DelegationRequest, accept_delegation};
 pub use inspection::{Inspection, InspectionFacts, Inspector, Reason, deny_envelope};

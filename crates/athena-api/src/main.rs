@@ -797,6 +797,15 @@ where
         let instances_root = std::path::Path::new(&config.athena.home)
             .join("var")
             .join("instances");
+        // X-53: the resident's wait book — every `instruction` delivered to a subordinate
+        // whose reply is still owed, keyed by the message id the deadline rides. Written
+        // when the outbound leg lands (`deliver_instruction`'s facts), read by the
+        // deadline sweep each tick (`expire_outstanding_replies`), and dropped the tick a
+        // reply lands or the deadline's observation has fired. The receiver of the wait is
+        // always a subordinate: instance #0's own deadline never sits in this book
+        // (`ATH-STATE-023` — the resident's expiry is the observation face only).
+        let mut outstanding: std::collections::HashMap<String, athena_core::OutstandingReply> =
+            std::collections::HashMap::new();
         loop {
             tokio::time::sleep(EXECUTION_POLL).await;
 
@@ -1687,7 +1696,13 @@ where
                                         runtime_instance_id: handle,
                                         instance_id: report.outcome.instance_id.clone(),
                                     };
-                                    deliver_instruction(
+                                    // X-53: the delivery's facts are the inbound leg's — a
+                                    // reply has a reader only while the outbound leg's wait
+                                    // stands in the map. `None` (a dispatch refusal, an
+                                    // unlanded send, an acceptance-record fault) records
+                                    // nothing: the row dwells in the store where the gauge
+                                    // and the sweep's store facts answer it.
+                                    if let Some(delivery) = deliver_instruction(
                                         &rows,
                                         adapter.as_ref(),
                                         &instance.instance_id,
@@ -1696,7 +1711,40 @@ where
                                         &config,
                                         &correlation,
                                     )
-                                    .await;
+                                    .await
+                                    {
+                                        // The wait record's anchors are the row's own: the
+                                        // Task the instruction anchored and the Agent the
+                                        // deadline watches (`ATH-MSG-005`). A row the store
+                                        // no longer answers records no wait — the same
+                                        // honest `None` the other early returns take.
+                                        if let Some(row) = rows.lock().ok().and_then(|guard| {
+                                            athena_core::AgentRepository::get_instance(
+                                                &*guard,
+                                                &target.instance_id,
+                                            )
+                                            .ok()
+                                            .flatten()
+                                        }) {
+                                            outstanding.insert(
+                                                delivery.dispatched.message_id.as_str().to_string(),
+                                                athena_core::OutstandingReply {
+                                                    message_id: delivery
+                                                        .dispatched
+                                                        .message_id
+                                                        .as_str()
+                                                        .to_string(),
+                                                    thread_id: delivery
+                                                        .dispatched
+                                                        .thread_id
+                                                        .clone(),
+                                                    deadline: delivery.deadline,
+                                                    task_id: row.task_id,
+                                                    receiver: row.agent_id,
+                                                },
+                                            );
+                                        }
+                                    }
                                 }
                             }
                             Err(fault) => resident_log(
@@ -1718,8 +1766,164 @@ where
                     }
                 }
             }
+
+            // 3. The inbound leg (X-53): read what the subordinates have emitted, sweep
+            //    the deadlines Core still waits on, and record what the polls observed.
+            //    Both walks run with no store lock held — the reception locks its own
+            //    scopes, and the sweep's Event writes happen through
+            //    `expire_outstanding_replies`'s own one-lock-per-event walk.
+            if !outstanding.is_empty() {
+                let expired = {
+                    let Ok(mut guard) = rows.lock() else {
+                        continue;
+                    };
+                    athena_core::expire_outstanding_replies(&mut guard, &outstanding, &now)
+                };
+                match expired {
+                    Ok(expired) => {
+                        for key in expired {
+                            outstanding.remove(&key);
+                        }
+                    }
+                    Err(fault) => resident_log(
+                        Log::Warn,
+                        "resident.broker",
+                        &format!("sweeping the reply deadlines failed: {fault}"),
+                        resident_key(),
+                        serde_json::json!({}),
+                    ),
+                }
+            }
+            for instance_row in {
+                // The walk holds the lock only to list the rows: the reception below locks
+                // its own scopes, and no guard crosses an await (the resident's Send-bound
+                // discipline).
+                let non_terminal = rows.lock().map(|guard| {
+                    athena_core::AgentRepository::list_non_terminal_instances(&*guard)
+                        .unwrap_or_default()
+                });
+                non_terminal.unwrap_or_default()
+            } {
+                // The reception's anchors are the rows' own (never guessed): the Task the
+                // delegation anchored, the workspace the Instance composes under
+                // (`ATH-OPS-009`) and the Runtime handle X-44 recorded at start. An
+                // Instance the Runtime map no longer answers is skipped, not invented.
+                let Some(handle) = instance_row.runtime_instance_id else {
+                    continue;
+                };
+                let target = RuntimeInstanceRef {
+                    runtime_type: RuntimeType::AgentCli,
+                    runtime_instance_id: handle,
+                    instance_id: instance_row.id.clone(),
+                };
+                let workspace = instance_row.workspace.clone();
+                let outcome = athena_core::receive_subordinate_messages(
+                    adapter.as_ref(),
+                    &rows,
+                    &target,
+                    &instance.instance_id,
+                    std::path::Path::new(&workspace),
+                    std::path::Path::new(&config.athena.home),
+                    instance_row.task_id.as_ref(),
+                    &[],
+                    &now,
+                )
+                .await;
+                match outcome {
+                    Ok(received) => {
+                        for item in received {
+                            match item {
+                                athena_core::Received2::Complete {
+                                    task_id,
+                                    result_id,
+                                    artifacts_copied,
+                                } => resident_log(
+                                    Log::Info,
+                                    "resident.reception",
+                                    "a subordinate's completion landed",
+                                    resident_key(),
+                                    serde_json::json!({
+                                        "task_id": task_id.as_str(),
+                                        "result_id": result_id.as_str(),
+                                        "artifacts_copied": artifacts_copied,
+                                        "instance_id": target.instance_id.as_str()
+                                    }),
+                                ),
+                                athena_core::Received2::Report {
+                                    message,
+                                    relay_observations,
+                                } => {
+                                    // ATH-HIER-015's record face: the observation the
+                                    // report derived is appended through the core crate's
+                                    // own helper — the consequence stays the deciding
+                                    // agent's (`ATH-CORE-022`), the record is Core Host's.
+                                    if !relay_observations.is_empty() {
+                                        let task = instance_row.task_id.clone();
+                                        let recorded = {
+                                            let Ok(mut guard) = rows.lock() else {
+                                                continue;
+                                            };
+                                            athena_core::record_relay_observations(
+                                                &mut guard,
+                                                &relay_observations,
+                                                &message,
+                                                task.as_ref(),
+                                                &target.instance_id,
+                                                &now,
+                                            )
+                                        };
+                                        if let Err(fault) = recorded {
+                                            resident_log(
+                                                Log::Warn,
+                                                "resident.reception",
+                                                &format!(
+                                                    "recording the relay observation failed: {fault}"
+                                                ),
+                                                resident_key(),
+                                                serde_json::json!({}),
+                                            );
+                                        }
+                                    }
+                                }
+                                athena_core::Received2::Error { message } => resident_log(
+                                    Log::Warn,
+                                    "resident.reception",
+                                    "a subordinate reported an error; the row stands",
+                                    resident_key(),
+                                    serde_json::json!({
+                                        "message_id": message.message_id.as_str(),
+                                        "instance_id": target.instance_id.as_str()
+                                    }),
+                                ),
+                            }
+                        }
+                    }
+                    Err(fault) => resident_log(
+                        Log::Warn,
+                        "resident.reception",
+                        &format!(
+                            "receiving from {} refused: {fault}",
+                            target.instance_id.as_str()
+                        ),
+                        resident_key(),
+                        serde_json::json!({
+                            "instance_id": target.instance_id.as_str(),
+                            "fault": fault.to_string()
+                        }),
+                    ),
+                }
+            }
         }
     })
+}
+/// identity and the deadline the row carries, so the resident can hold a wait record
+/// against the subordinate's reply without re-reading the row.
+#[derive(Debug, Clone)]
+struct CrateInstructionDelivery {
+    /// The dispatched `instruction` Message (its id and thread; `ATH-MSG-013`).
+    dispatched: athena_core::broker::Dispatched,
+    /// The reply deadline the row was written with (`ATH-MSG-005`, RFC 3339 UTC).
+    deadline: String,
 }
 
 /// X-46: hand a started Instance its delegation instruction, through the Broker.
@@ -1733,7 +1937,12 @@ where
 ///
 /// Nothing here fails the Task: a refusal or a send fault is named on the resident's own
 /// chain and the message stays in the store, dwelling, where the gauge counts it and a
-/// later retry answers the same `message_id` by dedup.
+/// later retry answers the same `message_id` by dedup. On success the delivery's facts —
+/// the deadline the row carries, the thread, the dispatched identity — ride back to the
+/// caller, which is what drives the inbound leg (X-53: the subordinate's reply has a
+/// reader only when the outbound leg's facts survive it).
+///
+/// The returned `deadline` is the exact stamp `dispatch_instruction` recorded on its row.
 async fn deliver_instruction<D>(
     rows: &Arc<Mutex<AthenaStore>>,
     adapter: &AgentCliAdapter<D>,
@@ -1742,7 +1951,8 @@ async fn deliver_instruction<D>(
     instruction: &str,
     config: &athena_core::Config,
     correlation: &str,
-) where
+) -> Option<CrateInstructionDelivery>
+where
     D: ProcessDriver + 'static,
 {
     // ATH-MSG-005/016: an `instruction` carries a reply deadline, and its value is the
@@ -1757,7 +1967,7 @@ async fn deliver_instruction<D>(
 
     let dispatched = {
         let Ok(mut guard) = rows.lock() else {
-            return;
+            return None;
         };
         let now = athena_types::now_rfc3339();
         match athena_core::broker::dispatch_instruction(
@@ -1788,7 +1998,7 @@ async fn deliver_instruction<D>(
                         "code": fault.code()
                     }),
                 );
-                return;
+                return None;
             }
         }
     };
@@ -1797,11 +2007,14 @@ async fn deliver_instruction<D>(
         &dispatched,
         core_instance,
         instruction,
-        Some(deadline),
+        Some(deadline.clone()),
     );
     if let Err(fault) = adapter.send(target, message).await {
         // Persisted but untaken: the row dwells and the gauge says so. Recorded, not
-        // undone — the ack contract already holds for the sender.
+        // undone — the ack contract already holds for the sender. No reply wait: a
+        // message the peer never took cannot earn one, and the dwell gauge states the
+        // residue (X-53's face (d) fires on the store's own deadline record, which this
+        // path leaves standing).
         resident_log(
             Log::Warn,
             "resident.broker",
@@ -1816,11 +2029,11 @@ async fn deliver_instruction<D>(
                 "thread_id": dispatched.thread_id
             }),
         );
-        return;
+        return None;
     }
 
     let Ok(mut guard) = rows.lock() else {
-        return;
+        return None;
     };
     let now = athena_types::now_rfc3339();
     if let Err(fault) = athena_core::broker::accept_delivery(
@@ -1839,7 +2052,7 @@ async fn deliver_instruction<D>(
                 "message_id": dispatched.message_id.as_str()
             }),
         );
-        return;
+        return None;
     }
     resident_log(
         Log::Info,
@@ -1857,6 +2070,10 @@ async fn deliver_instruction<D>(
             "thread_id": dispatched.thread_id
         }),
     );
+    Some(CrateInstructionDelivery {
+        dispatched,
+        deadline,
+    })
 }
 
 /// The supervision poll: detect instance #0's death, run the deterministic recovery

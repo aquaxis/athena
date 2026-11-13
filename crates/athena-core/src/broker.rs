@@ -446,7 +446,7 @@ pub fn accept_delivery(
 
 /// Fold one message Event onto the Task's own correlation chain (the delegation leg's
 /// precedent: the last non-empty chain, else a per-face mint).
-fn record_message_event<P: athena_events::events::Payload>(
+pub(crate) fn record_message_event<P: athena_events::events::Payload>(
     store: &mut AthenaStore,
     payload: P,
     task_id: Option<&TaskId>,

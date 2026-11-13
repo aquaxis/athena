@@ -57,7 +57,12 @@
 //! untestable without a resident server. This module holds the semantics over the
 //! repositories and the Runtime Interface, and the binary supplies the cadence.
 
-use athena_persistence::repository::{NewEvent, ResultRepository, TaskRepository};
+use std::path::Path;
+
+use crate::broker::BrokerDelivery as Delivery;
+use athena_persistence::repository::{
+    AgentRepository, EventRepository, MessageRepository, NewEvent, ResultRepository, TaskRepository,
+};
 use athena_persistence::{AthenaStore, PersistenceError};
 use athena_runtime::interface::Runtime;
 use athena_runtime::{RuntimeError, RuntimeInstanceRef};
@@ -524,6 +529,637 @@ pub async fn next_answer(
         }
     }
     Err(LoopFault::NoAnswerYet)
+}
+
+// --- X-53: the subordinate's inbound leg ----------------------------------------------------
+//
+// The outbound leg (X-46) delivers the delegation `instruction` through the Broker and
+// records its acceptance. What was missing was the **reception half**: a started Instance
+// sends its messages back — `report` while working, `complete` when it finishes (and an
+// `error` when its work fails) — and no production code read them. `Runtime::collect_result`
+// had zero production callers, `Runtime::receive` was never subscribed for a subordinate,
+// and `report_relay_observations`' aggregation check therefore had nowhere it could run.
+// This section is that path.
+//
+// The shape is the out-bound one mirrored. The Broker stays the only route (ATH-MSG-001 /
+// ATH-MSG-011): the message the Instance emitted is persisted as a `messages` row by
+// [`crate::broker::broker_deliver`] (row → delivery record, ATH-MSG-012's ack contract),
+// its arrival in the store *is* the receiving side's fact, and the acceptance Event
+// (`AgentMessageReceived`, ATH-MSG-007/014) records what the row's own lifecycle already
+// says. A `complete` additionally becomes the Task's Result: collected through
+// [`Runtime::collect_result`] (the
+// Runtime boundary's own materialization, re-minted Core-side, D-7), artifact-rebased
+// through [`crate::result_manager::store_copy::rebase_into_store`] before persistence so
+// instance-area artifacts survive the X-41 area sweep (`ATH-RESULT-004`'s copy face;
+// `ATH-RESULT-003`'s immutability is untouched — the Result row is written once, after the
+// copy), and recorded like [`ingest_answer`]'s with the §23.2 `TaskResultReceived` payload
+// derived from [`crate::result_manager::store_copy::reception::received_facts`]. A Task the
+// delegation already carried to `EVALUATING` never regresses: a second `complete` is still
+// recorded whole (row, delivery, acceptance — the never-dropped rule is not conditioned on
+// state), while the *result* face refuses with [`ReceptionFault::NotRunning`].
+//
+// Nothing here decides (`ATH-CORE-022`): no Task settles, no verdict is recorded, no
+// re-plan starts. What lands is the record the deciding agent reads — plus the observation
+// facts the aggregation face derives ([`crate::broker::report_relay_observations`],
+// ATH-HIER-015), which the caller records however the Event vocabulary of §23.2 permits.
+//
+// **[design decision] Why the stream is pulled per poll instead of held.** The resident's
+// execution loop owns the cadence (the same split that keeps instance #0's intake on
+// `Step::Intake`); holding one long-lived subscription per Instance would span the store
+// mutex's non-`Send` guard across an await and duplicate the Runtime's at-least-once
+// contract. Each poll reads what the boundary holds *now*, dedup answers a replay, and an
+// empty stream is the honest in-flight state — never a fault.
+
+/// What one reception from the subordinate produced.
+///
+/// The `Message` returned is the raw reception (a `complete` carries the body the Result
+/// materialized from); the caller drives the *decision* faces (`ATH-CORE-022`) — nothing
+/// here settles a Task or records a verdict, reception itself is the procedure.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Received2 {
+    /// A `report` — the Broker-side row landed; the relay observation (when the body
+    /// rides subordinate outputs verbatim, `ATH-HIER-015`) is the caller's event face.
+    Report {
+        /// The message as received from the Instance's stream.
+        message: athena_runtime::Message,
+        /// The observation pairs when the body passed a subordinate's output through
+        /// verbatim (empty otherwise — most reports are the worker's plain summary).
+        relay_observations: Vec<athena_messaging::VerbatimRelay>,
+    },
+    /// The `complete` — the Result row has landed (and instance-area artifacts, when the
+    /// Runtime boundary produced any, were copied to the Result Store first).
+    Complete {
+        /// The Task the Result belongs to.
+        task_id: TaskId,
+        /// The persisted Result (Core-minted id; D-7 re-minted the boundary's provisional
+        /// one).
+        result_id: ResultId,
+        /// The artifact count the copy face rehomed into the Result Store.
+        artifacts_copied: usize,
+    },
+    /// An `error` — the row landed; the deciding agent reads it (`ATH-MSG-012`: delivered,
+    /// never dropped).
+    Error {
+        /// The message as received.
+        message: athena_runtime::Message,
+    },
+}
+
+/// Why a subordinate reception refused before any record landed.
+///
+/// The store-half faults carry the whole refusal: a message that persisted but failed
+/// downstream still landed its row and delivery record — the caller re-polling answers it
+/// by dedup, and the honest residue is what the gauge counts.
+#[derive(Debug, thiserror::Error)]
+pub enum ReceptionFault {
+    /// The Broker refused (route, shape, or store) before the row persisted.
+    #[error("the Broker refused the inbound message: {0}")]
+    Broker(#[from] crate::broker::BrokerFault),
+    /// An acceptance-side refusal surfaced through the dispatch fault envelope
+    /// (`store` / `construction` are the reachable variants on the inbound face).
+    #[error("message bookkeeping refused: {0}")]
+    Dispatch(#[from] crate::broker::DispatchFault),
+    /// The store refused a write or read outside a repository call.
+    #[error("store fault: {0}")]
+    Store(#[from] PersistenceError),
+    /// The `complete`'s Result materialization refused at the Runtime boundary (an
+    /// unstartable collect, or instance #0's line refusing its own collection).
+    #[error("collecting the completion refused: {0}")]
+    Collect(#[from] RuntimeError),
+    /// The artifact copy refused (first offending path) — the Result row does not land
+    /// until the copy question is answered (`ATH-RESULT-003`: nothing is written
+    /// half-copied; the caller logs and lets the next poll re-answer).
+    #[error("the artifact copy refused: {0}")]
+    Rebase(#[from] crate::result_manager::store_copy::RebaseFault),
+    /// The Task the message anchors is not `RUNNING`, so the result face refuses: the
+    /// delegation was settled, failed or re-planned already, and this Result arrives to a
+    /// closed window. The row and acceptance still landed whole (never dropped,
+    /// `ATH-MSG-012`).
+    #[error(
+        "task {task} is in {actual}, not RUNNING: the completion arrived to a \
+         settled Task"
+    )]
+    NotRunning {
+        /// The Task the message anchored.
+        task: String,
+        /// The state the row actually holds.
+        actual: String,
+    },
+    /// The Instance row the message anchors carries no Task and the caller supplied none:
+    /// the anchor is a fact (`ATH-DATA-011`), never an invention.
+    #[error(
+        "instance {0} names no Task; the reception anchor is unknown \
+         (ATH-DATA-011: the anchor is a fact, never an invention)"
+    )]
+    Unanchored(String),
+    /// A poisoned store mutex or a repository-level read refusal outside the typed
+    /// fault set: the walk refuses instead of proceeding on an inconsistent base
+    /// (`ATH-PERS-006`'s no-guess face).
+    #[error("reception construction refused: {0}")]
+    Construction(String),
+    /// The reception gate refused a staged artifact (`ATH-RESULT-002/003`): the copy
+    /// question precedes the row, so the fault aborts the Result face whole.
+    #[error("staging the Result refused: {0}")]
+    Stage(#[from] crate::result_manager::reception::Refused),
+}
+
+/// The reception kinds this face records (the never-dropped set with a reception
+/// consequence, `ATH-MSG-012`); everything else is Runtime chatter (`Ok(None)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceptionKind {
+    /// An intermediate observation (`ATH-MSG-006`'s taxonomy: never settles a Task).
+    Report,
+    /// The work's completion — the only settlement-capable kind.
+    Complete,
+    /// The work's failure report (`ATH-MSG-012`: delivered, never dropped).
+    Error,
+}
+
+/// Read whatever the subordinate Instance has emitted since the last poll and land every
+/// message in the Broker's store with its reception records.
+///
+/// One poll = one [reception](land_subordinate_message) per message the Runtime boundary
+/// currently holds. The kinds that ride — `report`, `complete`, `error` — are the
+/// never-dropped set (`ATH-MSG-012`); everything else (`status`, control chatter) is the
+/// Runtime boundary's own bookkeeping and stays unrecorded here. For each message, in the
+/// order the contracts demand:
+///
+/// 1. **persist** — `broker_deliver` writes the `messages` row and the delivery record
+///    (`ATH-MSG-012`'s ack contract; `ATH-MSG-014`'s dedup answers a redelivered copy);
+/// 2. **accept** — the message has reached Core-side, so `mark_accepted` +
+///    `AgentMessageReceived` land, the mirror of X-46's outbound acceptance;
+/// 3. **complete-only extras** — the Result is collected through
+///    [`Runtime::collect_result`], artifacts are rebased into the Result Store first
+///    (`ATH-RESULT-004`), and the Result row + `TaskResultReceived` land in one
+///    transaction (`ATH-PERS-003`) on a Task that still stands `RUNNING`;
+/// 4. **report-only extras** — the aggregation check over the body (and the caller's
+///    subordinate-output pairs, when supplied) is derived and returned for the caller to
+///    record (`ATH-HIER-015`'s observation face — the consequence is the deciding agent's,
+///    never Core Host's).
+///
+/// The caller owns dedup upstream of a replayed redelivery: `broker_deliver` answers
+/// [`Delivery::AlreadyDelivered`], which this reception treats as the honest no-op it is —
+/// the row exists; nothing is re-accepted or re-recorded. A fault aborts the poll's
+/// *remaining* messages (earlier ones landed whole) — the caller logs and continues; the
+/// next poll walks the boundary again and dedup answers what already landed.
+///
+/// # Errors
+/// [`ReceptionFault`] — see the fault table above; nothing is ever left half-recorded.
+#[allow(clippy::too_many_arguments)]
+pub async fn receive_subordinate_messages<R: Runtime + ?Sized>(
+    runtime: &R,
+    store: &std::sync::Mutex<AthenaStore>,
+    subordinate: &RuntimeInstanceRef,
+    superior: &InstanceId,
+    workspace: &Path,
+    athena_home: &Path,
+    task_id: Option<&TaskId>,
+    subordinate_outputs: &[(String, String)],
+    now: &str,
+) -> Result<Vec<Received2>, ReceptionFault> {
+    use futures::StreamExt as _;
+
+    // The stream is the Runtime's own: this is the first production subscription for a
+    // subordinate Instance — the Adapter's reality is a per-call pull over the files the
+    // IPC transport wrote into the Workspace `.athena-outbox`, each reply carrying a fresh
+    // `message_id`, so the Broker's `(to_instance, message_id)` dedup answers a refetch.
+    let received: Vec<athena_runtime::Message> =
+        runtime.receive(subordinate).by_ref().collect().await;
+    if received.is_empty() {
+        // The empty stream is the ordinary in-flight state, not a fault.
+        return Ok(Vec::new());
+    }
+    let mut landed = Vec::with_capacity(received.len());
+    for message in received {
+        if let Some(outcome) = land_subordinate_message(
+            runtime,
+            store,
+            subordinate,
+            superior,
+            workspace,
+            athena_home,
+            task_id,
+            subordinate_outputs,
+            &message,
+            now,
+        )
+        .await?
+        {
+            landed.push(outcome);
+        }
+    }
+    Ok(landed)
+}
+
+/// One lock, poisoned or not: a poisoned mutex would hand the reception an inconsistent
+/// store, so the walk refuses instead of proceeding (the start face's own discipline,
+/// restated here; `ATH-PERS-006`'s no-guess face).
+fn lock_the_reception(
+    store: &std::sync::Mutex<AthenaStore>,
+) -> Result<std::sync::MutexGuard<'_, AthenaStore>, ReceptionFault> {
+    store
+        .lock()
+        .map_err(|_| ReceptionFault::Construction("the store lock is broken (poisoned)".into()))
+}
+
+/// One message's full reception: persist, accept, then the kind's own extras, or `None`
+/// when the kind carries no production record (a `status` is the Runtime's own
+/// bookkeeping, never a Broker row).
+///
+/// # Errors
+/// [`ReceptionFault`], whole (nothing half-recorded).
+#[allow(clippy::too_many_arguments)]
+async fn land_subordinate_message<R: Runtime + ?Sized>(
+    runtime: &R,
+    store: &std::sync::Mutex<AthenaStore>,
+    subordinate: &RuntimeInstanceRef,
+    superior: &InstanceId,
+    workspace: &Path,
+    athena_home: &Path,
+    task_id: Option<&TaskId>,
+    subordinate_outputs: &[(String, String)],
+    message: &athena_runtime::Message,
+    now: &str,
+) -> Result<Option<Received2>, ReceptionFault> {
+    // ATH-MSG-012's never-dropped kinds with a reception face; the rest is Runtime
+    // chatter. `report` must never settle anything (`ATH-MSG-006`'s taxonomy) — its face
+    // is the row, the acceptance and the observation facts only.
+    let kind = match message.message_type {
+        MessageType::Report => ReceptionKind::Report,
+        MessageType::Complete => ReceptionKind::Complete,
+        MessageType::Error => ReceptionKind::Error,
+        _ => return Ok(None),
+    };
+
+    // The anchors, all read from rows (never guessed): the Task — the caller's fact when
+    // it states one, else the Instance row's own (`X-44` wrote it at delegation); the
+    // PlanStep; the sender Agent. The **superior** this reply is addressed to is the
+    // caller's stated fact (the delegating core-agent Instance identity the resident
+    // holds; the delegation row itself leaves `superior_instance_id` unset — the
+    // hierarchy's edges belong to the Hierarchy aggregate, per its own comment), and the
+    // workspace and home are the caller's facts too (the same ones `receive` and
+    // `collect_result` already read).
+    let (anchor_task, anchor_plan_step, anchor_agent) = {
+        let guard = lock_the_reception(store)?;
+        let Some(row) = AgentRepository::get_instance(&*guard, &subordinate.instance_id)
+            .map_err(ReceptionFault::Store)?
+        else {
+            return Err(ReceptionFault::Unanchored(
+                subordinate.instance_id.as_str().to_string(),
+            ));
+        };
+        let task = match task_id {
+            Some(task) => task.clone(),
+            None => row.task_id.clone().ok_or_else(|| {
+                ReceptionFault::Unanchored(subordinate.instance_id.as_str().to_string())
+            })?,
+        };
+        (task, row.plan_step_id.clone(), row.agent_id.clone())
+    };
+
+    // 1. Persist: the row — the Instance is the sender (`ATH-MSG-011`'s mirror: Core Host
+    //    is never a correspondent) — and the delivery record, the ack contract's own pair
+    //    (`ATH-MSG-012`); `ATH-MSG-014`'s dedup answers the second copy. The row's address
+    //    is the Runtime's envelope: the reply's identity, thread the delegation opened
+    //    (`ATH-MSG-013`) and body ride whole, and the deadline is the inbound kind's —
+    //    `None`, because `carries_deadline` names `instruction`/`question` only
+    //    (`ATH-MSG-005`). The route world the Broker checks is the hierarchy's own edge
+    //    restated: the sender is the subordinate Instance, the receiver the delegating
+    //    instance the caller named — the pair X-46 opened in reverse. Anything else on this
+    //    face is denied (a Core→subordinate reply over *this* channel is refused: the
+    //    outbound leg delivers instructions through `dispatch_instruction`, never here).
+    let row = athena_persistence::repository::MessageRow {
+        message_id: message.message_id.clone(),
+        message_type: message.message_type,
+        from_agent: anchor_agent.clone(),
+        to_agent: AgentId::core_agent(),
+        to_instance_id: Some(superior.clone()),
+        from_instance_id: subordinate.instance_id.clone(),
+        task_id: Some(anchor_task.clone()),
+        thread_id: message.thread_id.clone(),
+        reply_to: message.reply_to.clone(),
+        priority: message.priority,
+        body: message.body.clone(),
+        payload_json: message.payload_json.clone(),
+        // The inbound kinds carry no reply deadline (`ATH-MSG-005`); a row inventing one
+        // would forge a duty nobody owes.
+        deadline: None,
+        created_at: now.to_string(),
+    };
+    let delivery = {
+        let mut guard = lock_the_reception(store)?;
+        crate::broker::broker_deliver(
+            row,
+            |from, to| {
+                // The delegation's own edge, read from the rows: the sender is the
+                // subordinate Instance this message rode in from, the receiver the
+                // delegating instance the caller named — the pair X-46 opened in
+                // reverse. Anything else on this face is denied.
+                from == &subordinate.instance_id && to == superior
+            },
+            &mut *guard,
+        )?
+    };
+
+    // A replayed redelivery is answered by the recorded delivery: the row, its acceptance
+    // and the Result face all stand from the first copy — saying them again would write
+    // Events for nothing (`ATH-MSG-014`'s dedup is the answer, and the honest no-op).
+    if matches!(delivery, Delivery::AlreadyDelivered { .. }) {
+        return Ok(None);
+    }
+
+    // 2. Accept: the message reached Core-side, so the row's own lifecycle is stated —
+    //    `mark_accepted` (the delivery record's `accepted_at`) and `AgentMessageReceived`
+    //    in one lock scope, the mirror of X-46's outbound acceptance (`ATH-MSG-007/014`).
+    {
+        let mut guard = lock_the_reception(store)?;
+        let event = athena_events::events::AgentMessageReceived {
+            message_id: message.message_id.clone(),
+            message_type: message.message_type,
+            thread_id: message.thread_id.clone(),
+        };
+        crate::broker::record_message_event(
+            &mut guard,
+            event,
+            Some(&anchor_task),
+            Some(&subordinate.instance_id),
+            now,
+        )
+        .map_err(ReceptionFault::from)?;
+        MessageRepository::mark_accepted(&mut *guard, superior, &message.message_id)
+            .map_err(ReceptionFault::Store)?;
+    }
+
+    match kind {
+        ReceptionKind::Report => {
+            // ATH-HIER-015: the observation is *derived* here — whether the body is a
+            // verbatim pass-through of the supplied subordinate outputs — but never
+            // recorded beyond the row: the consequence (re-request a real aggregation,
+            // reject, re-plan) is the deciding agent's (`ATH-CORE-022`).
+            Ok(Some(Received2::Report {
+                message: message.clone(),
+                relay_observations: crate::broker::report_relay_observations(
+                    &message.body,
+                    subordinate_outputs,
+                ),
+            }))
+        }
+        ReceptionKind::Error => Ok(Some(Received2::Error {
+            message: message.clone(),
+        })),
+        ReceptionKind::Complete => {
+            // 3. The Result face — the first production walk of `Runtime::collect_result`
+            //    (the boundary's own record of the step's work, D-7's provisional id) and
+            //    the first production walk of the artifact copy (`ATH-RESULT-004`). The
+            //    copy walks before the row exists (`ATH-RESULT-003`: nothing is written
+            //    half-copied; a copy fault refuses the Result face whole — the caller logs
+            //    and the next poll re-answers).
+            let mut result = runtime.collect_result(subordinate).await?;
+            let artifacts_copied = crate::result_manager::store_copy::rebase_into_store(
+                &mut result,
+                workspace,
+                athena_home,
+            )?;
+
+            // The Result row: the boundary's value with the stored facts enforced — the id
+            // is re-minted Core-side (`ATH-CORE-041`/D-7), the Task is the anchor's and the
+            // state gate refuses an arrival to a closed window (`NotRunning`) before
+            // anything persists.
+            let mut guard = lock_the_reception(store)?;
+            let row_task = TaskRepository::get(&*guard, &anchor_task)
+                .map_err(ReceptionFault::Store)?
+                .ok_or_else(|| ReceptionFault::NotRunning {
+                    task: anchor_task.as_str().to_string(),
+                    actual: "absent".to_string(),
+                })?;
+            if row_task.state != TaskState::Running {
+                return Err(ReceptionFault::NotRunning {
+                    task: anchor_task.as_str().to_string(),
+                    actual: row_task.state.as_str().to_string(),
+                });
+            }
+
+            // One transaction — the Result row, the `RUNNING → EVALUATING` edge and its
+            // `TaskResultReceived` carry (ATH-PERS-003), the payload derived from the
+            // stored facts (`ATH-EVAL-005`'s self-declaration marker rides `metadata`).
+            let status = result.status;
+            let result_id = ResultId::new();
+            let stored = ExecutionResult {
+                id: result_id.clone(),
+                task_id: anchor_task.clone(),
+                plan_step_id: anchor_plan_step.clone(),
+                agent_id: anchor_agent.clone(),
+                instance_id: subordinate.instance_id.clone(),
+                status,
+                output: result.output,
+                artifacts: result.artifacts,
+                logs_ref: None,
+                skills_used: result.skills_used,
+                model: result.model,
+                started_at: result.started_at,
+                finished_at: result.finished_at,
+                execution_time_ms: result.execution_time_ms,
+                metadata: serde_json::json!({
+                    "self_declared": true,
+                    "reported_status": status.as_str(),
+                    "message_id": message.message_id.as_str(),
+                }),
+            };
+            crate::result_manager::reception::stage(&stored)?;
+            ResultRepository::insert(&mut *guard, &stored).map_err(ReceptionFault::Store)?;
+
+            let correlation = EventRepository::list_for_task(&*guard, &anchor_task)
+                .map_err(ReceptionFault::Store)?
+                .into_iter()
+                .rev()
+                .map(|event| event.correlation_id)
+                .find(|chain| !chain.is_empty())
+                .unwrap_or_else(|| athena_events::redact::digest(&format!("message-{now}")));
+            let received_event = NewEvent {
+                event_id: EventId::new(),
+                schema_version: 1,
+                event_type: "TaskResultReceived".into(),
+                occurred_at: now.to_string(),
+                task_id: Some(anchor_task.clone()),
+                plan_step_id: anchor_plan_step.as_ref().cloned(),
+                agent_id: Some(anchor_agent),
+                instance_id: Some(subordinate.instance_id.clone()),
+                skill_id: None,
+                correlation_id: correlation,
+                causation_id: None,
+                actor: "system".into(),
+                payload_json: match crate::result_manager::reception::received_facts(&stored) {
+                    Some(facts) => serde_json::json!({
+                        "result_id": facts.result_id,
+                        "plan_step_id": facts.plan_step_id,
+                        "status": facts.status,
+                    })
+                    .to_string(),
+                    None => serde_json::json!({
+                        "result_id": stored.id.as_str(),
+                        "status": stored.status.as_str(),
+                    })
+                    .to_string(),
+                },
+            };
+            let guard_store = &mut *guard;
+            guard_store
+                .transition_task(
+                    &anchor_task,
+                    TaskState::Running,
+                    TaskState::Evaluating,
+                    &received_event,
+                )
+                .map_err(ReceptionFault::Store)?;
+            drop(guard);
+
+            Ok(Some(Received2::Complete {
+                task_id: anchor_task,
+                result_id,
+                artifacts_copied,
+            }))
+        }
+    }
+}
+
+// --- X-53: the resident's wait records ------------------------------------------------------
+
+/// One dispatched `instruction` the resident still awaits a reply to (`ATH-MSG-005`).
+///
+/// The facts are the outbound leg's own: the Broker row's identity, its thread and the
+/// deadline the row was written with — kept here so the deadline sweep never re-reads the
+/// row to know what it watches. The map that holds these is the Core-Agent side's own wait
+/// book: every entry watches a *subordinate's* reply, which is why the deadline's
+/// observation face (the sweep) is the only treatment a wait gets here (`ATH-STATE-023`:
+/// nothing on this walk may fail instance #0, and a subordinate's own row is the State
+/// Manager's — never the resident's).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutstandingReply {
+    /// The message the deadline attaches to.
+    pub message_id: String,
+    /// The thread the exchange rides (`ATH-MSG-013`).
+    pub thread_id: String,
+    /// The row's own deadline (RFC 3339 UTC), exactly as `dispatch_instruction` recorded it.
+    pub deadline: String,
+    /// The Task the instruction anchored, when the row carried one (the §23.2 Event rides
+    /// the Task's own correlation chain).
+    pub task_id: Option<TaskId>,
+    /// The Agent the deadline watches — the subordinate who owes the reply (`ATH-MSG-005`).
+    /// The sweep copies it into the machinery's own record; the treatment on this walk is
+    /// fixed to the observation face (`ATH-STATE-023`), so it never branches a state here.
+    pub receiver: AgentId,
+}
+
+/// The wait records whose deadlines passed at `now`, each answered with an
+/// `AgentMessageTimeout` Event (the catalogue's minimum rows: message, thread, deadline —
+/// `ATH-MSG-006`; §23.2). The first production emission of that Event: until X-53 the
+/// deadline machinery (`athena-messaging::deadline`) had no production walker at all.
+///
+/// The treatment stays an *observation*, never a state change (`ATH-STATE-023`): a
+/// Core-Agent-side expiry must never fail instance #0, and the resident's own wait — the
+/// one this sweep watches, Core's wait for a subordinate's reply — is exactly the case the
+/// rule names. The subordinate's own row is Runtime state; its deadline treatment is the
+/// State Manager's, not this walk's. The caller drops the returned keys from its map; the
+/// next tick stops watching what has already answered.
+///
+/// # Errors
+/// [`crate::broker::DispatchFault`] when an Event write refused — the sweep stops whole
+/// (the un-emitted remainder stays in the caller's map and re-fires next tick).
+pub fn expire_outstanding_replies(
+    store: &mut AthenaStore,
+    outstanding: &std::collections::HashMap<String, OutstandingReply>,
+    now: &str,
+) -> Result<Vec<String>, crate::broker::DispatchFault> {
+    let mut expired = Vec::new();
+    for (key, reply) in outstanding {
+        let wait = athena_messaging::WaitRecord {
+            message_id: reply.message_id.clone(),
+            thread_id: reply.thread_id.clone(),
+            deadline: reply.deadline.clone(),
+            receiver: reply.receiver.clone(),
+        };
+        let Some(fault) = wait.expire_at(now) else {
+            continue;
+        };
+        let payload = fault.payload();
+        crate::broker::record_message_event(
+            store,
+            athena_events::events::AgentMessageTimeout {
+                message_id: payload.message_id,
+                thread_id: payload.thread_id,
+                deadline: payload.deadline,
+            },
+            reply.task_id.as_ref(),
+            None,
+            now,
+        )?;
+        expired.push(key.clone());
+    }
+    Ok(expired)
+}
+
+/// Record the aggregation observations one received `report` derived (`ATH-HIER-015`).
+///
+/// One raw `EventAppended` Event per observation — the catalogue holds no observation kind
+/// for the relay (`ATH-EVENT-009`'s set is closed by tests), and the precedent for a raw
+/// Event is the maintenance sweep's own record (`maintenance::record_swept`). The payload
+/// names the wire code and policy id the pure check minted (`VerbatimRelay::observation`),
+/// the relayed subordinate, the derived shape, and the report the observations rode, so
+/// the evaluator's consequence can cite the record (`ATH-CORE-022`'s deciding-agent face:
+/// Core Host records, never decides).
+///
+/// # Errors
+/// [`PersistenceError`] when the Event write refused, whole (nothing half-recorded).
+pub fn record_relay_observations(
+    store: &mut AthenaStore,
+    observations: &[athena_messaging::VerbatimRelay],
+    message: &athena_runtime::Message,
+    task_id: Option<&TaskId>,
+    instance_id: &InstanceId,
+    now: &str,
+) -> Result<(), PersistenceError> {
+    if observations.is_empty() {
+        return Ok(());
+    }
+    let correlation = match task_id {
+        Some(task) => EventRepository::list_for_task(store, task)?
+            .into_iter()
+            .rev()
+            .map(|event| event.correlation_id)
+            .find(|chain| !chain.is_empty())
+            .unwrap_or_else(|| athena_events::redact::digest(&format!("relay-{now}"))),
+        None => athena_events::redact::digest(&format!("relay-{now}")),
+    };
+    for relay in observations {
+        let (code, policy) = relay.observation();
+        let event = NewEvent {
+            event_id: EventId::new(),
+            schema_version: 1,
+            event_type: "EventAppended".into(),
+            occurred_at: now.to_string(),
+            task_id: task_id.cloned(),
+            plan_step_id: None,
+            agent_id: None,
+            instance_id: Some(instance_id.clone()),
+            skill_id: None,
+            correlation_id: correlation.clone(),
+            causation_id: None,
+            actor: "system".into(),
+            payload_json: serde_json::json!({
+                "observation": {
+                    "code": code,
+                    "policy": policy,
+                    "subordinate": relay.subordinate,
+                    "detail": relay.detail,
+                    "message_id": message.message_id.as_str(),
+                    "thread_id": message.thread_id,
+                }
+            })
+            .to_string(),
+        };
+        EventRepository::append(store, &event)?;
+    }
+    Ok(())
 }
 
 /// What one answer's protocol face resolved to (`ATH-CORE-033`'s twelve kinds, routed).

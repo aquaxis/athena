@@ -281,6 +281,23 @@ then request the transition. Other edges are refused *by name* (acceptance belon
 Result settlement, clarifications to `ask_human`, cancellation to the human), because a
 second path to a gated edge would be a hole in the gate.
 
+The subordinates finally have a reader. Each tick, after the outbound act, the resident
+sweeps the reply deadlines it still owes (`ATH-MSG-005`): an `instruction` whose deadline
+passes fires an `AgentMessageTimeout` observation — observation only, because the
+resident's own patience is not a verdict, and the Core Instance never falls to a lapsed
+wait (`ATH-STATE-023`). It then polls the runtime stream of every non-terminal Instance
+the store holds: a `report` lands its row and its verbatim-relay observations
+(`ATH-HIER-015`), appended as records whose consequence stays the deciding agent's
+(`ATH-CORE-022`); an `error` lands its row and stands as an observation; a `complete`
+walks `collect_result`, copies the instance-area artifacts into the ATHENA home
+(`ATH-RESULT-004`), refuses any Task the state gate does not hand it, and moves the Task
+`RUNNING` → `EVALUATING` with `TaskResultReceived` in one transaction (`ATH-PERS-003`) —
+the boundary's provisional result identity re-minted Core-side (`ATH-CORE-041`), the
+agent's self-declared status carried in metadata for the evaluation to judge
+(`ATH-EVAL-005`). The Broker's route check and delivery dedup govern the whole walk
+(`ATH-MSG-006`/`012`/`014`): a redelivered message is answered by the delivery already
+recorded.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is

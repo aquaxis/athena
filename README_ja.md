@@ -271,6 +271,21 @@ PlanStep は同一トランザクションで `ORPHANED` になります。こ�
 **所有者を名指して**拒否します (受理は Result の決着、確認質問は `ask_human`、取消は人間の担当) —
 ゲートのある辺に第 2 の経路を作ることは、そのゲートに穴を開けることだからです。
 
+下位 Instance の声を聞く者が、ようやく現れました。常駐は毎 tick、送信のあとに応答期限の
+残りを掃引します (`ATH-MSG-005`) — `instruction` の期限が過ぎたら `AgentMessageTimeout` の
+**観測**を発行します。自分の忍耐は判定ではないので観測に留め、Core の Instance が期限切れの
+待ちで落ちることはありません (`ATH-STATE-023`)。そのうえで、ストアが持つ全ての非終端
+Instance のストリームをポールします — `report` は行を着地させ、逐語リレーの観察を導出して
+(`ATH-HIER-015`) 記録として追加します (その結果を扱うのは決定エージェントのまま,
+`ATH-CORE-022`)。`error` は行を着地させ、観測として立ったままです。`complete` は
+`collect_result` をたどり、Instance 領域の成果物を ATHENA ホームへ複製し (`ATH-RESULT-004`)
+状態ゲートが渡さない Task を拒否したうえで、`TaskResultReceived` とともに Task を
+`RUNNING` → `EVALUATING` へ 1 トランザクションで進めます (`ATH-PERS-003`) — 境界の暫定的な
+結果識別子は Core 側で再ミントし (`ATH-CORE-041`)、Agent が自己宣言した状態は評価が判定する
+ためのメタデータに乗ります (`ATH-EVAL-005`)。走路全体は Broker の経路照合と配送重複排除に
+管理されます (`ATH-MSG-006`/`012`/`014`) — 再配送された Message は、すでに記録された配送が
+答えます。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は

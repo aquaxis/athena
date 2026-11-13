@@ -46,7 +46,9 @@ pub use interface::{Runtime, RuntimeInstanceRef};
 pub use message::Message;
 pub use registry::RuntimeRegistry;
 pub use status::{IsolationBoundary, RuntimeCapabilities, RuntimeInstanceStatus};
-pub use stub::{StubClock, StubConfig, StubReaction, StubResult, StubRuntime, StubScript};
+pub use stub::{
+    StubClock, StubConfig, StubReaction, StubReply, StubResult, StubRuntime, StubScript,
+};
 
 #[cfg(test)]
 mod interface_tests;
