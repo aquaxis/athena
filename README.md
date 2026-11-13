@@ -312,15 +312,25 @@ the event catalog remains closed (`ATH-EVENT-009`).
 
 ## The four core personas speak Japanese and carry their reply protocol
 
-X-58 adds Japanese variants of the four core level personas — `personas/director_ja.md`,
-`lead_ja.md`, `producer_ja.md`, `worker_ja.md` — beside the English originals, shipped by
-`athena init` through the same build-time embed (which walks the repository's `personas/`
-directory, so a new definition file needs no code change). Each `_ja` body embeds the
-`agent-cli` spawn-report protocol in **both directions**: the parent's delegation prompt
-tells the child to report with `send_to(peer=<親id>, delivery="report")` (plus the
-`delivery="prompt"` + `text="report sent"` ping when the parent must act immediately), and
-the persona's own reporting duty carries the same wording toward its superior. Front
-matter keeps the four keys and `send_to` in `allowed_tools`.
+The four core level personas are themselves Japanese — `personas/director_ja.md`,
+`lead_ja.md`, `producer_ja.md`, `worker_ja.md` are the shipped personas (the defaults
+`athena init` installs and the shipped config's `personas/producer_ja.md` reference), with
+no English originals left behind. Each body embeds the `agent-cli` spawn-report protocol in
+**both directions**: the parent's delegation prompt tells the child to report with
+`send_to(peer=<親id>, delivery="report")` (plus the `delivery="prompt"` + `text="report
+sent"` ping when the parent must act immediately), and the persona's own reporting duty
+carries the same wording toward its superior. Front matter keeps the four keys and
+`send_to` in `allowed_tools`.
+
+## X-55: the edges into evaluation open the walk
+
+`EvaluationStarted` (the catalog row `ATH-TEST-008` names as MVP-MUST) now rides its two
+production `RUNNING -> EVALUATING` edges: an answer intake (`ingest_answer`) and a
+subordinate's `complete` arriving through the resident's reception leg each append the
+event once the transition commits — the payload the catalog's `empty()`, the actor the
+walker of the edge (Core Agent on the intake, the System on the broker boundary), the
+cause the transition's own `TaskResultReceived` carry (`ATH-EVENT-001`). The event
+catalog stays closed (`ATH-EVENT-009`); no shape was invented.
 
 ## Licence
 

@@ -1465,3 +1465,106 @@ async fn a_settled_task_releases_its_workspace_lease() {
         "the release face removed the lease row at the terminal edge"
     );
 }
+
+// --- X-55: the evaluation faces ------------------------------------------------------------
+
+/// A settled answer intake opens its evaluation with the catalog's `EvaluationStarted`
+/// (X-55, `ATH-TEST-008`): the `RUNNING -> EVALUATING` edge the intake walks records the
+/// walk, the payload the catalog's `empty()`, the cause the intake's own carry row.
+#[tokio::test]
+async fn an_answer_intake_opens_the_evaluation_face() {
+    let mut store = new_store();
+    let task = task_in(&mut store, TaskState::Queued);
+    let runtime = StubRuntime::scripted(StubScript::completes_any_instruction("done"));
+    let handle = boot(&runtime).await;
+
+    let pending = prepare_delivery(
+        &mut store,
+        &task,
+        &handle.instance_id,
+        "2026-11-13T15:00:00Z",
+        "cor-2",
+    )
+    .expect("reserved");
+    crate::core_loop::deliver(&runtime, &handle, &pending)
+        .await
+        .expect("delivered");
+    runtime.clock().advance(50);
+    let answer = next_answer(&runtime, &handle)
+        .await
+        .expect("the stub answers");
+    ingest_answer(
+        &mut store,
+        &task,
+        &handle,
+        &answer,
+        "2026-11-13T15:00:00Z",
+        "cor-3",
+    )
+    .expect("answer ingested");
+
+    let events = EventRepository::list_for_task(&store, &task).expect("events");
+    let started = events
+        .iter()
+        .filter(|event| event.event_type == "EvaluationStarted")
+        .count();
+    assert_eq!(
+        started, 1,
+        "the intake's evaluation face is recorded exactly once: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == "TaskResultReceived"),
+        "the carry still rides the transition (X-55 adds, never replaces)"
+    );
+}
+
+/// A subordinate's `complete` lands with the same evaluation face (X-55): the arrival's
+/// edge is recorded, the actor is the System that walked the broker boundary, and the
+/// payload stays the catalog's `empty()`.
+#[tokio::test]
+async fn a_subordinates_complete_opens_the_evaluation_face() {
+    let store = std::sync::Mutex::new(new_store());
+    let task = {
+        let mut guard = store.lock().expect("locked");
+        task_in(&mut guard, TaskState::Running)
+    };
+    let runtime = StubRuntime::scripted(StubScript::completes_any_instruction("done"));
+    let superior = InstanceId::new();
+    let mut sub_context = context();
+    sub_context.task_id = Some(task.clone());
+    let handle = Runtime::start(&runtime, definition(), sub_context)
+        .await
+        .expect("the subordinate boots");
+    x53_seed_subordinate(
+        &mut store.lock().expect("locked"),
+        &handle.instance_id,
+        &task,
+    );
+    Runtime::send(&runtime, &handle, x53_trigger(&task))
+        .await
+        .expect("the stub takes the instruction");
+    runtime.clock().advance(50);
+
+    let received = x53_receive(&runtime, &store, &handle, &superior, &[], &task)
+        .await
+        .expect("the poll walks the boundary");
+    assert!(
+        received
+            .iter()
+            .any(|outcome| matches!(outcome, Received2::Complete { .. })),
+        "the completion arrived: {received:?}"
+    );
+
+    let events =
+        EventRepository::list_for_task(&*store.lock().expect("locked"), &task).expect("events");
+    let started = events
+        .iter()
+        .filter(|event| event.event_type == "EvaluationStarted")
+        .count();
+    assert_eq!(
+        started, 1,
+        "the arrival's evaluation face is recorded exactly once: {events:?}"
+    );
+}

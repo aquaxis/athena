@@ -297,16 +297,24 @@ Event が、本来の顔を歩みます (`X-54`): `SystemStarted` は `Configura
 記録します (`ATH-EVENT-017`)。全ての payload はカタログ自身のもの — 形をでっち上げては
 いません — そして Event カタログは閉じたままです (`ATH-EVENT-009`)。
 
-## 4 つのコアペルソナが日本語を話し、返信プロトコルを担持する
+## 4 つのコアペルソナは日本語を話し、返信プロトコルを担持する
 
-X-58 は 4 つのコアレベルペルソナの日本語版 — `personas/director_ja.md`、`lead_ja.md`、
-`producer_ja.md`、`worker_ja.md` — を英語原文の隣に追加します。`athena init` は同じ
-ビルド時埋め込み（リポジトリの `personas/` ディレクトリを走査するため、定義ファイルの
-追加にコード変更は不要）を通じて同梱します。各 `_ja` 本文は **双方向** で `agent-cli`
-のスポーンレポートプロトコルを埋め込みます: 親の委譲プロンプトは子へ
-`send_to(peer=<親id>, delivery="report")` での報告を指示し（親が直ちに行動する必要が
-ある場合は `delivery="prompt"` + `text="report sent"` を付加）、ペルソナ自身の報告義務も
-上位へ同じ文面を担持します。front matter は 4 キーと `allowed_tools` の `send_to` を維持します。
+4 つのコアレベルペルソナは日本語そのものです — `personas/director_ja.md`、`lead_ja.md`、
+`producer_ja.md`、`worker_ja.md` が同梱ペルソナです（`athena init` がインストールする既定値、
+同梱 config の `personas/producer_ja.md` 参照）。英語原文は残しません。各本文は **双方向** で
+`agent-cli` のスポーンレポートプロトコルを埋め込みます: 親の委譲プロンプトは子へ
+`send_to(peer=<親id>, delivery="report")` での報告を指示し（親が直ちに行動する必要がある場合
+は `delivery="prompt"` + `text="report sent"` を付加）、ペルソナ自身の報告義務も上位へ同じ
+文面を担持します。front matter は 4 キーと `allowed_tools` の `send_to` を維持します。
+
+## X-55: 評価への辺が歩行を開く
+
+`EvaluationStarted`（カタログ行 `ATH-TEST-008` が MVP-MUST と指すもの）が本番の 2 つの
+`RUNNING -> EVALUATING` 辺に乗ります: 回答取り込み（`ingest_answer`）と、常駐の受信肢を
+通る下位の `complete` 着地が、それぞれ遷移の確定後にイベントを 1 回記録します — payload は
+カタログの `empty()`、actor は辺を歩く者（取り込みは Core Agent、Broker 境界は System）、
+原因は遷移自身の `TaskResultReceived` 担持（`ATH-EVENT-001`）。Event カタログは閉じたまま
+（`ATH-EVENT-009`）。形はでっち上げていません。
 
 ## ライセンス
 

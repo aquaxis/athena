@@ -344,12 +344,39 @@ pub fn ingest_answer(
         })
         .to_string(),
     };
-    store.transition_task(
+    let stored = store.transition_task(
         task,
         TaskState::Running,
         TaskState::Evaluating,
         &received_event,
     )?;
+
+    // The evaluation face (X-55, `ATH-TEST-008`): the intake just opened the evaluation
+    // window (`RUNNING -> EVALUATING`), so the catalog's `EvaluationStarted` records the
+    // walk - the decider here is the Core Agent's own answer intake. The payload is the
+    // catalog's `empty()` (`ATH-EVENT-009`, closed); the transition's own row is the
+    // cause (`ATH-EVENT-001`).
+    let typed = athena_events::TypedEvent::new(
+        athena_events::events::EvaluationStarted {},
+        athena_events::EventContext {
+            event_id: EventId::new(),
+            occurred_at: now.to_string(),
+            actor: athena_types::Actor::CoreAgent,
+            task_id: Some(task.clone()),
+            plan_step_id: None,
+            agent_id: Some(AgentId::core_agent()),
+            instance_id: Some(instance.instance_id.clone()),
+            skill_id: None,
+            correlation_id: correlation_id.to_string(),
+            causation_id: Some(stored.event_id),
+        },
+    )
+    .map_err(|fault| {
+        LoopFault::Store(PersistenceError::Plainly(format!(
+            "the evaluation start refused its own construction: {fault}"
+        )))
+    })?;
+    EventRepository::append(store, &fold_typed(&typed))?;
 
     Ok(Received {
         task_id: task.clone(),
@@ -1084,10 +1111,10 @@ async fn land_subordinate_message<R: Runtime + ?Sized>(
                 occurred_at: now.to_string(),
                 task_id: Some(anchor_task.clone()),
                 plan_step_id: anchor_plan_step.as_ref().cloned(),
-                agent_id: Some(anchor_agent),
+                agent_id: Some(anchor_agent.clone()),
                 instance_id: Some(subordinate.instance_id.clone()),
                 skill_id: None,
-                correlation_id: correlation,
+                correlation_id: correlation.clone(),
                 causation_id: None,
                 actor: "system".into(),
                 payload_json: match crate::result_manager::reception::received_facts(&stored) {
@@ -1105,13 +1132,41 @@ async fn land_subordinate_message<R: Runtime + ?Sized>(
                 },
             };
             let guard_store = &mut *guard;
-            guard_store
+            let stored = guard_store
                 .transition_task(
                     &anchor_task,
                     TaskState::Running,
                     TaskState::Evaluating,
                     &received_event,
                 )
+                .map_err(ReceptionFault::Store)?;
+
+            // The evaluation face (X-55, `ATH-TEST-008`) on the broker-driven landing
+            // foot: the walk is the `RUNNING -> EVALUATING` edge the arrival carried, so
+            // the catalog's `EvaluationStarted` records it (payload the catalog's
+            // `empty()`, `ATH-EVENT-009`; the transition's own row is the cause,
+            // `ATH-EVENT-001`; the correlation is the Task's chain, read just above).
+            let typed = athena_events::TypedEvent::new(
+                athena_events::events::EvaluationStarted {},
+                athena_events::EventContext {
+                    event_id: EventId::new(),
+                    occurred_at: now.to_string(),
+                    actor: athena_types::Actor::System,
+                    task_id: Some(anchor_task.clone()),
+                    plan_step_id: anchor_plan_step.clone(),
+                    agent_id: Some(anchor_agent),
+                    instance_id: Some(subordinate.instance_id.clone()),
+                    skill_id: None,
+                    correlation_id: correlation,
+                    causation_id: Some(stored.event_id),
+                },
+            )
+            .map_err(|fault| {
+                ReceptionFault::Store(PersistenceError::Plainly(format!(
+                    "the evaluation start refused its own construction: {fault}"
+                )))
+            })?;
+            EventRepository::append(guard_store, &fold_typed(&typed))
                 .map_err(ReceptionFault::Store)?;
             drop(guard);
 
