@@ -1859,10 +1859,41 @@ where
                             rows.as_ref(),
                             &accepted,
                             &config,
+                            // The composition root answers the Runtime's own facts for the
+                            // handle: the pid from its process table (D-35) and whether
+                            // *this start* initialized the Workspace's `aiprj` areas
+                            // (X-56, `ATH-AIPRJ-008`) — both read off the adapter's record,
+                            // never inferred here. No record (a handle the manager does not
+                            // know) answers the default: no pid, no initialization claimed.
                             |handle| {
-                                adapter
-                                    .process_record(handle.runtime_instance_id.as_str())
-                                    .map(|record| record.pid)
+                                let Some(record) =
+                                    adapter.process_record(handle.runtime_instance_id.as_str())
+                                else {
+                                    // The manager knows no record for a handle its own
+                                    // `start` just answered with. That is a defect signal,
+                                    // not a quiet "nothing was initialized": the walk is
+                                    // told the safe answer (no pid, no initialization
+                                    // claimed, so no `WorkspaceInitialized` is invented),
+                                    // and the anomaly is named here rather than silently
+                                    // folded into the `Ready` case.
+                                    resident_log(
+                                        Log::Warn,
+                                        "resident.runtime",
+                                        "the Runtime answered a handle its manager holds no record for; \
+                                         the start's pid and workspace facts are unavailable",
+                                        &correlation,
+                                        serde_json::json!({
+                                            "runtime_instance_id":
+                                                handle.runtime_instance_id.as_str(),
+                                            "instance_id": handle.instance_id.as_str()
+                                        }),
+                                    );
+                                    return athena_core::RuntimeStartFacts::default();
+                                };
+                                athena_core::RuntimeStartFacts {
+                                    pid: Some(record.pid),
+                                    workspace_initialized: record.workspace_initialized,
+                                }
                             },
                         )
                         .await

@@ -90,6 +90,26 @@ impl StartFault {
     }
 }
 
+/// What the composition root's process table holds for the handle the Runtime just
+/// answered with (X-56). Neither fact is guessable by this layer: the pid belongs to the
+/// process table the resident owns (D-35's split), and whether *this start* initialized
+/// the Workspace's `aiprj` write areas is the Runtime's own record
+/// (`PreparedWorkspace::initialized` → the manager record's `workspace_initialized`;
+/// a start that found the areas [`Ready`](ATH-AIPRJ-024) initialized nothing and reports
+/// `false`, which is what keeps `ATH-AIPRJ-006` — no unconditional re-install — honest in
+/// the Event stream).
+///
+/// Asking both in one call keeps the question the walk puts to its caller single: *what
+/// does your table hold for this handle?* A caller with no table answers
+/// [`RuntimeStartFacts::default`] and the walk records neither fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RuntimeStartFacts {
+    /// The backing process's id, when the Runtime reports one.
+    pub pid: Option<u32>,
+    /// Whether *this start* initialized (or repaired) the `aiprj` write areas.
+    pub workspace_initialized: bool,
+}
+
 /// What one start face recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartOutcome {
@@ -162,10 +182,11 @@ fn record_started(
     store: &mut AthenaStore,
     row: &athena_types::AgentInstance,
     runtime_ref: &athena_runtime::RuntimeInstanceRef,
-    pid: Option<u32>,
+    facts: RuntimeStartFacts,
     now: &str,
     correlation_id: String,
 ) -> Result<EventId, StartFault> {
+    let pid = facts.pid;
     let resolved = instance_transition(AgentInstanceState::Starting, InstanceTrigger::Started)
         .ok_or(StartFault::TransitionRefused(AgentInstanceState::Starting))?;
     AgentRepository::update_instance_state(store, &row.id, resolved.to).map_err(store_fault)?;
@@ -175,6 +196,23 @@ fn record_started(
     // readiness and the layout's shape is the workspace's own `.aiprj/AI_LOG` path.
     let area = format!("{}/.aiprj/AI_LOG", row.workspace.trim_end_matches('/'));
     AgentRepository::set_aiprj_area(store, &row.id, Some(&area)).map_err(store_fault)?;
+
+    // X-56 — `ATH-AIPRJ-008` (MUST): the *performance* of the initialization is recorded as
+    // a `WorkspaceInitialized` Event. The predicate is the Runtime's own
+    // (`facts.workspace_initialized`, the manager record's fact), so the Event is written
+    // **only** when this start actually initialized the areas: a start that found them
+    // `Ready` performed no initialization and records nothing, which is the Event-stream
+    // face of `ATH-AIPRJ-006`'s MUST NOT (no unconditional re-install). Core owns the
+    // emission (D-1), the Runtime owns the fact — this layer invents neither.
+    if facts.workspace_initialized {
+        let initialized = crate::runtime_manager::workspace_initialized_event(
+            row,
+            now.to_string(),
+            correlation_id.clone(),
+        )
+        .map_err(|fault| StartFault::Construction(fault.to_string()))?;
+        EventRepository::append(store, &fold(&initialized)).map_err(store_fault)?;
+    }
 
     let runtime_row = RuntimeInstance {
         id: runtime_ref.runtime_instance_id.clone(),
@@ -403,20 +441,22 @@ pub fn complete_start_started(
     store: &mut AthenaStore,
     instance_id: &InstanceId,
     runtime_ref: &athena_runtime::RuntimeInstanceRef,
-    pid: Option<u32>,
+    facts: RuntimeStartFacts,
     now: &str,
 ) -> Result<StartOutcome, StartFault> {
     let row = AgentRepository::get_instance(store, instance_id)
         .map_err(store_fault)?
         .ok_or_else(|| StartFault::InstanceAbsent(instance_id.as_str().to_string()))?;
     let correlation = correlation_for(store, &row.task_id.clone().expect("task"), &row.id, now)?;
-    let event_id = record_started(store, &row, runtime_ref, pid, now, correlation)?;
+    let event_id = record_started(store, &row, runtime_ref, facts, now, correlation)?;
     Ok(StartOutcome {
         instance_id: row.id.clone(),
         state: AgentInstanceState::Idle,
         runtime_instance_id: Some(runtime_ref.runtime_instance_id.clone()),
-        pid,
-        workspace_initialized: false,
+        pid: facts.pid,
+        // X-56: the Runtime's own fact, reported as received — the walk no longer answers
+        // a hardcoded `false` for a face it now records as an Event.
+        workspace_initialized: facts.workspace_initialized,
         event_id,
     })
 }
@@ -441,6 +481,11 @@ pub fn complete_start_failed(
         state: AgentInstanceState::Failed,
         runtime_instance_id: None,
         pid: None,
+        // A refused start answered no handle, so the composition root has no record to ask
+        // (X-56): the outcome reports `false` because this walk observed no initialization
+        // — not as a claim that the Runtime wrote nothing before refusing. That
+        // uncertainty is exactly what `side_effects = Unknown` on the `AgentFailed` leg
+        // carries (`ATH-STATE-029`), and no `WorkspaceInitialized` may be invented from it.
         workspace_initialized: false,
         event_id,
     })
@@ -563,9 +608,11 @@ fn fail_started(
 /// The `R` generic is the Runtime trait the composition root links (spec §32.2: the
 /// binary declares the adapter; `athena-core` never names one). The Runtime kind itself is
 /// never a caller argument — `begin_start` reads the definition's own `runtime` fact
-/// (`ATH-AGENT-001`). The pid is not guessed here either: `pid_of` asks the composition
-/// root what its process table holds for the handle the Runtime just answered with, and
-/// a Runtime that reports none records none.
+/// (`ATH-AGENT-001`). The Runtime's own facts are not guessed here either: `facts_of` asks
+/// the composition root what its process table holds for the handle the Runtime just
+/// answered with — the pid (D-35's split) and whether *this start* initialized the
+/// Workspace's `aiprj` areas (X-56, the record's `workspace_initialized`) — and a Runtime
+/// that reports neither records neither.
 ///
 /// # Errors
 /// [`StartError`] whole; the caller logs and continues — a refused start is a recorded
@@ -575,7 +622,7 @@ pub async fn start_admitted<R: Runtime>(
     store: &std::sync::Mutex<AthenaStore>,
     accepted: &crate::delegation::DelegationAccepted,
     config: &crate::Config,
-    pid_of: impl Fn(&athena_runtime::RuntimeInstanceRef) -> Option<u32>,
+    facts_of: impl Fn(&athena_runtime::RuntimeInstanceRef) -> RuntimeStartFacts,
 ) -> Result<StartReport, StartError> {
     // 1. The walk, under the first lock; the lock is released when this block closes.
     let begin = {
@@ -630,13 +677,16 @@ pub async fn start_admitted<R: Runtime>(
             //    row seeded, the `AI_LOG` area reference recorded (X-41).
             let mut guard = lock_the(store).map_err(StartError::Fault)?;
             let now = athena_persistence::now_rfc3339();
-            // The pid is the Runtime's own fact, asked of the composition root that owns
-            // the process table (D-35's split). It matters beyond observability: the boot
+            // The Runtime's facts are asked of the composition root that owns the process
+            // table (D-35's split). The pid matters beyond observability: the boot
             // reconciliation of a *later* resident has no process table, so the recorded
-            // pid is the only evidence that this process ever existed (ATH-CORE-048).
-            let pid = pid_of(&handle);
+            // pid is the only evidence that this process ever existed (ATH-CORE-048). The
+            // workspace fact rides the same ask, and the completion leg turns it into the
+            // `WorkspaceInitialized` Event when this start is the one that initialized the
+            // areas (X-56, `ATH-AIPRJ-008`).
+            let facts = facts_of(&handle);
             let outcome =
-                complete_start_started(&mut guard, &begin.instance_id, &handle, pid, &now)
+                complete_start_started(&mut guard, &begin.instance_id, &handle, facts, &now)
                     .map_err(StartError::Fault)?;
             Ok(StartReport { outcome })
         }

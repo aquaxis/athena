@@ -316,6 +316,22 @@ Event が、本来の顔を歩みます (`X-54`): `SystemStarted` は `Configura
 原因は遷移自身の `TaskResultReceived` 担持（`ATH-EVENT-001`）。Event カタログは閉じたまま
 （`ATH-EVENT-009`）。形はでっち上げていません。
 
+## X-56: Workspace 初期化の実施を記録する
+
+`WorkspaceInitialized`（`ATH-AIPRJ-008`、MUST）に本番の送出点が入りました。開始歩行の成功肢
+が、記録する `aiprj` 領域の隣でこのイベントを 1 回追記します — §23.2 の payload 2 項目
+（行自身が名指す `workspace`（`ATH-OPS-009`、再構成ではない）と、同梱定数 `AIPRJ_VERSION`
+由来の `aiprj_version`）を、歩行自身の correlation 鎖に乗せ、`Actor::Runtime` と行の
+Task/PlanStep/Instance 座標を伴って記録します。
+
+送出は「起動成功」ではなく **Runtime 自身の事実**を条件とします: アダプタの workspace 準備が
+「*この*起動が領域を初期化（または修復）したか」を報告し、`Ready` を見つけた起動は `false` を
+報告して何も記録しません — これが `ATH-AIPRJ-006`「無条件の再インストール禁止」の
+Event 面です。事実が Core に届く経路は pid と同じで、合成の根が Runtime の返した handle に
+ついて答えます（`RuntimeStartFacts`）。したがって `athena-core` はこれを計算も推測もせず、
+仕様が固定する `RuntimeInstanceRef` / `RuntimeInstanceStatus` にフィールドは増えません。
+manager が記録を持たない handle は、その異常として記録され、初期化を主張しません。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は

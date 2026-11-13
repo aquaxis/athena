@@ -142,7 +142,8 @@ pub use delegation::{DelegationAccepted, DelegationFault, DelegationRequest, acc
 pub use inspection::{Inspection, InspectionFacts, Inspector, Reason, deny_envelope};
 pub use issuance::{IssuedPlan, PlanRefusal, PlanSubmission, submit_plan};
 pub use runtime_instance::{
-    StartFault, StartOutcome, begin_start, complete_start_failed, complete_start_started,
+    RuntimeStartFacts, StartFault, StartOutcome, begin_start, complete_start_failed,
+    complete_start_started,
 };
 pub use supply::{AgentEntryWide, SupplyContext, SupplyFault, supply_definitions};
 

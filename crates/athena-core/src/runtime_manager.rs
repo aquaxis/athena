@@ -170,33 +170,40 @@ pub fn failure_event(
     )
 }
 
-/// The `WorkspaceInitialized` Event builder (P3-16, `ATH-AIPRJ-024`).
+/// The `WorkspaceInitialized` Event builder (P3-16, `ATH-AIPRJ-024`, `ATH-AIPRJ-008`).
 ///
 /// The Runtime's start records the fact on the record; Core Host materializes the Event
 /// through the Event Manager (`ATH-PERS-003`-style: emission is a cross-module effect,
 /// D-1) with the resolved Workspace and the vendored `aiprj` revision.
 ///
+/// The envelope is the start walk's own: the Workspace reported is the row's — the
+/// directory the Runtime actually entered (`ATH-OPS-009`), never a reconstruction — and
+/// the actor is [`Actor::Runtime`], the walk's actor, because the initialization is the
+/// Runtime's act (the areas are written by its `init_workspace`, D-1 leaves only the
+/// *emission* to Core). The row's coordinates ride along so the Event is addressable by
+/// Task, PlanStep and Instance like the walk's siblings (`ATH-EVENT-001`'s chain);
+/// `aiprj_version` is the vendored constant, never a guess.
+///
 /// # Errors
 /// Event construction failures (missing field, forbidden content, invalid envelope).
 pub fn workspace_initialized_event(
-    agent_id: athena_types::AgentId,
-    workspace: impl Into<String>,
+    instance: &athena_types::AgentInstance,
     occurred_at: String,
     correlation_id: String,
 ) -> Result<TypedEvent<WorkspaceInitialized>, athena_events::EventError> {
     TypedEvent::new(
         WorkspaceInitialized {
-            workspace: workspace.into(),
+            workspace: instance.workspace.clone(),
             aiprj_version: athena_runtime::AIPRJ_VERSION.to_string(),
         },
         EventContext {
             event_id: EventId::new(),
             occurred_at,
-            actor: Actor::System,
-            task_id: None,
-            plan_step_id: None,
-            agent_id: Some(agent_id),
-            instance_id: None,
+            actor: Actor::Runtime,
+            task_id: instance.task_id.clone(),
+            plan_step_id: instance.plan_step_id.clone(),
+            agent_id: Some(instance.agent_id.clone()),
+            instance_id: Some(instance.id.clone()),
             skill_id: None,
             correlation_id,
             causation_id: None,
@@ -369,14 +376,22 @@ mod tests {
 
     #[test]
     fn the_workspace_initialized_event_carries_the_resolved_facts() {
+        let mut instance = instance(AgentInstanceState::Idle);
+        instance.workspace = "/athena/var/instances/ai-1".into();
         let event = workspace_initialized_event(
-            athena_types::AgentId::core_agent(),
-            "/athena/var/instances/ai-1",
+            &instance,
             "2026-10-17T00:00:00Z".into(),
             "cor-p3-16".into(),
         )
         .expect("built");
         assert_eq!(event.event_type, "WorkspaceInitialized");
+        // The envelope is the start walk's own (X-56): the Runtime acted, and the row's
+        // coordinates make the Event addressable like the walk's siblings.
+        assert_eq!(event.actor, Actor::Runtime);
+        assert_eq!(event.instance_id.as_ref(), Some(&instance.id));
+        assert_eq!(event.agent_id.as_ref(), Some(&instance.agent_id));
+        assert_eq!(event.task_id, instance.task_id);
+        assert_eq!(event.plan_step_id, instance.plan_step_id);
         let wire: serde_json::Value =
             serde_json::from_str(&event.payload_json).expect("the payload serializes");
         assert_eq!(

@@ -332,6 +332,24 @@ walker of the edge (Core Agent on the intake, the System on the broker boundary)
 cause the transition's own `TaskResultReceived` carry (`ATH-EVENT-001`). The event
 catalog stays closed (`ATH-EVENT-009`); no shape was invented.
 
+## X-56: the Workspace initialization is recorded
+
+`WorkspaceInitialized` (`ATH-AIPRJ-008`, MUST) now has a production emitter. The start
+walk's happy leg appends it beside the `aiprj` area it records, carrying the §23.2 payload
+pair — the `workspace` the row itself names (`ATH-OPS-009`, never a reconstruction) and
+`aiprj_version` from the vendored `AIPRJ_VERSION` constant — on the walk's own correlation
+chain, with `Actor::Runtime` and the row's Task/PlanStep/Instance coordinates.
+
+The emission is **conditional on the Runtime's own fact**, not on a successful start: the
+adapter's workspace preparation reports whether *this* start initialized (or repaired) the
+areas, a start that found them `Ready` reports `false`, and nothing is recorded for it —
+the Event-stream face of `ATH-AIPRJ-006`'s "no unconditional re-install". The fact reaches
+Core the way the pid already does: the composition root answers it for the handle the
+Runtime returned (`RuntimeStartFacts`), so `athena-core` neither computes nor guesses it,
+and the spec-pinned `RuntimeInstanceRef` / `RuntimeInstanceStatus` gain no field. A handle
+the manager holds no record for is logged as the anomaly it is and claims no
+initialization.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is

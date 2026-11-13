@@ -7,7 +7,9 @@
 //! live process; every claim is a row or an Event the walk wrote.
 
 use crate::delegation::{DelegationAccepted, DelegationRequest, accept_delegation};
-use crate::runtime_instance::{StartError, StartFault, begin_start, start_admitted};
+use crate::runtime_instance::{
+    RuntimeStartFacts, StartError, StartFault, begin_start, start_admitted,
+};
 use athena_persistence::repository::{AgentRepository, EventRepository, RuntimeInstanceRepository};
 use athena_runtime::{Runtime, RuntimeError, RuntimeInstanceRef};
 use athena_types::{
@@ -222,6 +224,16 @@ fn admitted(model: ModelRef) -> (crate::AthenaStore, Task, DelegationAccepted) {
 }
 
 /// Every Event type the store holds for one Task, in sequence order.
+/// What the composition root answers for the handle (X-56): the process table's pid and
+/// the Runtime record's own `workspace_initialized`. The tests state both facts explicitly
+/// — the walk may read neither from anywhere else.
+fn facts(pid: u32, workspace_initialized: bool) -> RuntimeStartFacts {
+    RuntimeStartFacts {
+        pid: Some(pid),
+        workspace_initialized,
+    }
+}
+
 fn event_types(store: &crate::AthenaStore, task: &TaskId) -> Vec<String> {
     EventRepository::list_for_task(store, task)
         .expect("events")
@@ -237,7 +249,7 @@ async fn a_started_instance_walks_to_idle_and_records_its_runtime_facts() {
     let store = Mutex::new(store);
     let config = crate::Config::default();
 
-    let report = start_admitted(&runtime, &store, &accepted, &config, |_| Some(4242))
+    let report = start_admitted(&runtime, &store, &accepted, &config, |_| facts(4242, true))
         .await
         .expect("started");
 
@@ -307,7 +319,7 @@ async fn the_context_the_runtime_receives_carries_the_rows_own_facts() {
         &store,
         &accepted,
         &crate::Config::default(),
-        |_| Some(4242),
+        |_| facts(4242, true),
     )
     .await
     .expect("started");
@@ -336,7 +348,7 @@ async fn a_refused_runtime_start_lands_the_failure_leg_before_it_surfaces() {
         &store,
         &accepted,
         &crate::Config::default(),
-        |_| Some(4242),
+        |_| facts(4242, true),
     )
     .await
     .expect_err("the Runtime refused");
@@ -390,7 +402,7 @@ async fn a_definition_without_model_coordinates_never_reaches_the_runtime() {
         &store,
         &accepted,
         &crate::Config::default(),
-        |_| Some(4242),
+        |_| facts(4242, true),
     )
     .await
     .expect_err("refused by the gate");
@@ -414,12 +426,12 @@ async fn a_second_start_of_one_instance_is_refused_by_the_tables_own_rule() {
     let store = Mutex::new(store);
     let config = crate::Config::default();
 
-    start_admitted(&runtime, &store, &accepted, &config, |_| Some(4242))
+    start_admitted(&runtime, &store, &accepted, &config, |_| facts(4242, true))
         .await
         .expect("started");
     // The row is `IDLE` now; `CREATED → STARTING` is the only edge the face walks, so the
     // re-entry refuses on the row's current state (single flight across admission→start).
-    let error = start_admitted(&runtime, &store, &accepted, &config, |_| Some(4242))
+    let error = start_admitted(&runtime, &store, &accepted, &config, |_| facts(4242, true))
         .await
         .expect_err("the second start is refused");
     assert_eq!(error.class().wire(), "policy_error");
@@ -453,5 +465,136 @@ fn the_starting_leg_walks_the_row_and_appends_the_tables_own_event() {
     assert!(
         event_types(&store, &task.id).contains(&"AgentStarting".to_string()),
         "the edge's own Event is appended with the row write (two writes, one leg)"
+    );
+}
+
+// --- X-56: `ATH-AIPRJ-008` — the initialization's performance is an Event ----------------
+
+#[tokio::test]
+async fn a_start_that_initialized_the_aiprj_areas_records_the_workspace_event() {
+    let (store, task, accepted) = admitted(model());
+    let (runtime, _) = ScriptedRuntime::started(&accepted.instance_id);
+    let store = Mutex::new(store);
+    let config = crate::Config::default();
+
+    // The Runtime reports that *this* start initialized the areas.
+    let report = start_admitted(&runtime, &store, &accepted, &config, |_| facts(4242, true))
+        .await
+        .expect("started");
+    assert!(
+        report.outcome.workspace_initialized,
+        "the outcome reports the Runtime's own fact, not a hardcoded false"
+    );
+
+    let guard = store.lock().expect("store");
+    let events = EventRepository::list_for_task(&*guard, &task.id).expect("events");
+    let initialized = events
+        .iter()
+        .find(|event| event.event_type == "WorkspaceInitialized")
+        .expect("ATH-AIPRJ-008: the initialization is recorded as an Event");
+
+    // The §23.2 payload row: the Workspace the Runtime entered and the vendored revision.
+    let wire: serde_json::Value =
+        serde_json::from_str(&initialized.payload_json).expect("the payload serializes");
+    assert_eq!(
+        wire.get("workspace").and_then(|value| value.as_str()),
+        Some(accepted.workspace.as_str()),
+        "the Workspace reported is the row's own (ATH-OPS-009), never a reconstruction"
+    );
+    assert_eq!(
+        wire.get("aiprj_version").and_then(|value| value.as_str()),
+        Some(athena_runtime::AIPRJ_VERSION),
+        "the vendored revision, never a guess"
+    );
+
+    // The envelope is the walk's: the Runtime acted, and the row's coordinates address it.
+    assert_eq!(initialized.actor, athena_types::Actor::Runtime.as_str());
+    assert_eq!(
+        initialized.instance_id.as_ref(),
+        Some(&accepted.instance_id)
+    );
+    assert_eq!(initialized.task_id.as_ref(), Some(&task.id));
+
+    // It rides the Task's one chain with the walk's other legs (ATH-EVENT-001).
+    let chains: Vec<&String> = events.iter().map(|event| &event.correlation_id).collect();
+    assert!(
+        chains.windows(2).all(|pair| pair[0] == pair[1]),
+        "the Event joins the Task's existing chain: {chains:?}"
+    );
+
+    // Order: the areas exist before the start is declared `IDLE`.
+    let types = event_types(&guard, &task.id);
+    let at_initialized = types
+        .iter()
+        .position(|name| name == "WorkspaceInitialized")
+        .expect("appended");
+    let at_started = types
+        .iter()
+        .position(|name| name == "AgentStarted")
+        .expect("appended");
+    assert!(
+        at_initialized < at_started,
+        "the workspace fact precedes the started fact: {types:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_start_that_found_the_areas_ready_records_no_workspace_event() {
+    let (store, task, accepted) = admitted(model());
+    let (runtime, _) = ScriptedRuntime::started(&accepted.instance_id);
+    let store = Mutex::new(store);
+    let config = crate::Config::default();
+
+    // A `Ready` workspace: the Runtime initialized nothing on this start.
+    let report = start_admitted(&runtime, &store, &accepted, &config, |_| facts(4242, false))
+        .await
+        .expect("started");
+    assert!(!report.outcome.workspace_initialized);
+
+    let guard = store.lock().expect("store");
+    let types = event_types(&guard, &task.id);
+    assert!(
+        !types.iter().any(|name| name == "WorkspaceInitialized"),
+        "ATH-AIPRJ-006: a start that initialized nothing records no initialization: {types:?}"
+    );
+    // The walk still completed — the absent Event is the only difference.
+    assert!(types.iter().any(|name| name == "AgentStarted"), "{types:?}");
+}
+
+#[tokio::test]
+async fn a_start_with_no_runtime_record_claims_no_initialization() {
+    let (store, task, accepted) = admitted(model());
+    let (runtime, _) = ScriptedRuntime::started(&accepted.instance_id);
+    let store = Mutex::new(store);
+    let config = crate::Config::default();
+
+    // The composition root knows no record for the handle (the default answer).
+    let report = start_admitted(&runtime, &store, &accepted, &config, |_| {
+        RuntimeStartFacts::default()
+    })
+    .await
+    .expect("started");
+    assert!(!report.outcome.workspace_initialized);
+    assert_eq!(report.outcome.pid, None);
+
+    let guard = store.lock().expect("store");
+    let types = event_types(&guard, &task.id);
+    assert!(
+        !types.iter().any(|name| name == "WorkspaceInitialized"),
+        "an unknown record is not evidence of an initialization: {types:?}"
+    );
+    let runtime_row = RuntimeInstanceRepository::get(
+        &*guard,
+        report
+            .outcome
+            .runtime_instance_id
+            .as_ref()
+            .expect("runtime instance"),
+    )
+    .expect("read")
+    .expect("row");
+    assert_eq!(
+        runtime_row.pid, None,
+        "a Runtime reporting none records none"
     );
 }
