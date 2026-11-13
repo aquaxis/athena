@@ -113,7 +113,9 @@ pub use athena_events::redact::{digest, mask_text};
 /// The Event envelope's context and actor, re-exported for the resident's X-50 faces
 /// (ATH-CORE-031): a supervision Event is built and appended beside the poll that owns
 /// it. `core_agent_session`'s own import is private, so the re-export rides here.
-pub use athena_events::{EventContext, EventError, TypedEvent, envelope::Actor, events::Payload};
+pub use athena_events::{
+    EventContext, EventError, TypedEvent, envelope::Actor, events, events::Payload,
+};
 pub use athena_persistence::now_rfc3339;
 pub use athena_persistence::{NewEvent, WorkspaceLeaseRepository};
 /// Task transition tables re-exported for the API's run / cancel handlers; the state
@@ -134,7 +136,7 @@ pub use core_loop::{
     Settled, core_thread, deliver, expire_outstanding_replies, fail_task, ingest_answer,
     interpret_answer, next_answer, open_clarification, prepare_delivery, queued_tasks,
     receive_subordinate_messages, record_relay_observations, reported_status, running_tasks,
-    settle_task,
+    settle_task, workspace_lease_released,
 };
 pub use delegation::{DelegationAccepted, DelegationFault, DelegationRequest, accept_delegation};
 pub use inspection::{Inspection, InspectionFacts, Inspector, Reason, deny_envelope};

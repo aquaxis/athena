@@ -145,6 +145,54 @@ pub fn create_task(
         .map_err(|e| store_fault(e, correlation_id))?;
     WorkspaceLeaseRepository::acquire(&mut *guard, workspace, &task_id)
         .map_err(|e| store_fault(e, correlation_id))?;
+    // The catalog's lease face (X-54, ATH-DATA-009): the Workspace is the Task's own
+    // exclusive area from this line until its terminal edge releases it. The Event rides
+    // the Task's correlation chain, the payload the catalog's `empty()`.
+    {
+        let typed = athena_core::TypedEvent::new(
+            athena_core::events::WorkspaceLeased {},
+            athena_core::EventContext {
+                event_id: EventId::new(),
+                occurred_at: now.to_string(),
+                actor: athena_core::Actor::System,
+                task_id: Some(task_id.clone()),
+                plan_step_id: None,
+                agent_id: None,
+                instance_id: None,
+                skill_id: None,
+                correlation_id: correlation_id.to_string(),
+                causation_id: None,
+            },
+        );
+        let folded = typed.map(|t| NewEvent {
+            event_id: t.event_id.clone(),
+            schema_version: t.schema_version,
+            event_type: t.event_type.to_string(),
+            occurred_at: t.occurred_at.clone(),
+            task_id: t.task_id.clone(),
+            plan_step_id: t.plan_step_id.clone(),
+            agent_id: t.agent_id.clone(),
+            instance_id: t.instance_id.clone(),
+            skill_id: t.skill_id.clone(),
+            correlation_id: t.correlation_id.clone(),
+            causation_id: t.causation_id.clone(),
+            actor: t.actor.as_str().to_string(),
+            payload_json: t.payload_json.clone(),
+        });
+        match folded {
+            Ok(event) => {
+                if let Err(error) = athena_core::EventRepository::append(&mut *guard, &event) {
+                    return Err(store_fault(error, correlation_id));
+                }
+            }
+            Err(fault) => {
+                return Err(store_fault(
+                    athena_core::PersistenceError::Plainly(fault.to_string()),
+                    correlation_id,
+                ));
+            }
+        }
+    }
     if auto_run {
         // The lease and the transition ride the Task's lifetime; the store's atomic
         // transition and event pair carries `TaskQueued` (ATH-PERS-003).

@@ -218,12 +218,65 @@ pub async fn register_skill(
     let mut record = skill;
     record.state = SkillState::Available; // registration lands AVAILABLE (§17.3 pair)
     record.registered_at = now.clone();
-    record.updated_at = now;
+    record.updated_at = now.clone();
     if let Err(error) = {
         let mut guard = store.lock().expect("store lock");
         SkillRepository::upsert(&mut *guard, &record)
     } {
         return store_fault(&headers, error);
+    }
+    // The catalog's registration face (X-54, ATH-EVENT-017): the pin exists, so the
+    // catalog's `SkillRegistered` records it — the triple the payload carries verbatim
+    // (`skill_id`/`version`/`checksum`), on the request's own correlation chain.
+    {
+        let mut guard = store.lock().expect("store lock");
+        let typed = athena_core::TypedEvent::new(
+            athena_core::events::SkillRegistered {
+                skill_id: record.id.clone(),
+                version: record.version.clone(),
+                checksum: record.checksum.clone(),
+            },
+            athena_core::EventContext {
+                event_id: EventId::new(),
+                occurred_at: now.clone(),
+                actor: athena_core::Actor::Human,
+                task_id: None,
+                plan_step_id: None,
+                agent_id: None,
+                instance_id: None,
+                skill_id: Some(record.id.clone()),
+                correlation_id: correlation_of(&headers, wall_seed()),
+                causation_id: None,
+            },
+        );
+        let folded = typed.map(|t| NewEvent {
+            event_id: t.event_id.clone(),
+            schema_version: t.schema_version,
+            event_type: t.event_type.to_string(),
+            occurred_at: t.occurred_at.clone(),
+            task_id: t.task_id.clone(),
+            plan_step_id: t.plan_step_id.clone(),
+            agent_id: t.agent_id.clone(),
+            instance_id: t.instance_id.clone(),
+            skill_id: t.skill_id.clone(),
+            correlation_id: t.correlation_id.clone(),
+            causation_id: t.causation_id.clone(),
+            actor: t.actor.as_str().to_string(),
+            payload_json: t.payload_json.clone(),
+        });
+        match folded {
+            Ok(event) => {
+                if let Err(error) = EventRepository::append(&mut *guard, &event) {
+                    return store_fault(&headers, error);
+                }
+            }
+            Err(fault) => {
+                return store_fault(
+                    &headers,
+                    athena_core::PersistenceError::Plainly(fault.to_string()),
+                );
+            }
+        }
     }
     (
         StatusCode::CREATED,

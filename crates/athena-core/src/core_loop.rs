@@ -60,6 +60,7 @@
 use std::path::Path;
 
 use crate::broker::BrokerDelivery as Delivery;
+use athena_events::envelope::Actor;
 use athena_persistence::repository::{
     AgentRepository, EventRepository, MessageRepository, NewEvent, ResultRepository, TaskRepository,
 };
@@ -445,12 +446,112 @@ pub fn settle_task(
         })
         .to_string(),
     };
-    store.transition_task(task, TaskState::Evaluating, to, &event)?;
+    let stored = store.transition_task(task, TaskState::Evaluating, to, &event)?;
 
+    // The lease rode the Task's lifetime (`ATH-DATA-009`): the terminal edge ends it, so
+    // the first production `release` runs here and the catalog's `WorkspaceReleased` is
+    // appended on the settlement's own correlation. A release fault refuses the
+    // settlement — a Terminal Task holding its lease would pin the Workspace against
+    // every later Task.
+    workspace_lease_released(store, task, correlation_id, now)?;
+
+    // The catalog's completion face (X-54): a settlement is an instance's work done, so
+    // the catalog's `AgentCompleted` walks on the Success foot — the same foot the §19.2
+    // walk's step 13 rides (a failed settlement is `TaskFailed`'s row, already carried
+    // above). It folds the row the settlement itself produced as its cause, so the two
+    // Events are one chain (`ATH-EVENT-001`); the payload is the catalog's `empty()`.
+    if to == TaskState::Success {
+        let typed = athena_events::TypedEvent::new(
+            athena_events::events::AgentCompleted {},
+            athena_events::EventContext {
+                event_id: EventId::new(),
+                occurred_at: now.to_string(),
+                actor: athena_types::Actor::CoreAgent,
+                task_id: Some(task.clone()),
+                plan_step_id: None,
+                agent_id: Some(AgentId::core_agent()),
+                instance_id: None,
+                skill_id: None,
+                correlation_id: correlation_id.to_string(),
+                causation_id: Some(stored.event_id),
+            },
+        )
+        .map_err(|fault| {
+            LoopFault::Store(PersistenceError::Plainly(format!(
+                "the completion Event refused its own construction: {fault}"
+            )))
+        })?;
+        EventRepository::append(store, &fold_typed(&typed))?;
+    }
     Ok(match to {
         TaskState::Success => Settled::Succeeded,
         _ => Settled::Failed,
     })
+}
+
+/// The Workspace lease's release face (X-54, `ATH-DATA-009`): `settle_task`'s terminal
+/// edge ends the Task whose lifetime the lease rode, so the lease row is removed here —
+/// the first production caller of `WorkspaceLeaseRepository::release` — and the catalog's
+/// `WorkspaceReleased` Event is appended on the settlement's own correlation, the payload
+/// the catalog's `empty()`. The release rides the settlement's transaction boundary: a
+/// release fault refuses the settlement, because a Task terminal state that leaves its
+/// lease held would pin the Workspace against every later Task (ATH-DATA-009's exclusivity
+/// is the row's own contract).
+pub fn workspace_lease_released(
+    store: &mut AthenaStore,
+    task: &TaskId,
+    correlation_id: &str,
+    now: &str,
+) -> Result<(), PersistenceError> {
+    let row = TaskRepository::get(store, task)?.ok_or_else(|| PersistenceError::NotFound {
+        entity: "task",
+        id: task.as_str().into(),
+    })?;
+    athena_persistence::WorkspaceLeaseRepository::release(store, &row.workspace)?;
+
+    let typed = athena_events::TypedEvent::new(
+        athena_events::events::WorkspaceReleased {},
+        athena_events::EventContext {
+            event_id: EventId::new(),
+            occurred_at: now.to_string(),
+            actor: Actor::System,
+            task_id: Some(task.clone()),
+            plan_step_id: None,
+            agent_id: None,
+            instance_id: None,
+            skill_id: None,
+            correlation_id: correlation_id.to_string(),
+            causation_id: None,
+        },
+    )
+    .map_err(|fault| {
+        PersistenceError::Plainly(format!(
+            "the released Event refused its own construction: {fault}"
+        ))
+    })?;
+    EventRepository::append(store, &fold_typed(&typed))?;
+    Ok(())
+}
+
+/// The X-54 fold: a catalog Event's typed row in `NewEvent` shape — the runtime_instance
+/// precedent's fold, shared here so the settlement's face and the lease faces ride one
+/// construction (`ATH-EVENT-001..006`).
+fn fold_typed<P: athena_events::events::Payload>(typed: &athena_events::TypedEvent<P>) -> NewEvent {
+    NewEvent {
+        event_id: typed.event_id.clone(),
+        schema_version: typed.schema_version,
+        event_type: typed.event_type.to_string(),
+        occurred_at: typed.occurred_at.clone(),
+        task_id: typed.task_id.clone(),
+        plan_step_id: typed.plan_step_id.clone(),
+        agent_id: typed.agent_id.clone(),
+        instance_id: typed.instance_id.clone(),
+        skill_id: typed.skill_id.clone(),
+        correlation_id: typed.correlation_id.clone(),
+        causation_id: typed.causation_id.clone(),
+        actor: typed.actor.as_str().to_string(),
+        payload_json: typed.payload_json.clone(),
+    }
 }
 
 /// Mark a Task `FAILED` from a state whose execution could not proceed.
@@ -496,6 +597,7 @@ pub fn fail_task(
     match row.state {
         TaskState::Running | TaskState::Evaluating => {
             store.transition_task(task, row.state, TaskState::Failed, &event)?;
+            workspace_lease_released(store, task, correlation_id, now)?;
             Ok(())
         }
         other => Err(LoopFault::NotInState {

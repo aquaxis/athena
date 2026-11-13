@@ -191,6 +191,29 @@ fn record_started(
     };
     RuntimeInstanceRepository::insert(store, &runtime_row).map_err(store_fault)?;
 
+    // The catalog's created face (X-54): the §26.6 Runtime Instance row exists, so the
+    // catalog's `RuntimeInstanceCreated` is recorded beside it — the Runtime's own fact
+    // (`Actor::Runtime`, the X-44 walk's actor), folded on the walk's correlation chain
+    // (`ATH-EVENT-001`); the payload is the catalog's `empty()` (`ATH-EVENT-009`'s closed
+    // catalog, no shape invented).
+    let created = athena_events::TypedEvent::new(
+        athena_events::events::RuntimeInstanceCreated {},
+        athena_events::EventContext {
+            event_id: EventId::new(),
+            occurred_at: now.to_string(),
+            actor: Actor::Runtime,
+            task_id: row.task_id.clone(),
+            plan_step_id: row.plan_step_id.clone(),
+            agent_id: Some(row.agent_id.clone()),
+            instance_id: Some(row.id.clone()),
+            skill_id: None,
+            correlation_id: correlation_id.clone(),
+            causation_id: None,
+        },
+    )
+    .map_err(|fault| StartFault::Construction(fault.to_string()))?;
+    EventRepository::append(store, &fold(&created)).map_err(store_fault)?;
+
     let typed = athena_events::TypedEvent::new(
         athena_events::events::AgentStarted {
             instance_id: row.id.clone(),

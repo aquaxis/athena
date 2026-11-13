@@ -286,6 +286,17 @@ Instance のストリームをポールします — `report` は行を着地さ
 管理されます (`ATH-MSG-006`/`012`/`014`) — 再配送された Message は、すでに記録された配送が
 答えます。
 
+カタログの沈黙していた Events が語ります。production の書き手を持たなかった 8 つのカタログ
+Event が、本来の顔を歩みます (`X-54`): `SystemStarted` は `ConfigurationLoaded` のあと
+常駐の boot を開き、`SystemStopping` は shutdown 経路で閉じます — システム自身の生涯の記録
+です。`WorkspaceLeased` は Task の作成時 acquire に乗り、`WorkspaceReleased` は Task の
+終端辺でリースを終わらせます (`ATH-DATA-009` の排他性)。`RuntimeInstanceCreated` は §26.6
+行の挿入に着地し、`RuntimeInstanceStopped` は常駐が Instance を停止するとき行を終端化します
+(`ATH-RT-010`)。成功した決着は `AgentCompleted` を運びます — Agent の仕事が終わったということ
+です。スキル登録は `skill_id`/`version`/`checksum` の三つ組みとともに `SkillRegistered` を
+記録します (`ATH-EVENT-017`)。全ての payload はカタログ自身のもの — 形をでっち上げては
+いません — そして Event カタログは閉じたままです (`ATH-EVENT-009`)。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は

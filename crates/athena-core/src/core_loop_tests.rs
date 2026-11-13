@@ -7,9 +7,9 @@
 //! with its Result recorded and its Events replayed in order.
 
 use crate::core_loop::{
-    Interpreted, LoopFault, Settled, core_thread, ingest_answer, interpret_answer, next_answer,
-    open_clarification, prepare_delivery, queued_tasks, reported_status, running_tasks,
-    settle_task,
+    Interpreted, LoopFault, Settled, core_thread, fail_task, ingest_answer, interpret_answer,
+    next_answer, open_clarification, prepare_delivery, queued_tasks, reported_status,
+    running_tasks, settle_task,
 };
 use athena_persistence::AthenaStore;
 use athena_persistence::repository::{EventRepository, ResultRepository, TaskRepository};
@@ -1303,5 +1303,165 @@ async fn the_deadline_sweep_fires_its_timeouts_and_keeps_the_rows_in_peace() {
         EventRepository::max_sequence(&store).expect("seq"),
         2,
         "no Event fired twice"
+    );
+}
+
+/// **The settlement's terminal edge carries the catalog's completion face** (X-54): on the
+/// Success foot the §19.2 step-10/13 `AgentCompleted` event is appended beside the
+/// settlement's own `TaskCompleted` (payload `empty()` per §23.2, actor Core Agent,
+/// caused by the settlement edge), so the replay tells the settlement from the completion.
+#[tokio::test]
+async fn a_succeeded_settlement_completes_the_catalogs_agent_completed() {
+    let mut store = new_store();
+    let task = task_in(&mut store, TaskState::Queued);
+    let runtime = StubRuntime::scripted(StubScript::completes_any_instruction("done"));
+    let handle = boot(&runtime).await;
+    let pending = prepare_delivery(
+        &mut store,
+        &task,
+        &handle.instance_id,
+        "2026-11-08T00:00:00Z",
+        "cor-2",
+    )
+    .expect("reserved");
+    crate::core_loop::deliver(&runtime, &handle, &pending)
+        .await
+        .expect("delivered");
+    runtime.clock().advance(50);
+    let answer = next_answer(&runtime, &handle)
+        .await
+        .expect("the stub answers");
+    let received = ingest_answer(
+        &mut store,
+        &task,
+        &handle,
+        &answer,
+        "2026-11-08T00:00:01Z",
+        "cor-3",
+    )
+    .expect("answer ingested");
+    let outcome = settle_task(
+        &mut store,
+        &task,
+        &received.result_id,
+        "2026-11-08T00:00:02Z",
+        "cor-4",
+    )
+    .expect("settled");
+    assert_eq!(outcome, Settled::Succeeded);
+
+    // The terminal leg replays: TaskCompleted (the settlement's verdict) and — X-54 —
+    // AgentCompleted (the §19.2 completion vocabulary).
+    let events = EventRepository::list_for_task(&store, &task).expect("events");
+    let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+    assert!(
+        types.contains(&"TaskCompleted"),
+        "the settlement's verdict rides: {types:?}"
+    );
+    assert!(
+        types.contains(&"AgentCompleted"),
+        "X-54's completion face is on the Success foot: {types:?}"
+    );
+    let completed = events
+        .iter()
+        .find(|e| e.event_type == "AgentCompleted")
+        .expect("the completion row");
+    assert_eq!(
+        completed.actor, "core-agent",
+        "the Core Agent completed the delegated unit"
+    );
+    assert_eq!(
+        completed.payload_json, "{}",
+        "the catalog's empty() payload rides verbatim"
+    );
+    assert_eq!(
+        completed.correlation_id, "cor-4",
+        "the settlement's own correlation carries the completion"
+    );
+}
+
+/// **The failure foot stays `TaskFailed`-only** (X-54): a budget-exhausted settlement
+/// never fabricates an `AgentCompleted` — the catalog's completion is the *successful*
+/// completion; the failure's terminal fact is its own `TaskFailed` row.
+#[tokio::test]
+async fn a_failed_settlement_does_not_fabricate_a_completion() {
+    let mut store = new_store();
+    let task = task_in(&mut store, TaskState::Evaluating);
+    fail_task(
+        &mut store,
+        &task,
+        "BudgetExhausted",
+        "2026-11-08T00:00:03Z",
+        "cor-fail",
+    )
+    .expect("failed");
+    let row = TaskRepository::get(&store, &task)
+        .expect("read")
+        .expect("row");
+    assert_eq!(row.state, TaskState::Failed);
+    let events = EventRepository::list_for_task(&store, &task).expect("events");
+    let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+    assert!(
+        types.contains(&"TaskFailed"),
+        "the failure's terminal fact rides: {types:?}"
+    );
+    assert!(
+        !types.contains(&"AgentCompleted"),
+        "no fabricated completion on the failure foot: {types:?}"
+    );
+}
+
+/// **The lease is released when the Task settles** (X-54, `ATH-DATA-009`): the terminal
+/// edge ends the Task whose lifetime the lease rode, so the lease row is removed and the
+/// catalog's `WorkspaceReleased` event rides the settlement's own correlation — and a
+/// later acquire on the same workspace succeeds again.
+#[tokio::test]
+async fn a_settled_task_releases_its_workspace_lease() {
+    let mut store = new_store();
+    let task = task_in(&mut store, TaskState::Queued);
+    let runtime = StubRuntime::scripted(StubScript::completes_any_instruction("done"));
+    let handle = boot(&runtime).await;
+    let pending = prepare_delivery(
+        &mut store,
+        &task,
+        &handle.instance_id,
+        "2026-11-08T00:00:00Z",
+        "cor-2",
+    )
+    .expect("reserved");
+    crate::core_loop::deliver(&runtime, &handle, &pending)
+        .await
+        .expect("delivered");
+    runtime.clock().advance(50);
+    let answer = next_answer(&runtime, &handle)
+        .await
+        .expect("the stub answers");
+    let received = ingest_answer(
+        &mut store,
+        &task,
+        &handle,
+        &answer,
+        "2026-11-08T00:00:01Z",
+        "cor-3",
+    )
+    .expect("answer ingested");
+    settle_task(
+        &mut store,
+        &task,
+        &received.result_id,
+        "2026-11-08T00:00:02Z",
+        "cor-4",
+    )
+    .expect("settled");
+
+    // The lease row gone at the terminal edge: read the Task's own workspace off its row.
+    let row = TaskRepository::get(&store, &task)
+        .expect("read")
+        .expect("row");
+    let holder = athena_persistence::WorkspaceLeaseRepository::holder(&store, &row.workspace)
+        .expect("holder read");
+    assert!(
+        holder.is_none(),
+        "the release face removed the lease row at the terminal edge"
     );
 }

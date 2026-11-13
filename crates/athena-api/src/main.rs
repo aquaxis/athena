@@ -190,7 +190,10 @@ fn record_typed_event<P: athena_core::Payload>(
 /// Stop every live Instance through the Runtime Interface — instance #0 included,
 /// whose `STOPPED` is the only legitimate route out of residency (ATH-STATE-024), and
 /// the subordinates release their resources at terminal state (ATH-RT-010).
-fn stop_all<D: ProcessDriver + 'static>(adapter: &AgentCliAdapter<D>) {
+fn stop_all<D: ProcessDriver + 'static>(
+    adapter: &AgentCliAdapter<D>,
+    rows: &std::sync::Arc<std::sync::Mutex<AthenaStore>>,
+) {
     let mut records = Vec::new();
     if let Some(record) = adapter.core_record() {
         records.push(record);
@@ -202,11 +205,12 @@ fn stop_all<D: ProcessDriver + 'static>(adapter: &AgentCliAdapter<D>) {
             runtime_instance_id: record.runtime_instance_id.clone(),
             instance_id: record.instance_id.clone(),
         };
-        if let Err(error) = futures::executor::block_on(Runtime::stop(
+        let stopped = futures::executor::block_on(Runtime::stop(
             adapter,
             &reference,
             athena_types::StopReason::Shutdown,
-        )) {
+        ));
+        if let Err(error) = stopped {
             resident_log(
                 Log::Warn,
                 "resident.stop",
@@ -214,6 +218,81 @@ fn stop_all<D: ProcessDriver + 'static>(adapter: &AgentCliAdapter<D>) {
                 resident_key(),
                 serde_json::json!({ "instance_id": record.instance_id.as_str() }),
             );
+        }
+        // The catalog's release face (X-54): the Runtime released the instance's
+        // resources, so the §26.6 row reaches its terminal state (`mark_stopped` — the
+        // writer the terminal Runtime Instance row was missing) and the catalog's
+        // `RuntimeInstanceStopped` is recorded beside it (`Actor::Runtime`, the row's own
+        // correlation). A fault is logged — shutdown never dies on a record.
+        if let Ok(mut guard) = rows.lock() {
+            if let Err(fault) = athena_core::RuntimeInstanceRepository::mark_stopped(
+                &mut *guard,
+                &record.runtime_instance_id,
+                athena_types::StopReason::Shutdown,
+                None,
+                athena_types::SideEffects::None,
+            ) {
+                resident_log(
+                    Log::Warn,
+                    "resident.stop",
+                    &format!(
+                        "terminal row write failed for {}: {fault}",
+                        record.runtime_instance_id.as_str()
+                    ),
+                    resident_key(),
+                    serde_json::json!({ "runtime_instance_id": record.runtime_instance_id.as_str() }),
+                );
+            }
+            let typed = athena_core::TypedEvent::new(
+                athena_core::events::RuntimeInstanceStopped {},
+                athena_core::EventContext {
+                    event_id: EventId::new(),
+                    occurred_at: athena_types::now_rfc3339(),
+                    actor: athena_core::Actor::Runtime,
+                    task_id: None,
+                    plan_step_id: None,
+                    agent_id: Some(record.definition.id.clone()),
+                    instance_id: Some(record.instance_id.clone()),
+                    skill_id: None,
+                    correlation_id: resident_key().clone(),
+                    causation_id: None,
+                },
+            );
+            match typed {
+                Ok(typed) => {
+                    let folded = NewEvent {
+                        event_id: typed.event_id.clone(),
+                        schema_version: typed.schema_version,
+                        event_type: typed.event_type.to_string(),
+                        occurred_at: typed.occurred_at.clone(),
+                        task_id: typed.task_id.clone(),
+                        plan_step_id: typed.plan_step_id.clone(),
+                        agent_id: typed.agent_id.clone(),
+                        instance_id: typed.instance_id.clone(),
+                        skill_id: typed.skill_id.clone(),
+                        correlation_id: typed.correlation_id.clone(),
+                        causation_id: typed.causation_id.clone(),
+                        actor: typed.actor.as_str().to_string(),
+                        payload_json: typed.payload_json.clone(),
+                    };
+                    if let Err(error) = athena_core::EventRepository::append(&mut *guard, &folded) {
+                        resident_log(
+                            Log::Warn,
+                            "resident.stop",
+                            &format!("recording RuntimeInstanceStopped failed: {error}"),
+                            resident_key(),
+                            serde_json::json!({ "instance_id": record.instance_id.as_str() }),
+                        );
+                    }
+                }
+                Err(fault) => resident_log(
+                    Log::Warn,
+                    "resident.stop",
+                    &format!("building RuntimeInstanceStopped failed: {fault}"),
+                    resident_key(),
+                    serde_json::json!({ "instance_id": record.instance_id.as_str() }),
+                ),
+            }
         }
     }
 }
@@ -388,6 +467,51 @@ async fn main() {
     };
     if let Err(error) = athena_core::EventRepository::append(&mut store, &configuration_loaded) {
         fail(&format!("recording ConfigurationLoaded failed: {error}"));
+    }
+
+    // The catalog's system-start face (X-54): the store is open, the configuration is the
+    // resident's first recorded fact, so ATHENA itself is now running — the `SystemStarted`
+    // Event beside the boot's own correlation anchor, the payload the catalog's `empty()`
+    // (`ATH-EVENT-009`'s closed catalog). A fault here fails the boot the way
+    // `ConfigurationLoaded`'s own fault does: a resident that cannot even record its start
+    // would run unrecorded from the first line.
+    let system_started = {
+        let typed = athena_core::TypedEvent::new(
+            athena_core::events::SystemStarted {},
+            athena_core::EventContext {
+                event_id: EventId::new(),
+                occurred_at: athena_types::now_rfc3339(),
+                actor: athena_core::Actor::System,
+                task_id: None,
+                plan_step_id: None,
+                agent_id: None,
+                instance_id: None,
+                skill_id: None,
+                correlation_id: boot_stamp.clone(),
+                causation_id: None,
+            },
+        );
+        match typed {
+            Ok(typed) => NewEvent {
+                event_id: typed.event_id.clone(),
+                schema_version: typed.schema_version,
+                event_type: typed.event_type.to_string(),
+                occurred_at: typed.occurred_at.clone(),
+                task_id: typed.task_id.clone(),
+                plan_step_id: typed.plan_step_id.clone(),
+                agent_id: typed.agent_id.clone(),
+                instance_id: typed.instance_id.clone(),
+                skill_id: typed.skill_id.clone(),
+                correlation_id: typed.correlation_id.clone(),
+                causation_id: typed.causation_id.clone(),
+                actor: typed.actor.as_str().to_string(),
+                payload_json: typed.payload_json.clone(),
+            },
+            Err(fault) => fail(&format!("recording SystemStarted failed: {fault}")),
+        }
+    };
+    if let Err(error) = athena_core::EventRepository::append(&mut store, &system_started) {
+        fail(&format!("recording SystemStarted failed: {error}"));
     }
 
     // 7. The static supply (X-44a): every configured `agents` entry registers through
@@ -718,7 +842,90 @@ async fn main() {
     }
     supervision.abort();
     execution.abort();
-    stop_all(adapter.as_ref());
+    // The catalog's drain face (X-54): the server has drained, every task is aborted, and
+    // the instances are being stopped — ATHENA is `SystemStopping` (`ATH-NFR-013`'s safe
+    // shutdown), recorded on the resident's own chain. A fault is logged — a shutdown that
+    // cannot record its drain still drains; the loss is named, never swallowed.
+    {
+        let Ok(mut guard) = rows.lock() else {
+            resident_log(
+                Log::Error,
+                "athena-api",
+                "recording SystemStopping failed: the store mutex is poisoned",
+                resident_key(),
+                serde_json::json!({}),
+            );
+            stop_all(adapter.as_ref(), &rows);
+            resident_log(
+                Log::Info,
+                "athena-api",
+                "stopped",
+                resident_key(),
+                serde_json::json!({}),
+            );
+            return;
+        };
+        let typed = athena_core::TypedEvent::new(
+            athena_core::events::SystemStopping {},
+            athena_core::EventContext {
+                event_id: EventId::new(),
+                occurred_at: athena_types::now_rfc3339(),
+                actor: athena_core::Actor::System,
+                task_id: None,
+                plan_step_id: None,
+                agent_id: None,
+                instance_id: None,
+                skill_id: None,
+                correlation_id: resident_key().clone(),
+                causation_id: None,
+            },
+        );
+        let folded = match typed {
+            Ok(typed) => NewEvent {
+                event_id: typed.event_id.clone(),
+                schema_version: typed.schema_version,
+                event_type: typed.event_type.to_string(),
+                occurred_at: typed.occurred_at.clone(),
+                task_id: typed.task_id.clone(),
+                plan_step_id: typed.plan_step_id.clone(),
+                agent_id: typed.agent_id.clone(),
+                instance_id: typed.instance_id.clone(),
+                skill_id: typed.skill_id.clone(),
+                correlation_id: typed.correlation_id.clone(),
+                causation_id: typed.causation_id.clone(),
+                actor: typed.actor.as_str().to_string(),
+                payload_json: typed.payload_json.clone(),
+            },
+            Err(fault) => {
+                resident_log(
+                    Log::Error,
+                    "athena-api",
+                    &format!("recording SystemStopping failed: {fault}"),
+                    resident_key(),
+                    serde_json::json!({}),
+                );
+                stop_all(adapter.as_ref(), &rows);
+                resident_log(
+                    Log::Info,
+                    "athena-api",
+                    "stopped",
+                    resident_key(),
+                    serde_json::json!({}),
+                );
+                return;
+            }
+        };
+        if let Err(error) = athena_core::EventRepository::append(&mut *guard, &folded) {
+            resident_log(
+                Log::Error,
+                "athena-api",
+                &format!("recording SystemStopping failed: {error}"),
+                resident_key(),
+                serde_json::json!({}),
+            );
+        }
+    }
+    stop_all(adapter.as_ref(), &rows);
     resident_log(
         Log::Info,
         "athena-api",

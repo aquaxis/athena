@@ -298,6 +298,18 @@ agent's self-declared status carried in metadata for the evaluation to judge
 (`ATH-MSG-006`/`012`/`014`): a redelivered message is answered by the delivery already
 recorded.
 
+The catalog's silent events speak. Eight catalog events that had no production writer now
+walk their true faces (`X-54`): `SystemStarted` opens the resident's boot after
+`ConfigurationLoaded`, and `SystemStopping` closes it on the shutdown path — the system's
+own lifetime, recorded; `WorkspaceLeased` rides the Task's create-time acquire and
+`WorkspaceReleased` ends the Task's lease at its terminal edge (`ATH-DATA-009`'s
+exclusivity); `RuntimeInstanceCreated` lands when the §26.6 row is inserted, and
+`RuntimeInstanceStopped` terminates the row when the resident stops the instance
+(`ATH-RT-010`); a successful settlement carries `AgentCompleted` — the agent's work done;
+and skill registration records `SkillRegistered` with its `skill_id`/`version`/`checksum`
+triple (`ATH-EVENT-017`). Every payload is the catalog's own — no shape was invented — and
+the event catalog remains closed (`ATH-EVENT-009`).
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is
