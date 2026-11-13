@@ -297,6 +297,17 @@ Event が、本来の顔を歩みます (`X-54`): `SystemStarted` は `Configura
 記録します (`ATH-EVENT-017`)。全ての payload はカタログ自身のもの — 形をでっち上げては
 いません — そして Event カタログは閉じたままです (`ATH-EVENT-009`)。
 
+## 4 つのコアペルソナが日本語を話し、返信プロトコルを担持する
+
+X-58 は 4 つのコアレベルペルソナの日本語版 — `personas/director_ja.md`、`lead_ja.md`、
+`producer_ja.md`、`worker_ja.md` — を英語原文の隣に追加します。`athena init` は同じ
+ビルド時埋め込み（リポジトリの `personas/` ディレクトリを走査するため、定義ファイルの
+追加にコード変更は不要）を通じて同梱します。各 `_ja` 本文は **双方向** で `agent-cli`
+のスポーンレポートプロトコルを埋め込みます: 親の委譲プロンプトは子へ
+`send_to(peer=<親id>, delivery="report")` での報告を指示し（親が直ちに行動する必要が
+ある場合は `delivery="prompt"` + `text="report sent"` を付加）、ペルソナ自身の報告義務も
+上位へ同じ文面を担持します。front matter は 4 キーと `allowed_tools` の `send_to` を維持します。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は

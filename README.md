@@ -310,6 +310,18 @@ and skill registration records `SkillRegistered` with its `skill_id`/`version`/`
 triple (`ATH-EVENT-017`). Every payload is the catalog's own — no shape was invented — and
 the event catalog remains closed (`ATH-EVENT-009`).
 
+## The four core personas speak Japanese and carry their reply protocol
+
+X-58 adds Japanese variants of the four core level personas — `personas/director_ja.md`,
+`lead_ja.md`, `producer_ja.md`, `worker_ja.md` — beside the English originals, shipped by
+`athena init` through the same build-time embed (which walks the repository's `personas/`
+directory, so a new definition file needs no code change). Each `_ja` body embeds the
+`agent-cli` spawn-report protocol in **both directions**: the parent's delegation prompt
+tells the child to report with `send_to(peer=<親id>, delivery="report")` (plus the
+`delivery="prompt"` + `text="report sent"` ping when the parent must act immediately), and
+the persona's own reporting duty carries the same wording toward its superior. Front
+matter keeps the four keys and `send_to` in `allowed_tools`.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is
