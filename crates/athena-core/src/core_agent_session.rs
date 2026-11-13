@@ -299,6 +299,49 @@ pub async fn start_core_agent(
     runtime.start(definition, context).await
 }
 
+/// Seed instance #0's §26.6 Runtime Instance row (X-61, `ATH-RT-012`).
+///
+/// The 1:1 between an Agent Instance and a Runtime Instance holds for instance #0 as it
+/// does for a subordinate — but the subordinate's row is written by the start walk
+/// (`runtime_instance::record_started`), which instance #0 never traverses: the Core Agent
+/// Session boots through [`start_core_agent`] and the resident supervises it directly. The
+/// row was therefore never created, and every reader that keys by `ri-…` found nothing: the
+/// heartbeat receipt (`ATH-CORE-047`) refused each beat, and the shutdown's `mark_stopped`
+/// had no row to terminate.
+///
+/// Every field is the start's own fact — the handle the Runtime answered, the pid the
+/// composition root observed (a Runtime reporting none records none, D-35), and the start
+/// instant. `last_heartbeat_at` is that same instant because the start *is* the last moment
+/// the process was observed alive; the first beat replaces it. The state is `IDLE`, the
+/// post-start state §17.2 names and the one the subordinate walk records.
+///
+/// # Errors
+/// The store's own refusal, surfaced whole — the caller logs it and keeps running: a
+/// bookkeeping row that failed to write never takes the Core Agent down with it.
+pub fn record_resident_instance(
+    store: &mut AthenaStore,
+    handle: &RuntimeInstanceRef,
+    pid: Option<u32>,
+    now: &str,
+) -> Result<(), PersistenceError> {
+    athena_persistence::repository::RuntimeInstanceRepository::insert(
+        store,
+        &athena_types::RuntimeInstance {
+            id: handle.runtime_instance_id.clone(),
+            runtime_type: handle.runtime_type,
+            instance_id: handle.instance_id.clone(),
+            state: AgentInstanceState::Idle,
+            pid,
+            last_heartbeat_at: Some(now.to_string()),
+            started_at: now.to_string(),
+            stopped_at: None,
+            stop_reason: None,
+            exit_code: None,
+            side_effects: athena_types::SideEffects::None,
+        },
+    )
+}
+
 // --- P1-30: typed CoreAgent* event builders (Event Manager emits; this builds) -----------
 
 /// `CoreAgentStarted` at boot (ATH-CORE-031).

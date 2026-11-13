@@ -1096,3 +1096,141 @@ fn an_orphaned_step_is_re_armed_only_behind_an_objective_verification() {
     let existing = crate::AgentRepository::list_non_terminal_instances(&store).expect("rows");
     assert!(crate::orphan::fresh_instance_for_attempt(&running, 1, &existing).is_ok());
 }
+
+// --- X-61: instance #0's §26.6 Runtime Instance row --------------------------------------
+
+#[test]
+fn the_resident_row_seeds_instance_zero_with_the_starts_own_facts() {
+    // X-61 / ATH-RT-012: the 1:1 holds for instance #0 too. The row the Core Agent boot
+    // seeds carries the handle the Runtime answered and the pid the composition root
+    // observed — no field is invented.
+    let mut store = AthenaStore::in_memory().expect("store");
+    let handle = athena_runtime::RuntimeInstanceRef {
+        runtime_type: athena_types::RuntimeType::AgentCli,
+        runtime_instance_id: athena_types::RuntimeInstanceId::new(),
+        instance_id: athena_types::InstanceId::new(),
+    };
+    let now = "2026-11-14T00:00:00.000Z";
+
+    crate::record_resident_instance(&mut store, &handle, Some(4242), now).expect("seeded");
+
+    let row = athena_persistence::repository::RuntimeInstanceRepository::get(
+        &store,
+        &handle.runtime_instance_id,
+    )
+    .expect("read")
+    .expect("the row exists");
+    assert_eq!(row.instance_id, handle.instance_id, "ATH-RT-012's 1:1");
+    assert_eq!(row.runtime_type, athena_types::RuntimeType::AgentCli);
+    assert_eq!(row.state, athena_types::AgentInstanceState::Idle);
+    assert_eq!(row.pid, Some(4242));
+    assert_eq!(row.started_at, now);
+    assert_eq!(
+        row.last_heartbeat_at.as_deref(),
+        Some(now),
+        "the start is the last moment the process was observed alive"
+    );
+    assert_eq!(row.stopped_at, None);
+    assert_eq!(row.side_effects, athena_types::SideEffects::None);
+}
+
+#[test]
+fn a_runtime_reporting_no_pid_seeds_the_row_without_one() {
+    // D-35: the pid is the composition root's observation. None recorded is none written —
+    // the row still exists, because the receipt keys on the row, not on the pid.
+    let mut store = AthenaStore::in_memory().expect("store");
+    let handle = athena_runtime::RuntimeInstanceRef {
+        runtime_type: athena_types::RuntimeType::AgentCli,
+        runtime_instance_id: athena_types::RuntimeInstanceId::new(),
+        instance_id: athena_types::InstanceId::new(),
+    };
+
+    crate::record_resident_instance(&mut store, &handle, None, "2026-11-14T00:00:00.000Z")
+        .expect("seeded");
+
+    let row = athena_persistence::repository::RuntimeInstanceRepository::get(
+        &store,
+        &handle.runtime_instance_id,
+    )
+    .expect("read")
+    .expect("the row exists");
+    assert_eq!(row.pid, None);
+}
+
+#[test]
+fn the_seeded_row_is_what_the_heartbeat_receipt_was_missing() {
+    // The defect X-61 names, closed end to end: with instance #0's row seeded, the beat's
+    // receipt (ATH-CORE-047) records instead of refusing — the warn the resident wrote
+    // every 20 s is gone, and the row's own `last_heartbeat_at` advances.
+    let mut store = AthenaStore::in_memory().expect("store");
+    let handle = athena_runtime::RuntimeInstanceRef {
+        runtime_type: athena_types::RuntimeType::AgentCli,
+        runtime_instance_id: athena_types::RuntimeInstanceId::new(),
+        instance_id: athena_types::InstanceId::new(),
+    };
+    let seeded_at = "2026-11-14T00:00:00.000Z";
+
+    // Before the seed: the receipt refuses and reports it (the measured defect).
+    let before =
+        crate::heartbeat::beat_once(&mut store, 0, Some(&handle.runtime_instance_id), seeded_at)
+            .expect("the beat emits");
+    assert!(!before.receipt_recorded);
+    assert!(before.receipt_note.is_some());
+
+    crate::record_resident_instance(&mut store, &handle, Some(4242), seeded_at).expect("seeded");
+
+    // After the seed: the receipt records, with no note to log.
+    let beat_at = "2026-11-14T00:00:20.000Z";
+    let after =
+        crate::heartbeat::beat_once(&mut store, 1, Some(&handle.runtime_instance_id), beat_at)
+            .expect("the beat emits");
+    assert!(
+        after.receipt_recorded,
+        "the receipt records on a seeded row"
+    );
+    assert_eq!(after.receipt_note, None, "nothing left to warn about");
+
+    let row = athena_persistence::repository::RuntimeInstanceRepository::get(
+        &store,
+        &handle.runtime_instance_id,
+    )
+    .expect("read")
+    .expect("row");
+    assert_eq!(
+        row.last_heartbeat_at.as_deref(),
+        Some(beat_at),
+        "ATH-CORE-047: the receipt advances the row's own heartbeat"
+    );
+}
+
+#[test]
+fn the_seeded_row_can_reach_its_terminal_state() {
+    // The shutdown path's `mark_stopped` had no row to terminate before X-61; with the
+    // row seeded it does, so instance #0's stop is recorded like any other instance's.
+    let mut store = AthenaStore::in_memory().expect("store");
+    let handle = athena_runtime::RuntimeInstanceRef {
+        runtime_type: athena_types::RuntimeType::AgentCli,
+        runtime_instance_id: athena_types::RuntimeInstanceId::new(),
+        instance_id: athena_types::InstanceId::new(),
+    };
+    crate::record_resident_instance(&mut store, &handle, Some(4242), "2026-11-14T00:00:00.000Z")
+        .expect("seeded");
+
+    athena_persistence::repository::RuntimeInstanceRepository::mark_stopped(
+        &mut store,
+        &handle.runtime_instance_id,
+        athena_types::StopReason::Shutdown,
+        None,
+        athena_types::SideEffects::None,
+    )
+    .expect("the terminal write lands");
+
+    let row = athena_persistence::repository::RuntimeInstanceRepository::get(
+        &store,
+        &handle.runtime_instance_id,
+    )
+    .expect("read")
+    .expect("row");
+    assert!(row.stopped_at.is_some());
+    assert_eq!(row.stop_reason, Some(athena_types::StopReason::Shutdown));
+}

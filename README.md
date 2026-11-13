@@ -368,6 +368,22 @@ Recording the stop claims nothing further: a restart that follows is `CoreAgentR
 and a window-exhausted halt is `CoreAgentEscalated` (`ATH-CORE-030`) — neither is inferred
 from the failure, and the boot arm records no escalation because it consults no window.
 
+## X-61: instance #0 has a Runtime Instance row
+
+The 1:1 between an Agent Instance and a Runtime Instance (`ATH-RT-012`) now holds for
+instance #0 as it always did for subordinates. A subordinate's §26.6 row is written by the
+start walk; the Core Agent boots through `start_core_agent` and never traverses it, so its
+row was never created — and every reader keyed by `ri-...` found nothing. The heartbeat
+receipt (`ATH-CORE-047`) refused every beat, logging a warning every 20 seconds, and the
+shutdown's `mark_stopped` had no row to terminate.
+
+The row is seeded wherever instance #0 acquires a handle — the boot and each supervised
+restart, which mints a new `ri-...` — from the start's own facts: the handle the Runtime
+answered, the pid the composition root observed (a Runtime reporting none records none),
+and the start instant, which is also the last moment the process was observed alive until
+the first beat replaces it. A refusal to write the row is logged and never fatal: a
+bookkeeping row must not take the Core Agent down with it.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is

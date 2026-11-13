@@ -349,6 +349,20 @@ Core Agent、envelope は Task 鎖に加わりません（`ATH-STATE-012`）。
 `CoreAgentEscalated`（`ATH-CORE-030`）であり、障害からそれらを推論しません。ブート腕がエスカレー
 ションを記録しないのは、その腕がウィンドウを参照していないからです。
 
+## X-61: instance #0 に Runtime Instance 行ができる
+
+Agent Instance と Runtime Instance の 1:1（`ATH-RT-012`）が、下位 Instance と同じく instance #0
+でも成立するようになりました。下位の §26.6 行は開始歩行が書きますが、Core Agent は
+`start_core_agent` で起動し歩行を通らないため、行が一度も作られていませんでした — その結果
+`ri-...` を鍵に読む側はすべて空振りし、heartbeat 受領（`ATH-CORE-047`）は毎回拒否されて 20 秒ごとに
+警告を書き、シャットダウンの `mark_stopped` は終端させる行を持ちませんでした。
+
+行は instance #0 が handle を得るすべての地点 — ブートと、新しい `ri-...` を発行する監督再起動の
+各回 — で、起動自身の事実から seed します: Runtime が返した handle、合成の根が観測した pid
+（報告しない Runtime には記録しない）、そして起動時刻（最初の beat が上書きするまで、これが
+「プロセスが生きていると最後に観測された時刻」です）。行の書き込み失敗はログに記録しますが致命的
+には扱いません — 簿記の行が Core Agent を道連れにしてはなりません。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は

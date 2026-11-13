@@ -128,8 +128,8 @@ pub use athena_types::TaskState;
 pub use budgets::{BudgetSignal, Budgets, IterationEffect};
 pub use core_agent_session::{
     ContextDocument, ControlSurfaceChecksum, Recovery, RestartWindow, StartFailureKind,
-    SurfaceMismatch, escalated_event, failed_event, recovery_decision, restarted_event,
-    start_core_agent, started_event, verify_surface,
+    SurfaceMismatch, escalated_event, failed_event, record_resident_instance, recovery_decision,
+    restarted_event, start_core_agent, started_event, verify_surface,
 };
 pub use core_loop::{
     Interpreted, LoopFault, OutstandingReply, PendingDelivery, Received, Received2, ReceptionFault,

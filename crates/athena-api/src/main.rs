@@ -316,6 +316,45 @@ fn resident_key() -> &'static String {
     })
 }
 
+/// Seed instance #0's §26.6 Runtime Instance row for a handle the Runtime just answered
+/// (X-61), reading the pid off the adapter's own record — the composition root owns the
+/// process table (D-35), so a Runtime reporting none records none.
+///
+/// A refusal is logged and never fatal: the Core Agent is running either way, and a
+/// bookkeeping row that failed to write must not take the boot or a recovery down. The
+/// readers that key by `ri-…` keep answering what the store actually holds.
+fn seed_resident_row<D: ProcessDriver + 'static>(
+    rows: &Arc<Mutex<AthenaStore>>,
+    adapter: &Arc<AgentCliAdapter<D>>,
+    handle: &RuntimeInstanceRef,
+    module: &str,
+) {
+    let pid = adapter.core_record().map(|record| record.pid);
+    let Ok(mut guard) = rows.lock() else {
+        resident_log(
+            Log::Warn,
+            module,
+            "seeding the Core Agent's runtime instance row failed",
+            resident_key(),
+            serde_json::json!({ "fault": "the store lock is poisoned" }),
+        );
+        return;
+    };
+    if let Err(fault) =
+        athena_core::record_resident_instance(&mut guard, handle, pid, &athena_types::now_rfc3339())
+    {
+        resident_log(
+            Log::Warn,
+            module,
+            &format!("seeding the Core Agent's runtime instance row failed: {fault}"),
+            resident_key(),
+            serde_json::json!({
+                "runtime_instance_id": handle.runtime_instance_id.as_str()
+            }),
+        );
+    }
+}
+
 /// Instance #0's own Event envelope (X-57): the Core Agent as actor, no Task chain
 /// (`ATH-STATE-012` — instance #0 never joins one), on the caller's correlation key.
 fn core_event_context(now: &str, correlation_id: String) -> athena_core::EventContext {
@@ -752,6 +791,13 @@ async fn main() {
     .await
     {
         Ok(handle) => {
+            // X-61: instance #0's §26.6 Runtime Instance row is seeded here, because the
+            // Core Agent boots through `start_core_agent` and never traverses the start
+            // walk that writes a subordinate's row. Without it every reader keyed by
+            // `ri-…` found nothing — the heartbeat receipt (ATH-CORE-047) refused each
+            // beat and the shutdown's `mark_stopped` had no row to terminate. The pid is
+            // the composition root's observation of the handle, never a guess (D-35).
+            seed_resident_row(&rows, &adapter, &handle, "resident.boot");
             // X-50 (i): the boot's success answers with the typed `CoreAgentStarted`
             // (ATH-CORE-031) on the heartbeat precedent — digest-minted correlation, actor
             // core-agent, no Task chain (ATH-STATE-012) — appended through the shared
@@ -2536,6 +2582,11 @@ where
                         .await
                     {
                         Ok(handle) => {
+                            // X-61: the restart mints a *new* `ri-…`, so instance #0's
+                            // §26.6 row is seeded again here — otherwise the receipt and
+                            // the terminal write would start refusing from the first
+                            // restart onward even on a boot that had seeded its own row.
+                            seed_resident_row(&rows, &adapter, &handle, "resident.supervision");
                             // X-50 (ii): the restart is a catalog Event (ATH-CORE-031) — the
                             // window start is the window's own fact (its getter, never a
                             // resident-minted stamp), the context document the rebuild actually
