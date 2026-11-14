@@ -1785,3 +1785,98 @@ async fn two_boots_on_one_host_never_share_a_registry() {
         );
     }
 }
+
+/// X-64 — **the delivery leg honours ATHENA's configured execution deadline**
+/// (`ATH-RT-006`).
+///
+/// Measured before the fix: a delivery whose peer never answered failed as a *transient*
+/// fault after the launcher's own internal 120 s wait, so `timeout.execution` governed
+/// nothing and a deadline was reported as a retryable fault. `agent-cli` 0.53.0 exposes no
+/// configuration key for that wait (the resolved configuration's only `timeout_ms` keys are
+/// `[tools.bash]` and `[shell]`, both tool budgets), so the deadline is enforced on this
+/// side and surfaces as the class the specification names.
+#[tokio::test]
+async fn a_delivery_that_outlives_the_execution_budget_is_a_deadline_not_a_transient() {
+    /// A transport that never answers — the peer-silent case the budget must bound.
+    #[derive(Debug, Default)]
+    struct SilentIpc;
+
+    impl crate::adapter::IpcTransport for SilentIpc {
+        fn ask(
+            &self,
+            _workspace: &std::path::Path,
+            _peer: &str,
+            _body: &str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<String, athena_runtime::RuntimeError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
+                Ok(String::new())
+            })
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("temp");
+    // The template carries the operating-model procedures the delegation envelope directs
+    // (P3-17) — without them `send` refuses before any transport is reached.
+    let template = dir.path().join("template");
+    let commands = template.join("commands");
+    std::fs::create_dir_all(&commands).expect("template commands");
+    for name in ["ai.md", "next_ai.md", "close_ai.md"] {
+        std::fs::write(commands.join(name), format!("# {name} (origin copy)\n"))
+            .expect("procedure file");
+    }
+    let budgets = crate::manager::Budgets::new(
+        std::time::Duration::from_secs(30),
+        std::time::Duration::from_millis(150),
+        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(60),
+    );
+    let adapter = AgentCliAdapter::with_budgets(
+        FakeDriver::default(),
+        template,
+        budgets,
+        std::sync::Arc::new(crate::manager::WallClock),
+        4,
+        16,
+        vec![],
+    )
+    .with_ipc_transport(std::sync::Arc::new(SilentIpc));
+
+    let handle = Runtime::start(
+        &adapter,
+        definition(),
+        ctx_with(dir.path().join("instances").join("ai-deadline")),
+    )
+    .await
+    .expect("started");
+
+    let error = Runtime::send(
+        &adapter,
+        &handle,
+        athena_runtime::message::Message {
+            message_id: MessageId::new(),
+            message_type: MessageType::Instruction,
+            from_agent: Some(AgentId::core_agent()),
+            from_instance_id: None,
+            thread_id: "x64-thread".into(),
+            reply_to: None,
+            priority: Priority::Normal,
+            body: "answer me".into(),
+            payload_json: None,
+            deadline: None,
+        },
+    )
+    .await
+    .expect_err("the silent peer must not be waited on forever");
+
+    assert!(
+        matches!(error, athena_runtime::RuntimeError::Deadline(_)),
+        "ATH-RT-006: a budget reached is a Deadline, never a retryable Transient: {error:?}"
+    );
+}

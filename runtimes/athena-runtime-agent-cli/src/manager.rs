@@ -364,6 +364,19 @@ impl<D: ProcessDriver + 'static> ProcessManager<D> {
         }
     }
 
+    /// The wall-clock budgets this manager enforces (`ATH-RT-006`).
+    ///
+    /// X-64: the delivery leg reads the **execution** budget here so ATHENA's configured
+    /// deadline governs an `ask`, rather than whatever internal wait the launcher happens
+    /// to apply. `agent-cli` 0.53.0 exposes no configuration key for its IPC reply wait
+    /// (measured: the resolved configuration's only `timeout_ms` keys are `[tools.bash]`
+    /// and `[shell]`, both tool-execution budgets), so the deadline cannot be pushed down
+    /// and must be enforced on this side.
+    #[must_use]
+    pub const fn budgets(&self) -> Budgets {
+        self.budgets
+    }
+
     /// How long the record has been silent — the *observation* the heartbeat budget feeds,
     /// never a death verdict (`R-DIAG-02`).
     ///

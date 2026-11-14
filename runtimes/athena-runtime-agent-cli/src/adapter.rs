@@ -400,9 +400,31 @@ impl<D: ProcessDriver + 'static> Runtime for AgentCliAdapter<D> {
                 .peer_id
                 .clone()
                 .unwrap_or_else(|| record.definition.id.as_str().to_string());
-            let reply = transport
-                .ask(&record.workspace, &peer, &message.body)
-                .await?;
+            // X-64 (`ATH-RT-006`): ATHENA's configured execution deadline governs the
+            // delivery, enforced here. `agent-cli` 0.53.0 exposes no configuration key for
+            // its IPC reply wait — measured: the resolved configuration's only `timeout_ms`
+            // keys are `[tools.bash]` and `[shell]`, both tool-execution budgets — so an
+            // unbounded await inherited the launcher's internal wait instead (observed: a
+            // delivery failed as a *transient* fault after the launcher's own 120 s, which
+            // misnames a deadline and ignores `timeout.execution` entirely). A deadline
+            // reached is `RuntimeError::Deadline`, the class `ATH-RT-006` names and the one
+            // the resident maps onto TimeoutError rather than a retryable transient.
+            let budget = self.manager.budgets().execution;
+            let reply = match tokio::time::timeout(
+                budget,
+                transport.ask(&record.workspace, &peer, &message.body),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    return Err(RuntimeError::Deadline(format!(
+                        "the peer did not answer the delivery within the configured execution \
+                         deadline ({} s)",
+                        budget.as_secs()
+                    )));
+                }
+            };
             let outbox = record.workspace.join(".athena-outbox");
             std::fs::create_dir_all(&outbox).map_err(|error| {
                 RuntimeError::Transient(format!("outbox create failed: {error}"))
