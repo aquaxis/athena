@@ -907,6 +907,7 @@ async fn main() {
         rows.clone(),
         control_surface,
         standing.clone(),
+        config.clone(),
     );
 
     // 9b. The execution loop (X-26, R-DIAG-06): the queue a created Task lands in is
@@ -2458,6 +2459,7 @@ fn core_supervision<D>(
     rows: Arc<Mutex<AthenaStore>>,
     control_surface: Option<athena_core::ControlSurfaceChecksum>,
     standing: athena_api::StandingCell,
+    config: Config,
 ) -> tokio::task::JoinHandle<()>
 where
     D: ProcessDriver + 'static,
@@ -2477,7 +2479,44 @@ where
                         observed_at: athena_types::now_rfc3339(),
                     },
                 );
-                continue;
+                // X-62: no record means instance #0 is not resident — and the resident
+                // always intends it to be (`ATH-CORE-021` boots it as part of the boot
+                // sequence). This branch used to publish `alive: false` and poll on
+                // forever, so a boot that never came up was the one failure ATHENA never
+                // tried to recover: `ATH-CORE-029`'s deterministic restart and
+                // `ATH-CORE-030`'s escalation were both unreachable. It now walks the same
+                // recovery the death path walks, bounded by the same sliding window, with
+                // the definition taken from the configuration because no record carries
+                // one. The stop is recorded first, as at the death detection (X-57, D-59).
+                resident_log(
+                    Log::Warn,
+                    "resident.supervision",
+                    "instance #0 is not resident (no runtime record); recovering (ATH-CORE-029)",
+                    resident_key(),
+                    serde_json::json!({}),
+                );
+                append_core_event(
+                    &rows,
+                    athena_core::core_agent_session::failed_event(core_event_context(
+                        &athena_types::now_rfc3339(),
+                        resident_key().clone(),
+                    )),
+                    "resident.supervision",
+                    "recording the Core Agent failure failed",
+                );
+                match recover_core_agent(
+                    &adapter,
+                    &rows,
+                    control_surface.as_ref(),
+                    &mut window,
+                    &config,
+                    &core_definition(&config),
+                )
+                .await
+                {
+                    RecoveryWalk::Continue => continue,
+                    RecoveryWalk::Halt => return,
+                }
             };
             let reference = RuntimeInstanceRef {
                 runtime_type: RuntimeType::AgentCli,
@@ -2526,220 +2565,263 @@ where
                 "resident.supervision",
                 "recording the Core Agent failure failed",
             );
-            // 1. The control-surface checksum (ATH-CORE-044): a mismatch escalates —
-            //    nothing restarts through a tampered surface.
-            let surface_ok = control_surface
-                .as_ref()
-                .map(|placed| {
-                    let workspace = PathBuf::from(&record.workspace);
-                    let live = control_surface_checksum(&workspace.join(".agent-cli"));
-                    athena_core::verify_surface(placed, &live)
-                })
-                .unwrap_or(Ok(()));
-            // 2. The deterministic decision: the sliding window (3 / h); transient and
-            //    resource-shortage start failures retry uncounted (ATH-CORE-045).
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-                .unwrap_or(u64::MAX);
-            let decision = athena_core::recovery_decision(
-                surface_ok,
-                athena_core::StartFailureKind::Counted,
+            match recover_core_agent(
+                &adapter,
+                &rows,
+                control_surface.as_ref(),
                 &mut window,
-                now_ms,
-            );
-            match decision {
-                athena_core::Recovery::Restart { attempt } => {
-                    // 3. Rebuild the context document per non-terminal Task from Working
-                    //    Memory + Events (ATH-CORE-029), written where the restarted
-                    //    agent reads it; references only, no prose invented
-                    //    (ATH-EVENT-007).
-                    let mut context_refs: Vec<String> = Vec::new();
-                    if let Ok(mut guard) = rows.lock() {
-                        let store = &mut *guard;
-                        let tasks = athena_core::TaskRepository::list_non_terminal(store)
-                            .unwrap_or_default();
-                        for task in tasks {
-                            if let Ok(document) =
-                                athena_core::ContextDocument::rebuild(store, &task.id)
-                            {
-                                let path = PathBuf::from(&record.workspace)
-                                    .join(format!("context-{}.json", task.id.as_str()));
-                                if let Ok(json) = serde_json::to_string_pretty(&document) {
-                                    let _ = std::fs::write(&path, json);
-                                    context_refs.push(path.display().to_string());
-                                }
-                            }
+                &config,
+                &record.definition,
+            )
+            .await
+            {
+                RecoveryWalk::Continue => {}
+                RecoveryWalk::Halt => return,
+            }
+        }
+    })
+}
+
+/// Whether the supervision loop keeps polling after a recovery walk (X-62).
+enum RecoveryWalk {
+    /// The walk restarted instance #0, or declined to count a transient failure: poll on.
+    Continue,
+    /// `ATH-CORE-030`: the window is exhausted (or the surface is tampered) — autonomous
+    /// execution halts and the supervision task ends.
+    Halt,
+}
+
+/// One deterministic recovery of instance #0 (§7.5.3, `ATH-CORE-029`/`ATH-CORE-030`):
+/// verify the control surface, decide against the sliding window, rebuild the context
+/// document, restart, and record what happened.
+///
+/// X-62: the walk takes instance #0's *intended* identity — the resident's own
+/// configuration and the definition it boots — rather than a live process record, because
+/// the case that had no recovery at all is precisely the one with no record: a boot that
+/// never came up. The two callers differ only in where the definition comes from (the dead
+/// record's own, or the configuration's), so one rule serves both and a failed boot can no
+/// longer be the one failure ATHENA does not try to recover.
+///
+/// The configuration is the resident's, not a reconstruction. The restart's `StartContext`
+/// therefore carries the operator's stated tool ceiling (`ATH-SEC-024`) and deadlines; the
+/// earlier reconstruction filled them from `Config::default()`, whose `delegable_tools` is
+/// the empty set the configuration validator refuses to accept from an operator — a
+/// restarted Core Agent that could delegate nothing.
+async fn recover_core_agent<D>(
+    adapter: &Arc<AgentCliAdapter<D>>,
+    rows: &Arc<Mutex<AthenaStore>>,
+    control_surface: Option<&athena_core::ControlSurfaceChecksum>,
+    window: &mut athena_core::RestartWindow,
+    config: &Config,
+    definition: &athena_types::AgentDefinition,
+) -> RecoveryWalk
+where
+    D: ProcessDriver + 'static,
+{
+    // 1. The control-surface checksum (ATH-CORE-044): a mismatch escalates —
+    //    nothing restarts through a tampered surface.
+    let surface_ok = control_surface
+        .map(|placed| {
+            let workspace = PathBuf::from(&config.core.agent.workspace);
+            let live = control_surface_checksum(&workspace.join(".agent-cli"));
+            athena_core::verify_surface(placed, &live)
+        })
+        .unwrap_or(Ok(()));
+    // 2. The deterministic decision: the sliding window (3 / h); transient and
+    //    resource-shortage start failures retry uncounted (ATH-CORE-045).
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(u64::MAX);
+    let decision = athena_core::recovery_decision(
+        surface_ok,
+        athena_core::StartFailureKind::Counted,
+        window,
+        now_ms,
+    );
+    match decision {
+        athena_core::Recovery::Restart { attempt } => {
+            // 3. Rebuild the context document per non-terminal Task from Working
+            //    Memory + Events (ATH-CORE-029), written where the restarted
+            //    agent reads it; references only, no prose invented
+            //    (ATH-EVENT-007).
+            let mut context_refs: Vec<String> = Vec::new();
+            if let Ok(mut guard) = rows.lock() {
+                let store = &mut *guard;
+                let tasks =
+                    athena_core::TaskRepository::list_non_terminal(store).unwrap_or_default();
+                for task in tasks {
+                    if let Ok(document) = athena_core::ContextDocument::rebuild(store, &task.id) {
+                        let path = PathBuf::from(&config.core.agent.workspace)
+                            .join(format!("context-{}.json", task.id.as_str()));
+                        if let Ok(json) = serde_json::to_string_pretty(&document) {
+                            let _ = std::fs::write(&path, json);
+                            context_refs.push(path.display().to_string());
                         }
                     }
-                    let mut context = core_context(&recovered_config(&record));
-                    context.context_document_ref = context_refs.first().cloned();
-                    // The Event's `context_document_ref` is the document the rebuild above
-                    // actually wrote (empty when none was), read before the context moves
-                    // into the start call — the payload states a fact, never a guess.
-                    let restarted_with = context.context_document_ref.clone().unwrap_or_default();
-                    match start_core_agent(adapter.as_ref(), record.definition.clone(), context)
-                        .await
-                    {
-                        Ok(handle) => {
-                            // X-61: the restart mints a *new* `ri-…`, so instance #0's
-                            // §26.6 row is seeded again here — otherwise the receipt and
-                            // the terminal write would start refusing from the first
-                            // restart onward even on a boot that had seeded its own row.
-                            seed_resident_row(&rows, &adapter, &handle, "resident.supervision");
-                            // X-50 (ii): the restart is a catalog Event (ATH-CORE-031) — the
-                            // window start is the window's own fact (its getter, never a
-                            // resident-minted stamp), the context document the rebuild actually
-                            // wrote, the fold the heartbeat face keeps. A restart joins no
-                            // Task's chain (ATH-STATE-012): instance #0's own digest key.
-                            match window.window_start(u64_ms()) {
-                                Some(start_ms) => {
-                                    let secs = start_ms / 1_000;
-                                    let milli = u32::try_from(start_ms % 1_000).unwrap_or(0);
-                                    let window_start =
-                                        athena_types::clock::format_rfc3339(secs, milli);
-                                    if let Ok(mut guard) = rows.lock() {
-                                        match athena_core::restarted_event(
-                                            attempt,
-                                            window_start,
-                                            restarted_with.clone(),
-                                            core_agent_context(&format!(
-                                                "core-agent-restart-{attempt}-{}",
-                                                u64_ms()
-                                            )),
-                                        ) {
-                                            Ok(typed) => {
-                                                record_typed_event(
-                                                    &mut guard,
-                                                    typed,
-                                                    "resident.supervision",
-                                                );
-                                            }
-                                            Err(fault) => resident_log(
-                                                Log::Error,
-                                                "resident.supervision",
-                                                &format!(
-                                                    "building CoreAgentRestarted failed: {fault}"
-                                                ),
-                                                resident_key(),
-                                                serde_json::json!({ "attempt": attempt }),
-                                            ),
-                                        }
+                }
+            }
+            let mut context = core_context(config);
+            context.context_document_ref = context_refs.first().cloned();
+            // The Event's `context_document_ref` is the document the rebuild above
+            // actually wrote (empty when none was), read before the context moves
+            // into the start call — the payload states a fact, never a guess.
+            let restarted_with = context.context_document_ref.clone().unwrap_or_default();
+            match start_core_agent(adapter.as_ref(), definition.clone(), context).await {
+                Ok(handle) => {
+                    // X-61: the restart mints a *new* `ri-…`, so instance #0's
+                    // §26.6 row is seeded again here — otherwise the receipt and
+                    // the terminal write would start refusing from the first
+                    // restart onward even on a boot that had seeded its own row.
+                    seed_resident_row(rows, adapter, &handle, "resident.supervision");
+                    // X-50 (ii): the restart is a catalog Event (ATH-CORE-031) — the
+                    // window start is the window's own fact (its getter, never a
+                    // resident-minted stamp), the context document the rebuild actually
+                    // wrote, the fold the heartbeat face keeps. A restart joins no
+                    // Task's chain (ATH-STATE-012): instance #0's own digest key.
+                    match window.window_start(u64_ms()) {
+                        Some(start_ms) => {
+                            let secs = start_ms / 1_000;
+                            let milli = u32::try_from(start_ms % 1_000).unwrap_or(0);
+                            let window_start = athena_types::clock::format_rfc3339(secs, milli);
+                            if let Ok(mut guard) = rows.lock() {
+                                match athena_core::restarted_event(
+                                    attempt,
+                                    window_start,
+                                    restarted_with.clone(),
+                                    core_agent_context(&format!(
+                                        "core-agent-restart-{attempt}-{}",
+                                        u64_ms()
+                                    )),
+                                ) {
+                                    Ok(typed) => {
+                                        record_typed_event(
+                                            &mut guard,
+                                            typed,
+                                            "resident.supervision",
+                                        );
                                     }
+                                    Err(fault) => resident_log(
+                                        Log::Error,
+                                        "resident.supervision",
+                                        &format!("building CoreAgentRestarted failed: {fault}"),
+                                        resident_key(),
+                                        serde_json::json!({ "attempt": attempt }),
+                                    ),
                                 }
-                                None => resident_log(
-                                    Log::Error,
-                                    "resident.supervision",
-                                    "the restart window records no opening; CoreAgentRestarted withheld",
-                                    resident_key(),
-                                    serde_json::json!({ "attempt": attempt }),
-                                ),
                             }
-                            resident_log(
-                                Log::Info,
-                                "resident.supervision",
-                                &format!(
-                                    "Core Agent restarted (attempt {attempt}, runtime {})",
-                                    handle.runtime_instance_id.as_str()
-                                ),
-                                resident_key(),
-                                serde_json::json!({ "attempt": attempt }),
-                            )
                         }
-                        Err(error) => resident_log(
+                        None => resident_log(
                             Log::Error,
                             "resident.supervision",
-                            &format!("Core Agent restart attempt {attempt} failed: {error}"),
+                            "the restart window records no opening; CoreAgentRestarted withheld",
                             resident_key(),
                             serde_json::json!({ "attempt": attempt }),
                         ),
                     }
-                }
-                athena_core::Recovery::RetryNotCounted => {
                     resident_log(
                         Log::Info,
                         "resident.supervision",
-                        "transient start failure; the next poll retries uncounted (ATH-CORE-045)",
+                        &format!(
+                            "Core Agent restarted (attempt {attempt}, runtime {})",
+                            handle.runtime_instance_id.as_str()
+                        ),
                         resident_key(),
-                        serde_json::json!({}),
-                    );
+                        serde_json::json!({ "attempt": attempt }),
+                    )
                 }
-                athena_core::Recovery::Escalate(reason) => {
-                    // The record rides one minted correlation (the boot/maintenance
-                    // precedent, X-50): the escalation joins no Task's chain, so its own
-                    // digest key is the chain. A construction-gate refusal is fatal — the
-                    // poll returns immediately after this record.
-                    let now = athena_types::now_rfc3339();
-                    let correlation = athena_core::digest(&format!("escalation-{now}"));
-                    let context = athena_core::EventContext {
-                        event_id: athena_types::EventId::new(),
-                        occurred_at: now.clone(),
-                        actor: athena_core::Actor::CoreAgent,
-                        task_id: None,
-                        plan_step_id: None,
-                        agent_id: Some(athena_types::AgentId::core_agent()),
-                        instance_id: None,
-                        skill_id: None,
-                        correlation_id: correlation.clone(),
-                        causation_id: None,
-                    };
-                    if let Ok(mut guard) = rows.lock() {
-                        // The construction gate and the store append are one chain of facts,
-                        // never one `and_then`: the builder answers `EventError`, the store
-                        // `PersistenceError`, and folding them would misname the face that
-                        // refused. Each is named on the resident's own chain instead.
-                        let folded = match athena_core::core_agent_session::escalated_event(context)
-                        {
-                            Ok(typed) => Ok(NewEvent {
-                                event_id: typed.event_id.clone(),
-                                schema_version: typed.schema_version,
-                                event_type: typed.event_type.to_string(),
-                                occurred_at: typed.occurred_at.clone(),
-                                task_id: typed.task_id.clone(),
-                                plan_step_id: typed.plan_step_id.clone(),
-                                agent_id: typed.agent_id.clone(),
-                                instance_id: typed.instance_id.clone(),
-                                skill_id: typed.skill_id.clone(),
-                                correlation_id: typed.correlation_id.clone(),
-                                causation_id: typed.causation_id.clone(),
-                                actor: typed.actor.as_str().to_string(),
-                                payload_json: typed.payload_json.clone(),
-                            }),
-                            Err(fault) => Err(fault.to_string()),
-                        };
-                        match folded.and_then(|event| {
-                            athena_core::EventRepository::append(&mut *guard, &event)
-                                .map_err(|fault| fault.to_string())
-                        }) {
-                            Ok(_) => {}
-                            Err(fault) => resident_log(
-                                Log::Error,
-                                "resident.escalation",
-                                &format!("recording the escalation failed: {fault}"),
-                                resident_key(),
-                                serde_json::json!({}),
-                            ),
-                        }
-                    }
-                    // The recovery reason already states the halt ("restart window
-                    // exhausted; autonomous execution halts"), so the note appends nothing
-                    // to it — the earlier doubled clause came from repeating it here
-                    // (R-DIAG-01 finding (d)). The reason stays the log line only: the
-                    // `CoreAgentEscalated` payload is catalog-empty, and a payload change
-                    // would fail the §23.2 catalog tests (ATH-EVENT-009).
-                    let reason = reason.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
-                    resident_log(
-                        Log::Error,
-                        "resident.escalation",
-                        &format!("CoreAgentEscalated — {reason} (ATH-CORE-030)"),
-                        resident_key(),
-                        serde_json::json!({ "reason": reason }),
-                    );
-                    return;
-                }
+                Err(error) => resident_log(
+                    Log::Error,
+                    "resident.supervision",
+                    &format!("Core Agent restart attempt {attempt} failed: {error}"),
+                    resident_key(),
+                    serde_json::json!({ "attempt": attempt }),
+                ),
             }
         }
-    })
+        athena_core::Recovery::RetryNotCounted => {
+            resident_log(
+                Log::Info,
+                "resident.supervision",
+                "transient start failure; the next poll retries uncounted (ATH-CORE-045)",
+                resident_key(),
+                serde_json::json!({}),
+            );
+        }
+        athena_core::Recovery::Escalate(reason) => {
+            // The record rides one minted correlation (the boot/maintenance
+            // precedent, X-50): the escalation joins no Task's chain, so its own
+            // digest key is the chain. A construction-gate refusal is fatal — the
+            // poll returns immediately after this record.
+            let now = athena_types::now_rfc3339();
+            let correlation = athena_core::digest(&format!("escalation-{now}"));
+            let context = athena_core::EventContext {
+                event_id: athena_types::EventId::new(),
+                occurred_at: now.clone(),
+                actor: athena_core::Actor::CoreAgent,
+                task_id: None,
+                plan_step_id: None,
+                agent_id: Some(athena_types::AgentId::core_agent()),
+                instance_id: None,
+                skill_id: None,
+                correlation_id: correlation.clone(),
+                causation_id: None,
+            };
+            if let Ok(mut guard) = rows.lock() {
+                // The construction gate and the store append are one chain of facts,
+                // never one `and_then`: the builder answers `EventError`, the store
+                // `PersistenceError`, and folding them would misname the face that
+                // refused. Each is named on the resident's own chain instead.
+                let folded = match athena_core::core_agent_session::escalated_event(context) {
+                    Ok(typed) => Ok(NewEvent {
+                        event_id: typed.event_id.clone(),
+                        schema_version: typed.schema_version,
+                        event_type: typed.event_type.to_string(),
+                        occurred_at: typed.occurred_at.clone(),
+                        task_id: typed.task_id.clone(),
+                        plan_step_id: typed.plan_step_id.clone(),
+                        agent_id: typed.agent_id.clone(),
+                        instance_id: typed.instance_id.clone(),
+                        skill_id: typed.skill_id.clone(),
+                        correlation_id: typed.correlation_id.clone(),
+                        causation_id: typed.causation_id.clone(),
+                        actor: typed.actor.as_str().to_string(),
+                        payload_json: typed.payload_json.clone(),
+                    }),
+                    Err(fault) => Err(fault.to_string()),
+                };
+                match folded.and_then(|event| {
+                    athena_core::EventRepository::append(&mut *guard, &event)
+                        .map_err(|fault| fault.to_string())
+                }) {
+                    Ok(_) => {}
+                    Err(fault) => resident_log(
+                        Log::Error,
+                        "resident.escalation",
+                        &format!("recording the escalation failed: {fault}"),
+                        resident_key(),
+                        serde_json::json!({}),
+                    ),
+                }
+            }
+            // The recovery reason already states the halt ("restart window
+            // exhausted; autonomous execution halts"), so the note appends nothing
+            // to it — the earlier doubled clause came from repeating it here
+            // (R-DIAG-01 finding (d)). The reason stays the log line only: the
+            // `CoreAgentEscalated` payload is catalog-empty, and a payload change
+            // would fail the §23.2 catalog tests (ATH-EVENT-009).
+            let reason = reason.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+            resident_log(
+                Log::Error,
+                "resident.escalation",
+                &format!("CoreAgentEscalated — {reason} (ATH-CORE-030)"),
+                resident_key(),
+                serde_json::json!({ "reason": reason }),
+            );
+            return RecoveryWalk::Halt;
+        }
+    }
+    RecoveryWalk::Continue
 }
 
 /// The current time in Unix milliseconds (the window's clock argument).
@@ -2748,17 +2830,6 @@ fn u64_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(u64::MAX)
-}
-
-/// The configuration slice a restart rebuilds from: the record carries the definition's
-/// coordinates; the workspace fact re-reads from the definition itself.
-fn recovered_config(record: &athena_runtime_agent_cli::Record) -> Config {
-    let mut config = Config::default();
-    config.core.agent.provider = record.definition.model.provider.clone();
-    config.core.agent.model = record.definition.model.name.clone();
-    config.core.agent.workspace = record.workspace.display().to_string();
-    config.core.agent.persona = record.definition.persona_ref.clone();
-    config
 }
 
 /// The maintenance polling interval (X-34's Phase C): the retained faces are pruned at

@@ -384,6 +384,31 @@ and the start instant, which is also the last moment the process was observed al
 the first beat replaces it. A refusal to write the row is logged and never fatal: a
 bookkeeping row must not take the Core Agent down with it.
 
+## X-62: a boot that never came up is recovered too
+
+`ATH-CORE-029`'s deterministic restart and `ATH-CORE-030`'s escalation were both unreachable
+for one case: a Core Agent that failed to boot. The supervision poll keys on the adapter's
+live record, and a boot that never came up leaves none — so the poll published
+`alive: false` and polled on forever. X-57 made that failure *recorded*; recording is not
+recovery.
+
+No record now means instance #0 is not resident, and the resident always intends it to be
+(`ATH-CORE-021` boots it as part of the boot sequence). The branch walks the same
+deterministic recovery the death path walks — control-surface checksum, the sliding window,
+the context rebuild, the restart — bounded by the same 3-per-hour window, taking the
+definition from the configuration because no record carries one.
+
+The recovery also walks from the resident's **own** configuration rather than a
+reconstruction. The earlier reconstruction filled the restart's `StartContext` from
+`Config::default()`, whose `delegable_tools` is the empty set the configuration validator
+refuses to accept from an operator (`ATH-SEC-024`): every restart relaunched the Core Agent
+with a permission ceiling that could delegate nothing.
+
+Measured live with the launcher removed from `PATH`: the boot fails, the poll recovers,
+attempts 1, 2 and 3 are counted, and the window's exhaustion escalates and halts autonomous
+execution — five `CoreAgentFailed` and one `CoreAgentEscalated` recorded, with
+`restarts: 3 / restart_limit: 3` published on the standing face.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is
