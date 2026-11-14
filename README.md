@@ -475,6 +475,23 @@ Three changes close them as one unit, the shape `D-62` states:
   the layer that composes what the peer reads (`ATH-AIPRJ-011`): the thread the Message
   already carries.
 
+## X-70: the configured verification requirement is read
+
+`core.evaluation.require_verification` shipped defaulting to `true`, was asserted by a schema
+test, was documented in the shipped configuration — and **had no reader**. The settlement
+therefore accepted the agent's own word whenever a Result carried no verifiable artifact, which
+is what `ATH-EVAL-005` ("a self-declared status is never acceptance grounds") forbids and what
+the acceptance gate's own test is named after.
+
+Measured against the live resident: a Task reached **`SUCCESS`** on the reply body
+`(no text response)` — agent-cli's placeholder for *no answer at all* — with `artifacts: []`,
+no evaluation row, and `require_verification = true`. Twice.
+
+The settlement now reads the requirement. When it is set and no Evaluation bears on the Result,
+a self-declared success settles **`FAILED`** with the ground `verification_required` instead of
+`SUCCESS`; the documented tolerance for prose answers still stands when the operator does not
+require verification, and an objective accepting row is unaffected either way.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is

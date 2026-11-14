@@ -874,6 +874,9 @@ pub mod record {
         /// the agent's self-declared status is what the record has (`ATH-EVAL-005` is not
         /// violated: nothing is being *accepted* as verified here).
         SelfDeclared(ResultStatus),
+        /// The configuration requires a Verification (`core.evaluation.require_verification`)
+        /// and none bears on the Result, so a self-declared success cannot settle it (X-70).
+        VerificationRequired,
     }
 
     /// Decide where an `EVALUATING` Task goes, from the Result and the Evaluations
@@ -896,7 +899,11 @@ pub mod record {
     ///   deliverables*; a prose answer carries none, so the rule does not bite and
     ///   inventing a refusal would stall every Task the shipped loop runs.
     #[must_use]
-    pub fn settlement(result: &ExecutionResult, evaluations: &[Evaluation]) -> Settlement {
+    pub fn settlement(
+        result: &ExecutionResult,
+        evaluations: &[Evaluation],
+        require_verification: bool,
+    ) -> Settlement {
         let rows: Vec<(Verdict, String, String)> = evaluations
             .iter()
             .map(|row| {
@@ -934,10 +941,28 @@ pub mod record {
                         ground: Ground::UnverifiedDeliverables,
                     }
                 } else if result.status == ResultStatus::Success {
-                    Settlement {
-                        state: TaskState::Success,
-                        event_type: "TaskCompleted",
-                        ground: Ground::SelfDeclared(result.status),
+                    // X-70: the operator's `core.evaluation.require_verification` decides
+                    // whether a self-declared success may settle a Result that **no**
+                    // evaluation bears on. The key shipped defaulting to `true`, was
+                    // asserted by a schema test, was documented in the shipped
+                    // configuration — and had **no reader**, so this arm accepted the
+                    // agent's own word unconditionally. Measured in session 079: a Task
+                    // reached `SUCCESS` on the body `(no text response)` with no artifacts
+                    // and no evaluation row, which is precisely what `ATH-EVAL-005` ("a
+                    // self-declared status is never acceptance grounds") forbids and what
+                    // the gate's own test is named after.
+                    if require_verification {
+                        Settlement {
+                            state: TaskState::Failed,
+                            event_type: "TaskFailed",
+                            ground: Ground::VerificationRequired,
+                        }
+                    } else {
+                        Settlement {
+                            state: TaskState::Success,
+                            event_type: "TaskCompleted",
+                            ground: Ground::SelfDeclared(result.status),
+                        }
                     }
                 } else {
                     Settlement {
@@ -1300,7 +1325,7 @@ mod record_tests {
         .expect("recorded");
         let evaluations =
             ResultRepository::list_evaluations_for_result(&store, &result.id).expect("read");
-        let decision = settlement(&result, &evaluations);
+        let decision = settlement(&result, &evaluations, false);
         assert_eq!(decision.state, TaskState::Success);
         assert_eq!(decision.event_type, "TaskCompleted");
         assert!(
@@ -1315,7 +1340,7 @@ mod record_tests {
         // ATH-EVAL-002's MUST NOT, exercised on the shape it names: the agent says
         // success, the Result carries a file, and nothing objective accepted it.
         let (store, _task, result) = seeded(ResultStatus::Success, true);
-        let decision = settlement(&result, &[]);
+        let decision = settlement(&result, &[], false);
         assert_eq!(decision.state, TaskState::Failed);
         assert_eq!(decision.ground, Ground::UnverifiedDeliverables);
         let _ = store;
@@ -1346,7 +1371,7 @@ mod record_tests {
         let evaluations =
             ResultRepository::list_evaluations_for_result(&store, &result.id).expect("read");
         assert!(!super::evaluation::objective(AGENT_JUDGEMENT));
-        let decision = settlement(&result, &evaluations);
+        let decision = settlement(&result, &evaluations, false);
         assert_eq!(decision.state, TaskState::Failed);
         assert_eq!(decision.ground, Ground::UnverifiedDeliverables);
     }
@@ -1370,7 +1395,7 @@ mod record_tests {
         .expect("recorded");
         let evaluations =
             ResultRepository::list_evaluations_for_result(&store, &result.id).expect("read");
-        let decision = settlement(&result, &evaluations);
+        let decision = settlement(&result, &evaluations, false);
         assert_eq!(decision.state, TaskState::Failed);
         assert_eq!(decision.ground, Ground::Verdict(Verdict::Replan));
     }
@@ -1378,16 +1403,73 @@ mod record_tests {
     #[test]
     fn a_prose_answer_with_nothing_recorded_still_settles_on_the_reported_status() {
         // The case ATH-EVAL-002 does not reach: no verifiable deliverable, no evaluation.
-        // The shipped loop's every Task looks like this, and refusing it would stall them
-        // all — the ground records exactly what decided.
+        // Refusing it unconditionally would stall every such Task, so the tolerance stands
+        // — **but only when the operator does not require a Verification** (X-70). The
+        // ground records exactly what decided.
         let (_store, _task, success) = seeded(ResultStatus::Success, false);
-        let decision = settlement(&success, &[]);
+        let decision = settlement(&success, &[], false);
         assert_eq!(decision.state, TaskState::Success);
         assert_eq!(decision.ground, Ground::SelfDeclared(ResultStatus::Success));
 
         let (_store, _task, failure) = seeded(ResultStatus::Failure, false);
-        let decision = settlement(&failure, &[]);
+        let decision = settlement(&failure, &[], false);
         assert_eq!(decision.state, TaskState::Failed);
         assert_eq!(decision.ground, Ground::SelfDeclared(ResultStatus::Failure));
+    }
+
+    #[test]
+    fn a_required_verification_refuses_a_self_declared_success() {
+        // X-70 / ATH-EVAL-005: `core.evaluation.require_verification` shipped defaulting to
+        // `true`, was asserted by a schema test, was documented in the shipped
+        // configuration — and had **no reader**, so this arm accepted the agent's own word
+        // unconditionally. Measured in session 079 against the live resident: a Task reached
+        // `SUCCESS` on the reply body `(no text response)` with no artifacts and no
+        // evaluation row. With the requirement read, the same Result cannot settle success.
+        let (_store, _task, success) = seeded(ResultStatus::Success, false);
+
+        let decision = settlement(&success, &[], true);
+        assert_eq!(
+            decision.state,
+            TaskState::Failed,
+            "a self-declared success cannot settle a Result no Evaluation bears on when the \
+             operator requires Verification"
+        );
+        assert_eq!(decision.ground, Ground::VerificationRequired);
+        assert_eq!(decision.event_type, "TaskFailed");
+
+        // The same input, requirement off: the documented tolerance still stands.
+        let permissive = settlement(&success, &[], false);
+        assert_eq!(permissive.state, TaskState::Success);
+        assert_eq!(
+            permissive.ground,
+            Ground::SelfDeclared(ResultStatus::Success)
+        );
+    }
+
+    #[test]
+    fn a_required_verification_does_not_disturb_an_accepted_result() {
+        // The requirement only governs the arm where *nothing* bears on the Result: an
+        // objective accepting row still settles success with its own ground.
+        let (mut store, task, result) = seeded(ResultStatus::Success, true);
+        record_evaluation(
+            &mut store,
+            &task.id,
+            &result.id,
+            Judgement {
+                evaluator: Evaluator::Tool,
+                method: "test",
+                verdict: Verdict::Accept,
+                rationale: "the suite passed",
+            },
+            "2026-11-14T00:00:00.000Z",
+            "cor-x70",
+        )
+        .expect("recorded");
+        let evaluations =
+            ResultRepository::list_evaluations_for_result(&store, &result.id).expect("read");
+
+        let decision = settlement(&result, &evaluations, true);
+        assert_eq!(decision.state, TaskState::Success);
+        assert!(matches!(decision.ground, Ground::Verified { .. }));
     }
 }

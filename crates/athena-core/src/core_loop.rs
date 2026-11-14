@@ -427,6 +427,7 @@ pub fn settle_task(
     store: &mut AthenaStore,
     task: &TaskId,
     result_id: &ResultId,
+    require_verification: bool,
     now: &str,
     correlation_id: &str,
 ) -> Result<Settled, LoopFault> {
@@ -449,7 +450,8 @@ pub fn settle_task(
         actual: format!("result {} is absent", result_id.as_str()),
     })?;
     let evaluations = ResultRepository::list_evaluations_for_result(store, result_id)?;
-    let settled = crate::result_manager::record::settlement(&result, &evaluations);
+    let settled =
+        crate::result_manager::record::settlement(&result, &evaluations, require_verification);
     let (to, event_type) = (settled.state, settled.event_type);
     let ground = match &settled.ground {
         crate::result_manager::record::Ground::Verified { method, verifier } => {
@@ -474,6 +476,12 @@ pub fn settle_task(
             "detail": "no Evaluation bears on this Result and it carries no verifiable \
                        deliverable (ATH-EVAL-005 is not stood on: nothing is accepted as \
                        verified here)",
+        }),
+        crate::result_manager::record::Ground::VerificationRequired => serde_json::json!({
+            "kind": "verification_required",
+            "detail": "core.evaluation.require_verification is set and no Evaluation bears \
+                       on this Result, so the agent's self-declared status cannot settle it \
+                       (ATH-EVAL-005)",
         }),
     };
     let event = NewEvent {

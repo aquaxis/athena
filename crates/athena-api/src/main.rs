@@ -1501,6 +1501,11 @@ where
                                             &mut guard,
                                             &task_id,
                                             &received.result_id,
+                                            // X-70: the operator's requirement finally has a
+                                            // reader — `core.evaluation.require_verification`
+                                            // decides whether a self-declared success may
+                                            // settle a Result no Evaluation bears on.
+                                            config.core.evaluation.require_verification,
                                             &now,
                                             &correlation,
                                         ) {
@@ -1968,6 +1973,11 @@ where
                                             &mut guard,
                                             &task_id,
                                             &received.result_id,
+                                            // X-70: the operator's requirement finally has a
+                                            // reader — `core.evaluation.require_verification`
+                                            // decides whether a self-declared success may
+                                            // settle a Result no Evaluation bears on.
+                                            config.core.evaluation.require_verification,
                                             &now,
                                             &correlation,
                                         ) {

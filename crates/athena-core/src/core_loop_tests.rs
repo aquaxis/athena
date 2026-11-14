@@ -248,6 +248,9 @@ async fn an_answer_carries_a_task_to_a_terminal_state() {
         &mut store,
         &task,
         &received.result_id,
+        // X-70: these rows walk the *self-declared* settlement, which stays available when
+        // the operator does not require a Verification. The required case is its own test.
+        false,
         "2026-11-08T00:00:02Z",
         "cor-4",
     )
@@ -1357,6 +1360,9 @@ async fn a_succeeded_settlement_completes_the_catalogs_agent_completed() {
         &mut store,
         &task,
         &received.result_id,
+        // X-70: these rows walk the *self-declared* settlement, which stays available when
+        // the operator does not require a Verification. The required case is its own test.
+        false,
         "2026-11-08T00:00:02Z",
         "cor-4",
     )
@@ -1464,6 +1470,9 @@ async fn a_settled_task_releases_its_workspace_lease() {
         &mut store,
         &task,
         &received.result_id,
+        // X-70: these rows walk the *self-declared* settlement, which stays available when
+        // the operator does not require a Verification. The required case is its own test.
+        false,
         "2026-11-08T00:00:02Z",
         "cor-4",
     )

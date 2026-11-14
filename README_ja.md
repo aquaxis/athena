@@ -444,6 +444,23 @@ spawn ルールを引用します: `producer_ja.md`・`director_ja.md`・`lead_j
   （`ATH-DATA-004`。テスト群が固定しています）なので、同一性は peer が読む文面を構成する層
   （`ATH-AIPRJ-011`）が述べます — Message が既に運んでいる thread です。
 
+## X-70: 設定された検証要求が読まれる
+
+`core.evaluation.require_verification` は既定 `true` で出荷され、schema テストが値を固定し、
+同梱設定にも記載されていました — しかし**読み手が存在しませんでした**。そのため settlement は、
+Result が検証可能な artifact を持たない場合に常にエージェント自身の申告を受理していました。
+これは `ATH-EVAL-005`（自己申告の状態は受理根拠にならない）が禁じるものであり、受理 gate 自身の
+テスト名が指していることでもあります。
+
+常駐に対する実測: Task が応答本文 **`(no text response)`**（agent-cli の「応答なし」の
+プレースホルダ）で **`SUCCESS`** に到達しました — `artifacts: []`、評価行なし、
+`require_verification = true` の状態で。しかも 2 回。
+
+settlement はこの要求を読むようになりました。要求が設定され、かつ Result にどの Evaluation も
+かからない場合、自己申告の成功は `SUCCESS` ではなく ground `verification_required` を伴う
+**`FAILED`** に定着します。散文応答に対する既定の許容は、運用者が検証を要求しない場合には
+従来どおり成立し、客観的な受理行がある場合はいずれの設定でも影響を受けません。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は
