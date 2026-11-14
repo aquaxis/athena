@@ -22,6 +22,13 @@ dependency is forked in-tree; every one is declared in `Cargo.toml` files, which
 CI dependency-boundary job parses (`ATH-DEV-011`). A license change for any intake
 candidate is checked against MIT compatibility before the dependency is added.
 
+## 3. Skill
+
+No third-party Skill Package source is taken into `<ATHENA_HOME>/skills/` as of the Phase 8
+development state. A future intake follows `ATH-SKILL-035`/`036`: a licence-compatibility
+review first, a publisher/source allow-list at registration, checksum verification against
+the manifest, and an entry appended to this record at intake.
+
 **Engine note (X-14, 2026-10-22).** The store engine is **`redb` 2.6.4**
 (MIT OR Apache-2.0, https://github.com/cberner/redb) — MIT-compatible, so R-LIC-01's
 discipline is satisfied. The earlier `rusqlite` dependency (the SQLite engine) is no

@@ -357,3 +357,60 @@ fn a_fresh_init_installs_every_shipped_persona_and_skill_package() {
     let report = run_init(&root).expect("re-run");
     assert!(report.created.is_empty(), "a re-run creates nothing");
 }
+
+/// The shipped configuration's commented examples must parse when an operator follows them.
+///
+/// The `agents` example used to span two lines inside an inline table — a form TOML forbids
+/// — so uncommenting it exactly as shipped failed the loader with `invalid inline table`
+/// before the resident ever reached its first read. An example is documentation that an
+/// operator executes, so it is held to the loader's own grammar here rather than by review.
+#[test]
+fn every_commented_example_in_the_shipped_config_parses_as_toml() {
+    /// Does the uncommented line open a TOML example — a table header, or an assignment
+    /// whose key is a bare identifier? The field *documentation* lines share the same
+    /// comment indent ("id    the slug …"), so a key followed by prose must not qualify.
+    fn opens_an_example(text: &str) -> bool {
+        if text.starts_with('[') {
+            return true;
+        }
+        let Some((key, value)) = text.split_once('=') else {
+            return false;
+        };
+        let key = key.trim();
+        !key.is_empty()
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            && !value.trim().is_empty()
+    }
+
+    let mut blocks: Vec<String> = Vec::new();
+    let mut current: Option<Vec<String>> = None;
+    for line in crate::template::DEFAULT_CONFIG_TOML.lines() {
+        match line.strip_prefix("#   ") {
+            Some(text) if current.is_some() => current.as_mut().expect("open").push(text.into()),
+            Some(text) if opens_an_example(text) => current = Some(vec![text.into()]),
+            _ => {
+                if let Some(block) = current.take() {
+                    blocks.push(block.join("\n"));
+                }
+            }
+        }
+    }
+    if let Some(block) = current.take() {
+        blocks.push(block.join("\n"));
+    }
+
+    assert!(
+        blocks.len() >= 2,
+        "the shipped config documents at least the inline-table and the table-array agent \
+         example; found {}: {blocks:?}",
+        blocks.len()
+    );
+    for block in &blocks {
+        assert!(
+            toml::from_str::<toml::Value>(block).is_ok(),
+            "a commented example does not parse as TOML, so following it breaks the loader:\n{block}"
+        );
+    }
+}

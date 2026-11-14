@@ -34,9 +34,20 @@
 # Example (nothing is pre-configured — an empty list is the shipped state):
 #
 #   agents = [
-#     { id = "reviewer", runtime = "agent-cli", persona = "worker_ja.md",
-#       provider = "ollama", model = "glm-5.3-flash:cloud", capabilities = ["review"] },
+#     { id = "reviewer", runtime = "agent-cli", persona = "worker_ja.md", provider = "ollama", model = "glm-5.3-flash:cloud", capabilities = ["review"] },
 #   ]
+#
+# Keep each entry on one line: TOML forbids a line break inside an inline table, so an
+# example split across two lines fails the loader with `invalid inline table` the moment it
+# is uncommented. Use a table array if the line grows unwieldy:
+#
+#   [[agents]]
+#   id = "reviewer"
+#   runtime = "agent-cli"
+#   persona = "worker_ja.md"
+#   provider = "ollama"
+#   model = "glm-5.3-flash:cloud"
+#   capabilities = ["review"]
 agents = []
 
 [athena]

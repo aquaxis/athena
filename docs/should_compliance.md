@@ -15,7 +15,7 @@
 | `R-AGT-06` — one Worker Instance per PlanStep | Held by construction: a v1 Instance holds exactly one PlanStep (`ATH-HIER-014`'s scoping; context hands over through Artifacts/Results and `depends_on`), asserted by the adapter/delegation-context tests |
 | `R-CFG-09` — reload by restart; hot change = skill enablement only | Held: no configuration hot-reload path exists; the Registry's `refresh` is the only hot operation (`ATH-SKILL-008`) |
 | `R-TST-10` — library-crate unit coverage ≥ 80 % | Measured `cargo llvm-cov --workspace`: total 83.8 % lines / 85.5 % functions; the library-crate aggregate (excluding the two bin applications' boot faces) is **89.3 %** — see X-03's record |
-| NFR-11 / NFR-12 — startup ≤ 3 s, logs < 1 MB/Task | Not yet measured (resident-process rows, X-01's open set — no implementation conflicts them) |
+| NFR-11 / NFR-12 — startup ≤ 3 s, logs < 1 MB/Task | Unmeasured at the time of this audit (resident-process rows, X-01's open set — no implementation conflicts them); **measured on the real runner on 2026-10-18 and recorded in the NFR compliance record** (NFR-11 0.08 s, NFR-12 under the 1 MB line) |
 
 ## 2. Deviations, with rationale
 

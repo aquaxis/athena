@@ -33,9 +33,9 @@
 
 ## 2. Real-runner lane — resolved (2026-10-18, Option B)
 
-The real-runner rows and the live-Agent E2E rode an installed `agent-cli`. The installed
-binary is now **0.29.0** and was re-verified empirically this session as the Option-B basis
-(the human decision: do not pin 0.23.0, settle on a working newer release):
+The real-runner rows and the live-Agent E2E rode an installed `agent-cli`. The binary they
+rode was **0.29.0**, re-verified empirically at the time as the Option-B basis (the human
+decision: do not pin 0.23.0, settle on a working newer release):
 
 - the two 0.28.0 defects observed earlier — `agent-cli serve` panicking after persona
   configuration and `spawn` repeatedly reporting `detached agent did not register within 5s` —
@@ -47,6 +47,15 @@ binary is now **0.29.0** and was re-verified empirically this session as the Opt
   surface stays byte-stable for the restart checksum).
 
 Full verification table + follow-up items: `docs/agent_cli_0290_findings.md`.
+
+**Runner drift (recorded 2026-11-14).** The installed `agent-cli` on the development host is
+now **0.53.0**, not the 0.29.0 the rows above rode. Nothing in this record has been
+re-measured on 0.53.0, so every figure here keeps the version it was taken on. What *was*
+observed on 0.53.0 (sessions 067–070, recorded in `.aiprj/AI_LOG/`): the resident boots,
+instance #0 spawns and registers, the heartbeat cadence runs, and the supervision poll's
+recovery and escalation walk end to end. The full `ATH-DEV-022` checklist — long-lived
+session behaviour, context retention, context re-injection — has **not** been re-run on
+0.53.0; that re-verification is tracked as a task row, not asserted here.
 
 ## 3. Real-runner measurements (taken 2026-10-18 on the 0.29.0 basis, SQLite engine)
 
