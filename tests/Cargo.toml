@@ -93,3 +93,7 @@ futures = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 serde_yaml = { workspace = true }
 tempfile = "3"
+
+[[test]]
+name = "documentation_pairs"
+path = "documentation_pairs.rs"

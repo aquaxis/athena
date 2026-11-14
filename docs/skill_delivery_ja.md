@@ -9,8 +9,13 @@
 
 ## 1. 問題
 
-`agent-cli` には **skill の配置メカニズムが存在しない**(仕様 §2.2。0.23.0 で検証、
-`ATH-DEV-022`)。Loader は選択済み Skill を
+`agent-cli` には **skill の配置メカニズムが存在しない**(仕様 §2.2。0.23.0 で検証、0.29.0 で
+再検証、さらに **2026-11-14 に 0.53.0 で再検証** — `ATH-DEV-022`、X-63)。0.53.0 の実測:
+skill 用のサブコマンドは無く、解決後の設定のセクションは `provider` / `runtime` / `tools` /
+`ui` / `history` / `mcp` / `shell` / `spawn` / `permissions` — **`[skills]` セクションは
+存在しない**ため、以下の前提は成立する。配置メカニズムではないが観測として 2 面を記録する:
+`list` が **SKILLS** 列を描画するようになったことと、設定に **`[mcp]`** セクションがあること。
+次に skill 配送を見直す判断は、本注記を継承せず両者を実測すること。Loader は選択済み Skill を
 `<ATHENA_HOME>/var/instances/<instance_id>/skills/<id>/SKILL.md` へ materialize するが
 (`ATH-SKILL-017`)、配置された本文は **Agent が読んで**初めて働く。その材料が存在すること、
 そしてどこを読むべきかを Agent に伝える者が必要である。

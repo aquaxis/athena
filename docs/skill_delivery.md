@@ -9,7 +9,14 @@
 
 ## 1. The problem
 
-`agent-cli` has **no skill placement mechanism** (spec §2.2; verified 0.23.0, `ATH-DEV-022`).
+`agent-cli` has **no skill placement mechanism** (spec §2.2; verified 0.23.0, re-verified
+0.29.0, and **re-verified 0.53.0 on 2026-11-14** — `ATH-DEV-022`, X-63). The 0.53.0
+measurement: no skill subcommand, and a resolved configuration whose sections are
+`provider` / `runtime` / `tools` / `ui` / `history` / `mcp` / `shell` / `spawn` /
+`permissions` — **no `[skills]` section**, so the premise below stands. Two surfaces are
+recorded as observations, not as placement mechanisms: `list` now renders a **SKILLS**
+column, and the configuration carries an **`[mcp]`** section; whichever decision next
+revisits skill delivery should measure both rather than inherit this note.
 The Loader materializes the selected skills under
 `<ATHENA_HOME>/var/instances/<instance_id>/skills/<id>/SKILL.md` (`ATH-SKILL-017`), but the
 placed body is inert until the **Agent** reads it. Something must tell the Agent the material
