@@ -18,6 +18,7 @@ Scheduler ではなく、人間の自然言語指示を理解し、計画し、A
 
 | 日付 | 改訂内容 | 根拠 |
 |---|---|---|
+| 2026-11-14 | `agent-cli` の検証基盤を 0.53.0 へ更新（`ATH-DEV-022` の再検証、X-63）。第 2.2.1 節 `ATH-ACLI-012` の対応表のうち `model` の行を `[provider] kind` と `[provider.<kind>] model` へ改訂し、計測根拠の注記を追加。0.53.0 の実測では `[provider]` 直下の `model` は無視され provider の内蔵既定が用いられる（`[provider.<kind>] model` と `--model` は有効）ため、従来の記述どおり生成した設定では運用者の明示したモデルが実行時に反映されなかった。併せて persona front matter に `role` が必須となったこと（ATHENA の出荷 persona は適合）、`ask` の引数形が `ask --persona <P> <PEER> <TEXT>` へ変更されたこと、`kill -9` 後のレジストリ掃除が 0.29.0 の滞留から改善されたことを記録（`docs/agent_cli_0530_findings.md`）。長命セッションの前提（設定チェーン、spawn の stdout 契約、文脈保持、絶対パス手順ファイル読み、`/<name>` のリテラル到達）は 0.53.0 でも成立し、第 2.2 / 7.5 / 14.4 節の他の前提に改訂は生じない | ATH-DEV-022、ATH-AGENT-008、ATH-ACLI-012 |
 | 2026-11-07 | 設定ファイルの形式を YAML から TOML へ変更（指示ソース 2026-11-07 最優先事項）。第 28.1 節の既定値例を TOML へ全面改訂し、`ATH-CFG-012`（TOML として解釈、混在形式の暗黙受容の禁止）、`ATH-CFG-013`（TOML に null は無いため任意項目はキー不在で表す）、`ATH-CFG-014`（形式変更は意味論を変えない。`manifest.yaml` と Persona front matter は対象外）を追加。`ATH-CFG-011`（既定位置）を `<ATHENA_HOME>/config.toml` へ、第 4.3.4 節ツリー・`ATH-CLI-009`・`ATH-OPS-006`/`008`・`ATH-DEV-020`/`021` のファイル名を整合。設定の意味論（キー名・既定値・相互制約・優先順位・`${athena.home}` 展開）は不変 | `ATH-CFG-011`、`ATH-CFG-012`、`ATH-CFG-013`、`ATH-CFG-014` |
 | 2026-10-22 | 永続化エンジンの確定（open item O-6 の決着）。第 27.2 節を改訂（`ATH-PERS-004` に SQLite 使用禁止、v1 エンジンを純 Rust の埋め込み型トランザクションストア `redb` と明記。`ATH-PERS-005` をエンジン中立の耐久性条項へ改訂）。第 4.3.1 / 4.3.2 / 4.3.4 / 5 / 23.1 / 32.1 節の SQLite 表記をエンジン中立または `redb` へ整合。SQLite 使用禁止の指示（2026-10-18 指示ソース 最優先事項）に基づく。エンジン固有の NFR 計測（NFR-02/03/04/13）は新エンジンで再記録 | `ATH-PERS-004`、`ATH-PERS-005`、`ATH-GEN-006` |
 | 2026-10-18 | Open item O-3 を確定: 第 18.3 節の既定値を v1 の確定値として確定し、`ATH-SCHED-015` を確定後の文言に改訂。根拠は Phase-1 飽和計測(AI_LOG 017)と本改訂セッションの実ランナー計測(NFR-02/03/11/13/14/16)。全項目の設定変更可能性は維持 | ATH-SCHED-015 |
@@ -290,10 +291,16 @@ Skill Manager が ATHENA Runtime の責務である（第 6.1 節、第 12.5 節
 |---|---|---|
 | `allowed_tools` | `[tools] enabled`、`[permissions]` allow / deny | ATH-SEC-008（既定で最小）、ATH-SEC-009 |
 | `max_delegation_depth` | `[spawn] max_depth` | ATH-HIER-005、ATH-ACLI-009 |
-| `model` | `[provider] kind` / `model` | ATH-AGENT-008 |
+| `model` | `[provider] kind` と `[provider.<kind>] model` | ATH-AGENT-008 |
 
   共有設定にすると全 Instance が同一の Tool 権限を得るため、`allowed_tools(child) ⊆
   delegable_tools(parent)`（ATH-SEC-009）が Runtime 層で成立しなくなる。
+
+  モデル名の配置は `[provider.<kind>] model` でなければならない。`agent-cli` 0.53.0 の実測
+  では、`[provider]` 直下の `model` キーは**無視され**、provider の内蔵既定モデルが用いられる
+  （`[provider.<kind>] model` と `--model` フラグは有効）。無視されるキーに書くと運用者が明示した
+  モデルが黙って捨てられ、`ATH-AGENT-008`（既定を持たず明示を要求する）の意図が実行時に成立
+  しない。provider 名が bare key でない場合（`llama.cpp`）はテーブル名を引用符で囲む。
 - **ATH-ACLI-013** (MUST) Instance の `.agent-cli/` は、Adapter が
   `<ATHENA_HOME>/var/agent-cli-template/` を原本として**生成**しなければならない。`config.toml`
   は原本の共通部分へ当該 Agent 定義由来の値を重ねて生成し、`commands/` は原本から複製し、

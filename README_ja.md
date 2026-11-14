@@ -74,6 +74,7 @@ athena/
 | `docs/skill_delivery.md`(+ `_ja.md`) | Skill の Agent 到達メカニズム(確定済み設計) |
 | `docs/persona_generation.md`(+ `_ja.md`) | Persona 生成の評価記録(Phase 8) |
 | `docs/agent_cli_0290_findings.md`(+ `_ja.md`) | `agent-cli` 0.29.0 検証記録 |
+| `docs/agent_cli_0530_findings.md`(+ `_ja.md`) | `agent-cli` 0.53.0 再検証記録(`ATH-DEV-022`) |
 | `docs/diagrams/` | draw.io マスターと生成 PNG |
 
 ## クイックスタート
@@ -384,6 +385,28 @@ Core Agent を起動し直していました。
 ライブ実測（launcher を `PATH` から外した常駐）: ブートが失敗し、ポールが復旧し、試行 1・2・3 が
 計数され、ウィンドウ枯渇がエスカレーションして自律実行を停止 — `CoreAgentFailed` 5 件と
 `CoreAgentEscalated` 1 件が記録され、standing 面に `restarts: 3 / restart_limit: 3` が描画されました。
+
+## X-63: `agent-cli` の検証基盤を 0.53.0 で再検証
+
+`ATH-DEV-022` は Phase 1 開始前に `agent-cli` の長命セッション挙動を検証し、乖離があれば仕様を
+改訂することを要求します。その検証は **0.29.0** に対して行われていた一方、導入バイナリの実測は
+**0.53.0** であったため、チェックリストを再実行しました。完全な記録は
+`docs/agent_cli_0530_findings_ja.md` です。
+
+主要な前提は成立しています: 設定チェーンは不変、`spawn` の stdout 契約は同一(したがって Adapter
+による peer agent-id の取得は安全)、別々の `ask` を跨いで文脈が保持される、絶対パスの手順ファイルは
+逐語で読める、`/<name>` は依然リテラルのテキストとして到達する、canonical な設定ファイルは呼び出しを
+跨いで byte 同一。spawn した peer は最後の入力から 83 秒時点で常駐していました。
+
+乖離のうち 1 件は **ATHENA 側の欠陥であり、ここで修復しました**: `[provider]` 直下の `model` キー
+— 生成していた overlay の形 — は 0.53.0 では**無視され**、provider の内蔵既定にフォールバックします
+(`[provider.<kind>] model` は有効)。ATHENA は運用者がモデルを明示したことを検証しておきながら、
+そのモデルが効果を持たないファイルを出荷していました(`ATH-AGENT-008`)。overlay は `agent-cli` が
+実際に読むキーへ書くようになり、provider 名が bare key でない場合(`llama.cpp`)はテーブル名を
+引用します。spec §2.2.1 の `ATH-ACLI-012` 対応表も合わせて改訂しました。
+
+ライブ実測: `glm-5.3:cloud` を明示した設定から起動した Core Agent は、`agent-cli list` に対して
+そのモデルを報告します — 従来の形では既定の `glm-5.1:cloud` が観測されていました。
 
 ## ライセンス
 

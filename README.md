@@ -76,6 +76,7 @@ Module boundaries (dependency directions) are enforced mechanically by a static 
 | `docs/skill_delivery.md` (+ `_ja.md`) | the settled mechanism that carries skills to the agent |
 | `docs/persona_generation.md` (+ `_ja.md`) | the Phase-8 persona-generation evaluation record |
 | `docs/agent_cli_0290_findings.md` (+ `_ja.md`) | the `agent-cli` 0.29.0 verification record |
+| `docs/agent_cli_0530_findings.md` (+ `_ja.md`) | the `agent-cli` 0.53.0 re-verification record (`ATH-DEV-022`) |
 | `docs/diagrams/` | draw.io masters and the generated PNGs |
 
 ## Quick start
@@ -408,6 +409,30 @@ Measured live with the launcher removed from `PATH`: the boot fails, the poll re
 attempts 1, 2 and 3 are counted, and the window's exhaustion escalates and halts autonomous
 execution — five `CoreAgentFailed` and one `CoreAgentEscalated` recorded, with
 `restarts: 3 / restart_limit: 3` published on the standing face.
+
+## X-63: the `agent-cli` basis re-verified at 0.53.0
+
+`ATH-DEV-022` requires `agent-cli`'s long-lived session behaviour verified before Phase 1,
+with the specification revised on divergence. That verification had been performed against
+**0.29.0** while the installed binary measured **0.53.0**, so the checklist was re-run; the
+full record is `docs/agent_cli_0530_findings.md`.
+
+The load-bearing premises hold: the configuration chain is unchanged, `spawn`'s stdout
+contract is identical (so the Adapter's capture of the peer agent-id is safe), context is
+retained across separate `ask`s, an absolute-path procedure file reads verbatim, `/<name>`
+still arrives as literal text, and a canonical configuration file stays byte-identical
+across an invocation. A spawned peer was resident 83 s after its last processed input.
+
+One divergence was an **ATHENA defect, fixed here**: a `model` key directly under
+`[provider]` — the shape the generated overlay wrote — is **ignored** by 0.53.0, which falls
+back to the provider's built-in default, while `[provider.<kind>] model` is honoured. ATHENA
+validated that an operator stated a model and then shipped a file where that model had no
+effect (`ATH-AGENT-008`). The overlay now writes the key `agent-cli` reads, quoting the table
+name when the provider is not a bare TOML key (`llama.cpp`), and spec §2.2.1's `ATH-ACLI-012`
+mapping is revised to match.
+
+Measured live: a Core Agent booted from a configuration stating `glm-5.3:cloud` now reports
+that model to `agent-cli list`, where the previous shape measured the default `glm-5.1:cloud`.
 
 ## Licence
 

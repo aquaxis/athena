@@ -119,7 +119,15 @@ pub fn project_tools(allowed: &[athena_types::ToolName]) -> Vec<&'static str> {
 ///
 /// The `[spawn]` values floor at ATHENA's own limit (`ATH-ACLI-009` — agent-cli's
 /// defaults are lower); `[history]` carries `memory.short_term_max_tokens`
-/// (ATH-ACLI-010); `[provider]` is the definition's coordinates, un-defaulted.
+/// (ATH-ACLI-010); the provider coordinates are the definition's own, un-defaulted.
+///
+/// X-63: the model is written under **`[provider.<kind>]`**, not `[provider]`. Measured on
+/// `agent-cli` 0.53.0: a `model` key directly under `[provider]` is **ignored** and the
+/// provider's own built-in default is used instead, while `[provider.<kind>] model` (and
+/// the `--model` flag) are honoured. Writing the ignored key silently discarded the
+/// operator's stated model — the exact outcome `ATH-AGENT-008` exists to prevent, since
+/// ATHENA validates that a model is stated and then shipped a file where it had no effect.
+/// The table key is quoted when the provider name is not a bare TOML key (`llama.cpp`).
 pub fn render_config(
     definition: &AgentDefinition,
     _deadlines: &Deadlines,
@@ -149,6 +157,17 @@ pub fn render_config(
         .map(|name| format!("\"{name}\""))
         .collect::<Vec<_>>()
         .join(", ");
+    // The provider table's key: bare when the name is a bare TOML key, quoted otherwise —
+    // `llama.cpp` is a real provider name and `[provider.llama.cpp]` would nest two tables.
+    let provider = definition.model.provider.trim();
+    let provider_key = if provider
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+    {
+        provider.to_string()
+    } else {
+        format!("\"{provider}\"")
+    };
     let toml = format!(
         "# generated per-instance by ATHENA (never install.sh, ATH-ACLI-013)\n\
          [runtime]\ncommands_dir = \".agent-cli/commands\"\npersona_file = \".agent-cli/persona.md\"\nregistry_dir = \"{registry_dir}\"\n\n\
@@ -156,9 +175,9 @@ pub fn render_config(
          [permissions]\ndefault_mode = \"allow\"\n\n\
          [spawn]\nmax_depth = {spawn_depth}\nmax_children = {spawn_children}\n\n\
          [history]\nenabled = true\nmax_context_tokens = {short_term_tokens}\n\n\
-         [provider]\nkind = \"{}\"\nmodel = \"{}\"\n",
-        definition.model.provider,
-        definition.model.name,
+         [provider]\nkind = \"{provider}\"\n\n\
+         [provider.{provider_key}]\nmodel = \"{model}\"\n",
+        model = definition.model.name,
         short_term_tokens = short_term.max_tokens,
         registry_dir = registry_dir.display(),
     );

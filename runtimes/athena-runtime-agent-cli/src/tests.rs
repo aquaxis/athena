@@ -1637,6 +1637,102 @@ fn the_generated_config_pins_a_per_instance_registry_dir() {
     );
 }
 
+/// X-63 — **the model lands where `agent-cli` reads it.**
+///
+/// Measured on `agent-cli` 0.53.0: a `model` key directly under `[provider]` is ignored and
+/// the provider's built-in default is used, while `[provider.<kind>] model` is honoured. The
+/// generated overlay therefore writes the latter — writing the ignored key discarded the
+/// operator's stated model silently, which is what `ATH-AGENT-008` exists to prevent.
+#[test]
+fn the_generated_config_writes_the_model_where_agent_cli_reads_it() {
+    let mut def = definition();
+    def.model = athena_types::ModelRef {
+        provider: "ollama".into(),
+        name: "glm-5.3:cloud".into(),
+    };
+    let generated = crate::generation::render_config(
+        &def,
+        &Deadlines {
+            startup_ms: 10_000,
+            execution_ms: 600_000,
+        },
+        4,
+        16,
+        &crate::generation::ShortTermRender::default(),
+        std::path::Path::new("/ws/instances/ai-1/.agent-cli/registry"),
+    )
+    .expect("renders");
+
+    assert!(
+        generated.toml.contains("[provider]\nkind = \"ollama\""),
+        "the provider kind stays under [provider]: {}",
+        generated.toml
+    );
+    assert!(
+        generated
+            .toml
+            .contains("[provider.ollama]\nmodel = \"glm-5.3:cloud\""),
+        "the model rides the provider's own table, the key agent-cli reads: {}",
+        generated.toml
+    );
+    // The ignored form must not be emitted at all: a model under `[provider]` would read
+    // as configured while having no effect.
+    let provider_section = generated
+        .toml
+        .split("[provider]")
+        .nth(1)
+        .expect("a provider section")
+        .split("[provider.")
+        .next()
+        .expect("the bare provider section");
+    assert!(
+        !provider_section.contains("model ="),
+        "no model may sit under [provider], where agent-cli ignores it: {provider_section}"
+    );
+}
+
+/// X-63 — a provider name that is not a bare TOML key is quoted in the table header.
+///
+/// `llama.cpp` is a real provider name; `[provider.llama.cpp]` would declare a nested
+/// `cpp` table under `llama` and the model would be lost.
+#[test]
+fn a_dotted_provider_name_is_quoted_in_the_generated_table_header() {
+    let mut def = definition();
+    def.model = athena_types::ModelRef {
+        provider: "llama.cpp".into(),
+        name: "qwen3-8b".into(),
+    };
+    let generated = crate::generation::render_config(
+        &def,
+        &Deadlines {
+            startup_ms: 10_000,
+            execution_ms: 600_000,
+        },
+        4,
+        16,
+        &crate::generation::ShortTermRender::default(),
+        std::path::Path::new("/ws/instances/ai-1/.agent-cli/registry"),
+    )
+    .expect("renders");
+    assert!(
+        generated
+            .toml
+            .contains("[provider.\"llama.cpp\"]\nmodel = \"qwen3-8b\""),
+        "a dotted provider name is quoted: {}",
+        generated.toml
+    );
+    // And the rendered file is still TOML, with the model reachable at the quoted key.
+    let parsed: toml::Value = toml::from_str(&generated.toml).expect("renders valid TOML");
+    assert_eq!(
+        parsed
+            .get("provider")
+            .and_then(|p| p.get("llama.cpp"))
+            .and_then(|p| p.get("model"))
+            .and_then(|m| m.as_str()),
+        Some("qwen3-8b")
+    );
+}
+
 /// X-15 — **multi-boot isolation**: two projects (two `ATHENA_HOME`s) on one host never
 /// share an Instance registry.
 ///

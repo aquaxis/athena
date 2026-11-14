@@ -55,7 +55,9 @@ observed on 0.53.0 (sessions 067–070, recorded in `.aiprj/AI_LOG/`): the resid
 instance #0 spawns and registers, the heartbeat cadence runs, and the supervision poll's
 recovery and escalation walk end to end. The full `ATH-DEV-022` checklist — long-lived
 session behaviour, context retention, context re-injection — has **not** been re-run on
-0.53.0; that re-verification is tracked as a task row, not asserted here.
+0.53.0; that re-verification **was performed on 2026-11-14** and is recorded in
+`docs/agent_cli_0530_findings.md` (the behavioural checklist only — none of the figures in
+this record was re-measured, and each keeps the version it was taken on).
 
 ## 3. Real-runner measurements (taken 2026-10-18 on the 0.29.0 basis, SQLite engine)
 
