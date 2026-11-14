@@ -292,6 +292,19 @@ pub fn expand_aiprj(
         };
         ensure_file(&commands_target.join(name), &content, report)?;
     }
+    // X-71: the Core Control Protocol catalogue is placed beside the operating-model
+    // procedures, because the delivery direction names procedure files by absolute path
+    // (ATH-AIPRJ-028, ATH-ACLI-017) and this is the file that defines the twelve
+    // `CoreRequest` kinds the Core Agent must answer with. It sat only under
+    // `<ATHENA_HOME>/agents/`, outside every Instance Workspace, so an agent reading only
+    // what it is pointed at could not reach it — measured in session 079, where no
+    // `CoreRequest` was ever accepted in production. The repo default is the content; a
+    // project that has edited its own copy keeps it (`ensure_file`'s discipline).
+    ensure_file(
+        &commands_target.join("core-requests.md"),
+        template::AGENT_PRODUCER_CORE_REQUESTS,
+        report,
+    )?;
 
     // The project-root `.gitignore` block that `aiprj install.sh` manages (prepend the
     // entries, never duplicating them). The template origin is `var/`-ignored as a whole, so

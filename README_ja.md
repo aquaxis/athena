@@ -461,6 +461,29 @@ settlement はこの要求を読むようになりました。要求が設定さ
 **`FAILED`** に定着します。散文応答に対する既定の許容は、運用者が検証を要求しない場合には
 従来どおり成立し、客観的な受理行がある場合はいずれの設定でも影響を受けません。
 
+## X-71: Core Agent に、話すべき協定を指し示す
+
+2 回の本番駆動はいずれも同じ終わり方でした: Core Agent は散文で答え、`CoreRequest` は一度も
+受理されず、したがって plan も `AgentDelegated` も下位 Instance も存在しませんでした。候補のうち
+2 つは実測で排除されました — persona は協定を明記しており、配送の direction も `ATH-AIPRJ-011`
+の実行指示と絶対パス読みを運んでいます。残ったのは `agents/producer/core-requests.md` — 十二種の
+`CoreRequest` と各々の JSON を定義するファイル — が `<ATHENA_HOME>/agents/` にあり、**どの
+Instance Workspace の外でもあり、絶対パスで名指されてもいなかった**ことです。`ATH-ACLI-016`
+（slash command を起動しない）に従い、指し示されたものだけを読むエージェントには到達できません。
+
+このカタログは directed procedure になりました: `athena init` が操作モデルのファイルと並べて配置し、
+配送の direction が**最初に**絶対パスで名指し、欠落は他の procedure と同じく配送を拒否します
+（`ATH-ACLI-017`）。
+
+次の駆動での実測: Core Agent が実際の `submit_understanding` を送出しました — 本プロジェクトが
+本番で観測した**最初の `CoreRequest`** です。
+
+同じ駆動が、前リリースの文面の欠陥も露わにし、ここで修復しました: direction が peer に
+`thread_id` を返信へ**エコーする**よう求めていましたが、`CoreRequest` は
+`additionalProperties: false` で検証されるため、エコーされたフィールドは**拒否される**要求に
+なります。返信の thread は Adapter が書く envelope に乗り、それが Intake の紐付け対象なので、
+エコーは元から不要でした。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は

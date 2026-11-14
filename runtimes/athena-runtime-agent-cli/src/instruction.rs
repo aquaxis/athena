@@ -20,6 +20,17 @@ pub enum Procedure {
     NextJob,
     /// `/close_ai` — save `AI_LOG` and report the Result to Core.
     CloseJob,
+    /// The Core Control Protocol catalogue (X-71): the twelve `CoreRequest` kinds and the
+    /// JSON shape each one takes.
+    ///
+    /// Measured in session 079: across two drives — the second instructing the protocol
+    /// explicitly — instance #0 never produced an accepted `CoreRequest`, so no plan, no
+    /// delegation and no subordinate ever existed in production. The persona summarises the
+    /// protocol, but the file defining the kinds sat at `<ATHENA_HOME>/agents/` — outside
+    /// the Instance Workspace and named by no absolute path in the direction, so an agent
+    /// obeying `ATH-ACLI-016` (never invoke a slash command) and reading only what it is
+    /// pointed at could not reach it.
+    CoreRequests,
 }
 
 impl Procedure {
@@ -30,6 +41,7 @@ impl Procedure {
             Self::RunJob => "ai.md",
             Self::NextJob => "next_ai.md",
             Self::CloseJob => "close_ai.md",
+            Self::CoreRequests => "core-requests.md",
         }
     }
 
@@ -59,6 +71,12 @@ impl Procedure {
                 "before reporting: save the run log to .aiprj/AI_LOG/YYYY-MM-DD_NNN.md \
                  (never overwrite an existing log), update .aiprj/AI_PRJ_TASKS.md, then \
                  report the Result to Core"
+            }
+            Self::CoreRequests => {
+                "the Core Control Protocol you answer with: the twelve CoreRequest kinds \
+                 and the JSON object each one takes, one per message. Core Host validates \
+                 every request against this catalogue, so a reply that is not one of these \
+                 kinds is not a request at all"
             }
         }
     }
@@ -103,7 +121,8 @@ pub fn delegation_envelope(workspace: &Path, instruction: &str) -> Result<String
     let run = Procedure::RunJob.path_in(workspace);
     let next = Procedure::NextJob.path_in(workspace);
     let close = Procedure::CloseJob.path_in(workspace);
-    for path in [&run, &next, &close] {
+    let protocol = Procedure::CoreRequests.path_in(workspace);
+    for path in [&run, &next, &close, &protocol] {
         if !path.is_file() {
             return Err(EnvelopeFault::ProcedureMissing(path.clone()));
         }
@@ -114,9 +133,12 @@ pub fn delegation_envelope(workspace: &Path, instruction: &str) -> Result<String
          ATHENA execution direction (ATH-AIPRJ-011; read the files by absolute path — \
          never invoke slash commands, they do not expand over the IPC path, \
          ATH-ACLI-016):\n\
-         1. Read {} — meaning: {}.\n\
-         2. Read {} when directed — meaning: {}.\n\
-         3. Read {} when the work is complete — meaning: {}.",
+         1. Read {} first — meaning: {}.\n\
+         2. Read {} — meaning: {}.\n\
+         3. Read {} when directed — meaning: {}.\n\
+         4. Read {} when the work is complete — meaning: {}.",
+        absolute(&protocol),
+        Procedure::CoreRequests.meaning(),
         absolute(&run),
         Procedure::RunJob.meaning(),
         absolute(&next),
@@ -133,7 +155,12 @@ pub fn operating_model_section(workspace: &Path) -> String {
     let mut section = String::from(
         "## Operating model (ATH-AIPRJ-011; the /ai, /next_ai, /close_ai tags are NOT commands)\n",
     );
-    for procedure in [Procedure::RunJob, Procedure::NextJob, Procedure::CloseJob] {
+    for procedure in [
+        Procedure::CoreRequests,
+        Procedure::RunJob,
+        Procedure::NextJob,
+        Procedure::CloseJob,
+    ] {
         let path = procedure.path_in(workspace);
         let placed = if path.is_file() {
             path.display().to_string()

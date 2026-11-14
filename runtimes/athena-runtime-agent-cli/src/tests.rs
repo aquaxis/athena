@@ -266,7 +266,7 @@ async fn sending_persists_the_delegation_into_the_workspace_inbox() {
     let template = dir.path().join("template");
     let commands = template.join("commands");
     std::fs::create_dir_all(&commands).expect("template commands");
-    for name in ["ai.md", "next_ai.md", "close_ai.md"] {
+    for name in ["ai.md", "next_ai.md", "close_ai.md", "core-requests.md"] {
         std::fs::write(commands.join(name), format!("# {name} (origin copy)\n"))
             .expect("procedure file");
     }
@@ -965,7 +965,7 @@ fn the_envelope_directs_the_placed_procedures_by_absolute_path() {
     let workspace = dir.path().join("ws");
     let commands = workspace.join(".agent-cli").join("commands");
     std::fs::create_dir_all(&commands).expect("commands dir");
-    for name in ["ai.md", "next_ai.md", "close_ai.md"] {
+    for name in ["ai.md", "next_ai.md", "close_ai.md", "core-requests.md"] {
         std::fs::write(commands.join(name), "# origin copy\n").expect("placed");
     }
 
@@ -1036,7 +1036,7 @@ fn the_persona_carries_the_operating_model_block_with_absolute_paths() {
     let workspace = dir.path().join("ws");
     let commands = workspace.join(".agent-cli").join("commands");
     std::fs::create_dir_all(&commands).expect("commands dir");
-    for name in ["ai.md", "next_ai.md", "close_ai.md"] {
+    for name in ["ai.md", "next_ai.md", "close_ai.md", "core-requests.md"] {
         std::fs::write(commands.join(name), "# origin copy\n").expect("placed");
     }
     let persona = crate::generation::render_persona("persona body", &[], &[]).expect("render");
@@ -1049,7 +1049,7 @@ fn the_persona_carries_the_operating_model_block_with_absolute_paths() {
     assert!(!persona.contains("## Operating model"), "{persona}");
 
     // With the files placed, the block names them absolute with their meanings.
-    let files: Vec<PathBuf> = ["ai.md", "next_ai.md", "close_ai.md"]
+    let files: Vec<PathBuf> = ["ai.md", "next_ai.md", "close_ai.md", "core-requests.md"]
         .iter()
         .map(|name| commands.join(name))
         .collect();
@@ -1254,7 +1254,7 @@ async fn the_ipc_transport_delivers_over_the_registry_and_the_reply_becomes_the_
     let template = dir.path().join("template");
     let commands = template.join("commands");
     std::fs::create_dir_all(&commands).expect("commands dir");
-    for name in ["ai.md", "next_ai.md", "close_ai.md"] {
+    for name in ["ai.md", "next_ai.md", "close_ai.md", "core-requests.md"] {
         std::fs::write(commands.join(name), format!("# {name} (origin copy)\n"))
             .expect("procedure file");
     }
@@ -1827,7 +1827,7 @@ async fn a_delivery_that_outlives_the_execution_budget_is_a_deadline_not_a_trans
     let template = dir.path().join("template");
     let commands = template.join("commands");
     std::fs::create_dir_all(&commands).expect("template commands");
-    for name in ["ai.md", "next_ai.md", "close_ai.md"] {
+    for name in ["ai.md", "next_ai.md", "close_ai.md", "core-requests.md"] {
         std::fs::write(commands.join(name), format!("# {name} (origin copy)\n"))
             .expect("procedure file");
     }
@@ -1879,4 +1879,78 @@ async fn a_delivery_that_outlives_the_execution_budget_is_a_deadline_not_a_trans
         matches!(error, athena_runtime::RuntimeError::Deadline(_)),
         "ATH-RT-006: a budget reached is a Deadline, never a retryable Transient: {error:?}"
     );
+}
+
+/// X-71 — **the delivery direction names the Core Control Protocol catalogue.**
+///
+/// Measured in session 079: across two production drives — the second instructing
+/// `submit_understanding` → `submit_plan` → `delegate` explicitly — instance #0 never
+/// produced an accepted `CoreRequest`, so no plan, no `AgentDelegated` and no subordinate
+/// ever existed. The persona summarises the protocol, but the file defining the twelve kinds
+/// sat at `<ATHENA_HOME>/agents/` — outside every Instance Workspace and named by no
+/// absolute path — so an agent obeying `ATH-ACLI-016` (never invoke a slash command) and
+/// reading only what it is pointed at could not reach it. The direction now names it, and
+/// its absence is a refusal like any other procedure file (`ATH-ACLI-017`).
+#[test]
+fn the_direction_names_the_protocol_catalogue_by_absolute_path() {
+    let dir = tempfile::tempdir().expect("temp");
+    let workspace = dir.path().join("instances").join("ai-1");
+    let commands = workspace.join(".agent-cli").join("commands");
+    std::fs::create_dir_all(&commands).expect("commands");
+    for name in ["ai.md", "next_ai.md", "close_ai.md", "core-requests.md"] {
+        std::fs::write(commands.join(name), format!("# {name}\n")).expect("procedure");
+    }
+
+    let envelope = crate::instruction::delegation_envelope(&workspace, "review the report")
+        .expect("the envelope composes when every procedure is placed");
+
+    let protocol = commands.join("core-requests.md");
+    assert!(
+        envelope.contains(&protocol.display().to_string()),
+        "the direction must name the protocol catalogue by absolute path: {envelope}"
+    );
+    assert!(
+        envelope.contains("twelve CoreRequest kinds"),
+        "the direction states what the catalogue is for: {envelope}"
+    );
+    // The human instruction still leads, verbatim (ATH-DATA-004).
+    assert!(envelope.starts_with("review the report"), "{envelope}");
+
+    // And a missing catalogue refuses the delivery rather than directing a protocol the
+    // agent cannot read.
+    std::fs::remove_file(&protocol).expect("remove");
+    match crate::instruction::delegation_envelope(&workspace, "review the report") {
+        Err(crate::instruction::EnvelopeFault::ProcedureMissing(path)) => {
+            assert_eq!(path, protocol);
+        }
+        other => panic!("a missing protocol catalogue must refuse: {other:?}"),
+    }
+}
+
+/// X-71 — **the direction never asks for a field a `CoreRequest` may not carry.**
+///
+/// X-68's first wording asked the peer to echo `thread_id` in its reply. A `CoreRequest` is
+/// validated with `additionalProperties: false`, so an echoed `thread_id` is a *rejected*
+/// request — measured in session 080, where the Core Agent's first real
+/// `submit_understanding` carried exactly that extra key and failed the gate. The reply's
+/// thread rides the envelope the adapter writes, which is what the Intake binds on (X-66),
+/// so the echo was never needed.
+#[test]
+fn the_direction_does_not_ask_the_peer_to_echo_thread_id_into_its_request() {
+    let dir = tempfile::tempdir().expect("temp");
+    let workspace = dir.path().join("instances").join("ai-1");
+    let commands = workspace.join(".agent-cli").join("commands");
+    std::fs::create_dir_all(&commands).expect("commands");
+    for name in ["ai.md", "next_ai.md", "close_ai.md", "core-requests.md"] {
+        std::fs::write(commands.join(name), format!("# {name}\n")).expect("procedure");
+    }
+    let envelope =
+        crate::instruction::delegation_envelope(&workspace, "review the report").expect("composes");
+
+    assert!(
+        !envelope.contains("echo"),
+        "the direction must not ask for an echoed field: {envelope}"
+    );
+    // The catalogue is still what the shape is deferred to.
+    assert!(envelope.contains("core-requests.md"), "{envelope}");
 }

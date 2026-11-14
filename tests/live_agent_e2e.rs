@@ -86,7 +86,7 @@ async fn a_real_agent_completes_the_delegated_work() {
     let template = home.join("template");
     let commands = template.join("commands");
     std::fs::create_dir_all(&commands).expect("commands dir");
-    for name in ["ai.md", "next_ai.md", "close_ai.md"] {
+    for name in ["ai.md", "next_ai.md", "close_ai.md", "core-requests.md"] {
         std::fs::write(
             commands.join(name),
             format!("# {name}: obey the running conventions\n"),

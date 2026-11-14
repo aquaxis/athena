@@ -127,6 +127,7 @@ fn seeded_template(base: &Path) -> PathBuf {
         ("ai.md", "exec_job"),
         ("next_ai.md", "next_job"),
         ("close_ai.md", "close_ai"),
+        ("core-requests.md", "core_requests"),
     ] {
         std::fs::write(
             commands.join(name),

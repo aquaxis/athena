@@ -412,11 +412,20 @@ impl<D: ProcessDriver + 'static> Runtime for AgentCliAdapter<D> {
             // X-68: the peer is told **which delegation it is answering**. Core keeps the
             // Message body verbatim (`ATH-DATA-004`), so the identity is stated by the layer
             // that composes what the peer reads (`ATH-AIPRJ-011`): the thread the Message
-            // already carries. Measured in session 076, a peer answered with an empty
-            // `task_id` because nothing it could see named the delegation — and a reply with
-            // no identity is a reply an Intake cannot bind (X-66, D-62).
+            // already carries.
+            //
+            // X-71 correction: this line first asked the peer to **echo** `thread_id` in its
+            // reply. That was wrong and would have made every protocol answer invalid — a
+            // `CoreRequest` is validated with `additionalProperties: false`, so an echoed
+            // `thread_id` is a rejected request. Measured in session 080, where the Core
+            // Agent's first real `submit_understanding` carried exactly that extra key. The
+            // binding never needed the echo: the reply's thread rides the envelope this
+            // adapter writes, which is what the Intake reads (X-66). The identity is stated
+            // for the agent's own orientation, and the protocol's shape is left to the
+            // catalogue the direction names.
             let asked = format!(
-                "{}\n\n--- delegation identity (echo `thread_id` in your reply) ---\nthread_id: {}",
+                "{}\n\n--- delegation identity (for your orientation; a CoreRequest carries \
+                 only the fields its catalogue entry names) ---\nthread_id: {}",
                 message.body, message.thread_id
             );
             let budget = self.manager.budgets().execution;

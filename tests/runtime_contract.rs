@@ -87,7 +87,7 @@ mod agent_cli {
         let scratch = scratch();
         let commands = scratch.join("template").join("commands");
         std::fs::create_dir_all(&commands).expect("template commands");
-        for name in ["ai.md", "next_ai.md", "close_ai.md"] {
+        for name in ["ai.md", "next_ai.md", "close_ai.md", "core-requests.md"] {
             std::fs::write(commands.join(name), format!("# {name} origin copy\n"))
                 .expect("procedure file");
         }

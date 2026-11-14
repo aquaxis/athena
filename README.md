@@ -492,6 +492,31 @@ a self-declared success settles **`FAILED`** with the ground `verification_requi
 `SUCCESS`; the documented tolerance for prose answers still stands when the operator does not
 require verification, and an objective accepting row is unaffected either way.
 
+## X-71: the Core Agent is pointed at the protocol it must speak
+
+Two production drives had ended the same way: the Core Agent answered in prose and no
+`CoreRequest` was ever accepted, so no plan, no `AgentDelegated` and no subordinate ever
+existed. Two candidates were eliminated by measurement — the persona *does* state the
+protocol, and the delivery direction *does* carry the `ATH-AIPRJ-011` execution direction
+with absolute-path reading. The one that survived: `agents/producer/core-requests.md`, the
+file defining the twelve `CoreRequest` kinds and the JSON each takes, sat at
+`<ATHENA_HOME>/agents/` — **outside every Instance Workspace and named by no absolute path**.
+An agent obeying `ATH-ACLI-016` (never invoke a slash command) and reading only what it is
+pointed at could not reach it.
+
+The catalogue is now a directed procedure: `athena init` places it beside the operating-model
+files, the delivery direction names it **first** by absolute path, and its absence refuses the
+delivery like any other missing procedure (`ATH-ACLI-017`).
+
+Measured on the next drive: the Core Agent emitted a real `submit_understanding` — the first
+`CoreRequest` this project has observed in production.
+
+That same drive exposed a defect in the previous release's wording, fixed here: the direction
+had asked the peer to **echo** `thread_id` in its reply, and a `CoreRequest` is validated with
+`additionalProperties: false`, so an echoed field is a rejected request. The reply's thread
+rides the envelope the Adapter writes — which is what the Intake binds on — so the echo was
+never needed.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is
