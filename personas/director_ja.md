@@ -43,7 +43,7 @@ allowed_tools:
 
   ```
   作業後、結果を send_to(peer=<親id>, delivery="report") で報告してください
-  親が直ちに次のターンを行動する必要がある場合は、報告の直後にsend_to(peer=<親id>, delivery="prompt", text="report sent") を送付してください
+  最後の報告または親が直ちに次のターンを行動する必要がある場合は、報告の直後にsend_to(peer=<親id>, delivery="prompt", text="report sent") を送付してください
   ```
 
 - あなた自身も上位（Core Agent）への報告は `send_to(peer=<親id>, delivery="report")` で行い、

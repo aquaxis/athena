@@ -408,6 +408,20 @@ Core Agent を起動し直していました。
 ライブ実測: `glm-5.3:cloud` を明示した設定から起動した Core Agent は、`agent-cli list` に対して
 そのモデルを報告します — 従来の形では既定の `glm-5.1:cloud` が観測されていました。
 
+## X-69: spawn prompt の文面が指示源の第 7 変更に追随する
+
+指示源は報告プロトコルのフェンスを 2 つ持ちます: `## spawn実行のルール` の下にある「親が
+spawn の prompt 引数に置く文面」と、`### perosnaの内容を確認` の下にある「persona が双方向で
+運ぶ文面」です。両者は同一でしたが、第 7 変更が **spawn 側**の条件を広げ — `delivery="prompt"`
+の ping が「親が直ちに次のターンを行動する必要がある場合」に加えて**最後の報告**でも送られる —
+persona 側のフェンスは据え置かれました。
+
+したがって 2 つのフェンスは別のことを述べており、出荷 persona の *spawn prompt* ブロックは
+spawn ルールを引用します: `producer_ja.md`・`director_ja.md`・`lead_ja.md` が広がった条件を
+運びます。報告側（子 → 親）は変更されていない persona フェンスを引用したままで、上位へ報告する
+のみの葉である `worker_ja.md` は spawn ブロックを持たず不変です。この分岐は conformance テストで
+保持され、将来の編集が 2 つのフェンスを黙って再び同一化することはできません。
+
 ## ライセンス
 
 MIT License。詳細は [LICENSE](./LICENSE) を参照。第三者材料のライセンス適合性は

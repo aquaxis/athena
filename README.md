@@ -434,6 +434,22 @@ mapping is revised to match.
 Measured live: a Core Agent booted from a configuration stating `glm-5.3:cloud` now reports
 that model to `agent-cli list`, where the previous shape measured the default `glm-5.1:cloud`.
 
+## X-69: the spawn-prompt wording follows the instruction source's seventh change
+
+The instruction source keeps two report-protocol fences: one under `## spawn実行のルール`,
+the text a parent places in a spawn's prompt argument, and one under
+`### perosnaの内容を確認`, the wording a persona carries in both directions. They were
+identical until the source's seventh change widened the **spawn** fence's condition — the
+`delivery="prompt"` ping now rides **the final report as well as** the case where the parent
+must act immediately — and left the persona fence untouched.
+
+The two fences therefore say different things, and each shipped persona's *spawn-prompt*
+block quotes the spawn rule: `producer_ja.md`, `director_ja.md` and `lead_ja.md` carry the
+widened condition. The reporting halves (child → parent) still quote the unchanged persona
+fence, and `worker_ja.md` — a leaf that only reports upward — has no spawn block and is
+unchanged. A conformance test holds the split, so a future edit cannot quietly collapse the
+two fences back together.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is

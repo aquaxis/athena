@@ -54,7 +54,7 @@ spawn の prompt 引数に次の文面を必ず含める（親エージェント
 
 ```
 作業後、結果を send_to(peer=<親id>, delivery="report") で報告してください
-親が直ちに次のターンを行動する必要がある場合は、報告の直後にsend_to(peer=<親id>, delivery="prompt", text="report sent") を送付してください
+最後の報告または親が直ちに次のターンを行動する必要がある場合は、報告の直後にsend_to(peer=<親id>, delivery="prompt", text="report sent") を送付してください
 ```
 
 あなた自身も親エージェントへの報告・返信に同じ文面を含める（子エージェントから親エージェントへの報告）:

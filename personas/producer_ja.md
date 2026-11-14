@@ -39,7 +39,7 @@ spawn の prompt 引数には、次の文面を必ず含める:
 
 ```
 作業後、結果を send_to(peer=<親id>, delivery="report") で報告してください
-親が直ちに次のターンを行動する必要がある場合は、報告の直後にsend_to(peer=<親id>, delivery="prompt", text="report sent") を送付してください
+最後の報告または親が直ちに次のターンを行動する必要がある場合は、報告の直後にsend_to(peer=<親id>, delivery="prompt", text="report sent") を送付してください
 ```
 
 子エージェントからの返答も、`delivery="report"`（必要時は直後に `delivery="prompt"`, `text="report sent"`）の文面と契約に従って受け取る。

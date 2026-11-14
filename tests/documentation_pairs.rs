@@ -83,3 +83,51 @@ fn every_english_document_has_a_japanese_counterpart_of_the_same_shape() {
          walk is not seeing docs/"
     );
 }
+
+/// X-69 — **the shipped personas carry the instruction source's spawn-prompt wording.**
+///
+/// The source keeps two report-protocol fences: one under `## spawn実行のルール` (the text a
+/// parent must place in a spawn's prompt argument) and one under `### perosnaの内容を確認`
+/// (the wording a persona carries in both directions). They were identical until the
+/// source's seventh change widened the spawn fence's condition — the ping now rides **the
+/// final report as well as** the case where the parent must act immediately — and left the
+/// persona fence alone. The two therefore say different things, and a persona's
+/// *spawn-prompt* block must quote the spawn fence rather than the older shared wording.
+///
+/// This holds that split: every persona that instructs a child about spawn carries the
+/// widened condition, and the leaf persona — which only reports upward — does not.
+#[test]
+fn the_spawn_prompt_blocks_of_the_shipped_personas_carry_the_widened_condition() {
+    const WIDENED: &str = "最後の報告または親が直ちに次のターンを行動する必要がある場合は";
+    const SPAWN_PROMPT_MARKER: &str = "spawn の prompt 引数";
+
+    let personas = workspace_root().join("personas");
+    let mut with_spawn_block = 0;
+
+    for entry in std::fs::read_dir(&personas).expect("personas/ is readable") {
+        let path = entry.expect("a readable entry").path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".md") {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path).expect("readable");
+        if !body.contains(SPAWN_PROMPT_MARKER) {
+            continue;
+        }
+        with_spawn_block += 1;
+        assert!(
+            body.contains(WIDENED),
+            "personas/{name} instructs a child about spawn's prompt argument, so its fence \
+             must quote the source's spawn rule, whose condition now includes the final \
+             report"
+        );
+    }
+
+    assert!(
+        with_spawn_block >= 3,
+        "the producer, director and lead personas each instruct a child about spawn; only \
+         {with_spawn_block} carry such a block"
+    );
+}
