@@ -127,6 +127,25 @@ pub struct PendingDelivery {
     pub thread_id: String,
 }
 
+/// What the Intake found on the instance's reply stream (X-66).
+///
+/// The reception face is a **shared** outbox: every delegation's replies land in the same
+/// place, so "the first `complete` on the stream" is not the same thing as "this
+/// delegation's answer". D-62 binds the two by thread before anything interprets the body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnswerIntake {
+    /// A `complete` whose thread is the delegation's own — the answer to interpret.
+    Matched(athena_runtime::Message),
+    /// A `complete` belonging to a different delegation. Never interpreted; carried out so
+    /// the caller records what it saw instead of silently discarding it.
+    Foreign {
+        /// The thread the foreign reply rides.
+        thread_id: String,
+        /// Its message id, so the log names the row it refused to bind.
+        message_id: MessageId,
+    },
+}
+
 /// What one answer intake produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Received {
@@ -228,6 +247,11 @@ pub fn prepare_delivery(
 
     // The delegation body is the human's instruction, verbatim (`ATH-DATA-004`). The
     // Adapter wraps it in the operating-model direction (`ATH-AIPRJ-011`).
+    //
+    // X-68: the identity a reply must echo does **not** ride this body. `ATH-DATA-004`
+    // keeps the human's instruction verbatim here, and the suite pins that reading; the
+    // layer that composes what the peer actually reads is the Adapter (`ATH-AIPRJ-011`),
+    // so the thread the Message already carries is stated there instead.
     let thread_id = core_thread(task);
     let message = athena_runtime::Message {
         message_id: MessageId::new(),
@@ -649,15 +673,28 @@ pub fn fail_task(
 pub async fn next_answer(
     runtime: &dyn Runtime,
     instance: &RuntimeInstanceRef,
-) -> Result<athena_runtime::Message, LoopFault> {
+    expected_thread: &str,
+) -> Result<AnswerIntake, LoopFault> {
     use futures::StreamExt as _;
     let mut stream = runtime.receive(instance);
+    let mut foreign: Option<AnswerIntake> = None;
     while let Some(message) = stream.next().await {
-        if message.message_type == MessageType::Complete {
-            return Ok(message);
+        if message.message_type != MessageType::Complete {
+            continue;
         }
+        if message.thread_id == expected_thread {
+            return Ok(AnswerIntake::Matched(message));
+        }
+        // X-66 / D-62: a `complete` on another thread is **not** this delegation's answer.
+        // Returning it was how a Task got settled by a different Task's reply (session
+        // 076's measurement). The first such reading is reported so the caller can log it;
+        // the scan continues, because this delegation's own answer may sit further on.
+        foreign = foreign.or(Some(AnswerIntake::Foreign {
+            thread_id: message.thread_id.clone(),
+            message_id: message.message_id.clone(),
+        }));
     }
-    Err(LoopFault::NoAnswerYet)
+    foreign.ok_or(LoopFault::NoAnswerYet)
 }
 
 // --- X-53: the subordinate's inbound leg ----------------------------------------------------

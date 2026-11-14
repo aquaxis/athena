@@ -409,22 +409,30 @@ impl<D: ProcessDriver + 'static> Runtime for AgentCliAdapter<D> {
             // misnames a deadline and ignores `timeout.execution` entirely). A deadline
             // reached is `RuntimeError::Deadline`, the class `ATH-RT-006` names and the one
             // the resident maps onto TimeoutError rather than a retryable transient.
+            // X-68: the peer is told **which delegation it is answering**. Core keeps the
+            // Message body verbatim (`ATH-DATA-004`), so the identity is stated by the layer
+            // that composes what the peer reads (`ATH-AIPRJ-011`): the thread the Message
+            // already carries. Measured in session 076, a peer answered with an empty
+            // `task_id` because nothing it could see named the delegation — and a reply with
+            // no identity is a reply an Intake cannot bind (X-66, D-62).
+            let asked = format!(
+                "{}\n\n--- delegation identity (echo `thread_id` in your reply) ---\nthread_id: {}",
+                message.body, message.thread_id
+            );
             let budget = self.manager.budgets().execution;
-            let reply = match tokio::time::timeout(
-                budget,
-                transport.ask(&record.workspace, &peer, &message.body),
-            )
-            .await
-            {
-                Ok(result) => result?,
-                Err(_) => {
-                    return Err(RuntimeError::Deadline(format!(
-                        "the peer did not answer the delivery within the configured execution \
+            let reply =
+                match tokio::time::timeout(budget, transport.ask(&record.workspace, &peer, &asked))
+                    .await
+                {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        return Err(RuntimeError::Deadline(format!(
+                            "the peer did not answer the delivery within the configured execution \
                          deadline ({} s)",
-                        budget.as_secs()
-                    )));
-                }
-            };
+                            budget.as_secs()
+                        )));
+                    }
+                };
             let outbox = record.workspace.join(".athena-outbox");
             std::fs::create_dir_all(&outbox).map_err(|error| {
                 RuntimeError::Transient(format!("outbox create failed: {error}"))

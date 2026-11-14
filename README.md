@@ -450,6 +450,31 @@ fence, and `worker_ja.md` — a leaf that only reports upward — has no spawn b
 unchanged. A conformance test holds the split, so a future edit cannot quietly collapse the
 two fences back together.
 
+## X-66 / X-67 / X-68: a reply is bound to its own delegation
+
+The reception face is a **shared** outbox, and the Intake took the first `complete` it found
+there. Session 076's production drive measured the consequence: one Task was settled by a
+different Task's reply, recording a success it never earned. Two faces rode along — a
+gate-refused answer was never disposed of, so the same body re-gated on every poll (143
+refusals, about two seconds apart), and nothing the peer could see named the delegation it
+was answering, so it replied with an empty identity.
+
+Three changes close them as one unit, the shape `D-62` states:
+
+- **The answer's identity is the delivery's identity.** The Intake binds a reply to its
+  delegation by the thread `prepare_delivery` minted (`ATH-MSG-013`) **before** anything
+  interprets the body. A `complete` on another thread is reported as foreign and logged,
+  never interpreted — and the scan continues, because this delegation's own answer may sit
+  further along the shared stream.
+- **A refused answer is disposed of.** The protocol gate's refusal now records the unmet
+  protocol and settles the Task, which is what that arm's own comment had always promised;
+  the body no longer survives to re-gate forever. Core Host decides nothing about the work
+  (`ATH-CORE-022`) — it records that the answer did not speak the protocol.
+- **The peer is told which delegation it is answering.** The Message body stays the human's
+  instruction verbatim (`ATH-DATA-004`, pinned by the suite), so the identity is stated by
+  the layer that composes what the peer reads (`ATH-AIPRJ-011`): the thread the Message
+  already carries.
+
 ## Licence
 
 MIT License — see [LICENSE](./LICENSE). Licence compatibility of third-party material is

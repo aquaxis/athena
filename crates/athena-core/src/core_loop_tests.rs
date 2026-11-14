@@ -114,6 +114,15 @@ async fn boot(runtime: &StubRuntime) -> RuntimeInstanceRef {
         .expect("instance #0 boots on the stub")
 }
 
+/// X-66: the Intake's bound answer. A test that expects this delegation's own reply says so
+/// here, so a `Foreign` reading fails loudly instead of flowing on as if it were the answer.
+fn matched(intake: crate::core_loop::AnswerIntake) -> athena_runtime::Message {
+    match intake {
+        crate::core_loop::AnswerIntake::Matched(message) => message,
+        other => panic!("expected this delegation's own reply, got {other:?}"),
+    }
+}
+
 // --- the rows -------------------------------------------------------------------------
 
 /// **A `QUEUED` Task is reserved and dispatched** — the survey's finding (a) closed: the
@@ -197,9 +206,11 @@ async fn an_answer_carries_a_task_to_a_terminal_state() {
 
     // Intake: an answer is available, so the Result is recorded and the Task reaches
     // EVALUATING.
-    let answer = next_answer(&runtime, &handle)
-        .await
-        .expect("the stub answers");
+    let answer = matched(
+        next_answer(&runtime, &handle, &pending.thread_id)
+            .await
+            .expect("the stub answers"),
+    );
     assert_eq!(
         reported_status(&answer),
         ResultStatus::Success,
@@ -270,7 +281,7 @@ async fn an_empty_stream_is_not_a_fault() {
     let runtime = StubRuntime::scripted(StubScript::default());
     // Start an instance and read the stream before anything was sent.
     let handle = boot(&runtime).await;
-    let result = next_answer(&runtime, &handle).await;
+    let result = next_answer(&runtime, &handle, "core:nothing-was-sent").await;
     assert!(
         matches!(result, Err(crate::core_loop::LoopFault::NoAnswerYet)),
         "no answer is NoAnswerYet, not a RuntimeError: {result:?}"
@@ -1328,9 +1339,11 @@ async fn a_succeeded_settlement_completes_the_catalogs_agent_completed() {
         .await
         .expect("delivered");
     runtime.clock().advance(50);
-    let answer = next_answer(&runtime, &handle)
-        .await
-        .expect("the stub answers");
+    let answer = matched(
+        next_answer(&runtime, &handle, &pending.thread_id)
+            .await
+            .expect("the stub answers"),
+    );
     let received = ingest_answer(
         &mut store,
         &task,
@@ -1433,9 +1446,11 @@ async fn a_settled_task_releases_its_workspace_lease() {
         .await
         .expect("delivered");
     runtime.clock().advance(50);
-    let answer = next_answer(&runtime, &handle)
-        .await
-        .expect("the stub answers");
+    let answer = matched(
+        next_answer(&runtime, &handle, &pending.thread_id)
+            .await
+            .expect("the stub answers"),
+    );
     let received = ingest_answer(
         &mut store,
         &task,
@@ -1490,9 +1505,11 @@ async fn an_answer_intake_opens_the_evaluation_face() {
         .await
         .expect("delivered");
     runtime.clock().advance(50);
-    let answer = next_answer(&runtime, &handle)
-        .await
-        .expect("the stub answers");
+    let answer = matched(
+        next_answer(&runtime, &handle, &pending.thread_id)
+            .await
+            .expect("the stub answers"),
+    );
     ingest_answer(
         &mut store,
         &task,
@@ -1567,4 +1584,186 @@ async fn a_subordinates_complete_opens_the_evaluation_face() {
         started, 1,
         "the arrival's evaluation face is recorded exactly once: {events:?}"
     );
+}
+
+// --- X-66 / D-62: the answer's identity is the delivery's identity ----------------------
+
+/// One instruction on a named thread, so the stub answers on that thread.
+fn instruction_on(thread: &str, body: &str) -> athena_runtime::Message {
+    athena_runtime::Message {
+        message_id: MessageId::new(),
+        message_type: MessageType::Instruction,
+        from_agent: Some(AgentId::core_agent()),
+        from_instance_id: None,
+        thread_id: thread.into(),
+        reply_to: None,
+        priority: athena_types::Priority::Normal,
+        body: body.into(),
+        payload_json: None,
+        deadline: None,
+    }
+}
+
+#[tokio::test]
+async fn a_reply_on_another_delegations_thread_is_never_this_tasks_answer() {
+    // X-66: the reception face is a shared outbox, so "the first `complete` on the stream"
+    // is not "this delegation's answer". Session 076 measured the consequence — a Task
+    // settled by a different Task's reply, recording a success it never earned. The Intake
+    // binds on the thread `prepare_delivery` minted (`ATH-MSG-013`) before anything
+    // interprets the body.
+    let runtime = StubRuntime::scripted(StubScript::completes_any_instruction("done"));
+    let handle = boot(&runtime).await;
+
+    // Only a foreign delegation has answered.
+    Runtime::send(
+        &runtime,
+        &handle,
+        instruction_on("core:task-SOMEONE-ELSE", "someone else's work"),
+    )
+    .await
+    .expect("delivered");
+    runtime.clock().advance(50);
+
+    let intake = next_answer(&runtime, &handle, "core:task-MINE")
+        .await
+        .expect("a complete is present, so this is not NoAnswerYet");
+
+    match intake {
+        crate::core_loop::AnswerIntake::Foreign { thread_id, .. } => assert_eq!(
+            thread_id, "core:task-SOMEONE-ELSE",
+            "the foreign reading names the thread it refused to bind"
+        ),
+        crate::core_loop::AnswerIntake::Matched(message) => panic!(
+            "a reply on another thread must never be returned as this delegation's \
+             answer: {message:?}"
+        ),
+    }
+}
+
+/// A Runtime whose reply stream is exactly the messages the test lists, in order.
+///
+/// The scripted stub ends an instance's liveness when it completes, so it cannot hold two
+/// delegations' replies at once — and "a foreign reply does not shadow the real one" is a
+/// property of the scan order, which this double states directly.
+struct StreamOf(Vec<athena_runtime::Message>);
+
+#[async_trait::async_trait]
+impl Runtime for StreamOf {
+    fn runtime_type(&self) -> athena_types::RuntimeType {
+        athena_types::RuntimeType::AgentCli
+    }
+
+    async fn start(
+        &self,
+        _definition: athena_types::AgentDefinition,
+        _ctx: StartContext,
+    ) -> Result<RuntimeInstanceRef, athena_runtime::RuntimeError> {
+        Err(athena_runtime::RuntimeError::Unsupported(
+            "read-only double".into(),
+        ))
+    }
+
+    async fn send(
+        &self,
+        _instance: &RuntimeInstanceRef,
+        _message: athena_runtime::Message,
+    ) -> Result<(), athena_runtime::RuntimeError> {
+        Ok(())
+    }
+
+    fn receive(
+        &self,
+        _instance: &RuntimeInstanceRef,
+    ) -> futures::stream::BoxStream<'static, athena_runtime::Message> {
+        Box::pin(futures::stream::iter(self.0.clone()))
+    }
+
+    async fn status(
+        &self,
+        _instance: &RuntimeInstanceRef,
+    ) -> Result<athena_runtime::status::RuntimeInstanceStatus, athena_runtime::RuntimeError> {
+        Ok(athena_runtime::status::RuntimeInstanceStatus::Running)
+    }
+
+    async fn stop(
+        &self,
+        _instance: &RuntimeInstanceRef,
+        _reason: athena_types::StopReason,
+    ) -> Result<(), athena_runtime::RuntimeError> {
+        Ok(())
+    }
+
+    async fn collect_result(
+        &self,
+        _instance: &RuntimeInstanceRef,
+    ) -> Result<athena_types::ExecutionResult, athena_runtime::RuntimeError> {
+        Err(athena_runtime::RuntimeError::UnknownInstance(
+            "not collected".into(),
+        ))
+    }
+
+    fn capabilities(&self) -> athena_runtime::status::RuntimeCapabilities {
+        athena_runtime::status::RuntimeCapabilities {
+            runtime_type: self.runtime_type(),
+            isolation: athena_runtime::status::IsolationBoundary::Process,
+            supported_tools: vec![],
+            max_concurrent_instances: 1,
+        }
+    }
+}
+
+fn complete_on(thread: &str, body: &str) -> athena_runtime::Message {
+    let mut message = instruction_on(thread, body);
+    message.message_type = MessageType::Complete;
+    message
+}
+
+#[tokio::test]
+async fn this_delegations_own_reply_is_bound_even_when_a_foreign_one_precedes_it() {
+    // The foreign reading must not shadow the real answer: one shared outbox holds both,
+    // and the scan continues past what it cannot bind.
+    let runtime = StreamOf(vec![
+        complete_on("core:task-SOMEONE-ELSE", "someone else's product"),
+        complete_on("core:task-MINE", "my product"),
+    ]);
+    let handle = RuntimeInstanceRef {
+        runtime_type: athena_types::RuntimeType::AgentCli,
+        runtime_instance_id: athena_types::RuntimeInstanceId::new(),
+        instance_id: InstanceId::new(),
+    };
+
+    let message = matched(
+        next_answer(&runtime, &handle, "core:task-MINE")
+            .await
+            .expect("the stream holds this delegation's answer"),
+    );
+    assert_eq!(
+        message.thread_id, "core:task-MINE",
+        "the bound answer is this delegation's own"
+    );
+    assert_eq!(message.body, "my product");
+}
+
+#[tokio::test]
+async fn a_stream_with_no_matching_thread_is_reported_foreign_not_empty() {
+    // The distinction matters to the caller: `NoAnswerYet` means "still in flight", while a
+    // foreign reading means "something answered, but not this delegation" — a fact worth a
+    // log line rather than a silent skip.
+    let runtime = StreamOf(vec![complete_on("core:task-OTHER", "{}")]);
+    let handle = RuntimeInstanceRef {
+        runtime_type: athena_types::RuntimeType::AgentCli,
+        runtime_instance_id: athena_types::RuntimeInstanceId::new(),
+        instance_id: InstanceId::new(),
+    };
+
+    assert!(matches!(
+        next_answer(&runtime, &handle, "core:task-MINE").await,
+        Ok(crate::core_loop::AnswerIntake::Foreign { .. })
+    ));
+    // And an empty stream is still the in-flight state.
+    let empty = StreamOf(vec![]);
+    assert!(matches!(
+        next_answer(&empty, &handle, "core:task-MINE").await,
+        Err(crate::core_loop::LoopFault::NoAnswerYet)
+    ));
 }

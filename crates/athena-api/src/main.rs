@@ -1326,11 +1326,45 @@ where
                 //     the lock (X-26's survey face 1-2: the twelve `CoreRequest` kinds are
                 //     received and routed, not just recorded).
                 Step::Intake(task_id) => {
-                    let answer =
-                        athena_core::core_loop::next_answer(adapter.as_ref(), &instance).await;
-                    let Ok(answer) = answer else {
-                        // No answer yet: the delegation is still in flight.
-                        continue;
+                    // X-66 / D-62: the reception face is a **shared** outbox, so the answer
+                    // must be bound to *this* delegation before anything interprets it. The
+                    // thread is the delegation's own identity (`prepare_delivery` mints it,
+                    // `ATH-MSG-013`), and binding on it is what stops one Task being settled
+                    // by another's reply — measured in session 076, where probe 2 took probe
+                    // 3's `complete` and recorded a success it never earned.
+                    let expected_thread = athena_core::core_loop::core_thread(&task_id);
+                    let answer = athena_core::core_loop::next_answer(
+                        adapter.as_ref(),
+                        &instance,
+                        &expected_thread,
+                    )
+                    .await;
+                    let answer = match answer {
+                        Ok(athena_core::AnswerIntake::Matched(message)) => message,
+                        Ok(athena_core::AnswerIntake::Foreign {
+                            thread_id,
+                            message_id,
+                        }) => {
+                            // Not this delegation's answer. Recorded, never interpreted: the
+                            // delegation it does belong to reads it on its own Intake.
+                            resident_log(
+                                Log::Warn,
+                                "resident.execution",
+                                "a reply on another delegation's thread was not bound to this task",
+                                resident_key(),
+                                serde_json::json!({
+                                    "task_id": task_id.as_str(),
+                                    "expected_thread": expected_thread,
+                                    "answer_thread": thread_id,
+                                    "message_id": message_id.as_str()
+                                }),
+                            );
+                            continue;
+                        }
+                        Err(_) => {
+                            // No answer yet: the delegation is still in flight.
+                            continue;
+                        }
                     };
                     // The protocol face (ATH-CORE-033): a completion product, a human
                     // question, or one of the ten routed requests. A parse refusal is
@@ -1349,6 +1383,42 @@ where
                                     "fault": fault.to_string()
                                 }),
                             );
+                            // X-67 / D-62: a refused answer is **disposed of**, not left on
+                            // the stream. Before this, the arm logged and continued while the
+                            // body stayed in the outbox and the Task stayed in Intake, so the
+                            // same text re-gated on every poll — measured in session 076 as
+                            // 143 refusals about two seconds apart. The disposal is the
+                            // settlement this arm's own comment already promised: the Task
+                            // records the unmet protocol and leaves the step. Core Host
+                            // decides nothing about the work here (`ATH-CORE-022`) — it
+                            // records that the answer did not speak the protocol.
+                            let reason = format!(
+                                "the answer failed the Core Control Protocol gate: {fault}"
+                            );
+                            if let Ok(mut guard) = rows.lock() {
+                                let correlation = athena_core::digest(&format!(
+                                    "intake-refused-{}-{now}",
+                                    task_id.as_str()
+                                ));
+                                if let Err(settle) = athena_core::core_loop::fail_task(
+                                    &mut guard,
+                                    &task_id,
+                                    &reason,
+                                    &now,
+                                    &correlation,
+                                ) {
+                                    resident_log(
+                                        Log::Error,
+                                        "resident.execution",
+                                        "recording the refused answer failed",
+                                        &correlation,
+                                        serde_json::json!({
+                                            "task_id": task_id.as_str(),
+                                            "fault": settle.to_string()
+                                        }),
+                                    );
+                                }
+                            }
                             continue;
                         }
                     };
